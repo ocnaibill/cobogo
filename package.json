@@ -6,10 +6,19 @@
   "license": "AGPL-3.0-or-later",
   "workspaces": [
     "apps/*",
-    "packages/*" 
+    "packages/*"
   ],
   "scripts": {
     "dev:api": "npm run dev --workspace=@cobogo/api",
     "db:migrate": "npx prisma migrate dev --schema=apps/api/prisma/schema.prisma"
+  },
+  "dependencies": {
+    "dockerode": "^4.0.9",
+    "fs-extra": "^11.3.2",
+    "simple-git": "^3.30.0"
+  },
+  "devDependencies": {
+    "@types/dockerode": "^3.3.47",
+    "@types/fs-extra": "^11.0.4"
   }
 }

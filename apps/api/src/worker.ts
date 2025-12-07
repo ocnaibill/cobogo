@@ -2,6 +2,8 @@ import { Worker } from "bullmq";
 import { connection } from "./lib/redis";
 import { PrismaClient } from "@prisma/client";
 import { BuildJobData } from "./lib/queue";
+import { BuildService } from "./services/build.service";
+import { ContainerService } from "./services/container.service";
 
 const prisma = new PrismaClient();
 
@@ -11,10 +13,13 @@ console.log("👷 Worker de Deploy iniciado e aguardando jobs...");
  * Este worker escuta a fila 'build-queue'.
  * Assim que chegar algo, ele executa a função anonima abaixo.
  */
+
 const worker = new Worker<BuildJobData>(
   "build-queue",
   async (job) => {
-    const { deploymentId, projectName } = job.data;
+    const { deploymentId, repositoryUrl, branch, projectName } = job.data;
+
+    console.log(`[${projectName}] Iniciando Job #${job.id}`);
 
     console.log(`[${projectName}] Iniciando deploy #${deploymentId}...`);
 
@@ -25,23 +30,34 @@ const worker = new Worker<BuildJobData>(
         data: { status: "BUILDING" },
       });
 
-      // 2. SIMULAÇÃO DO DOCKER (5 segundos)
-      // Aqui vai entrar a lógica real do Docker depois
-      await new Promise((resolve) => setTimeout(resolve, 5000));
+      // 2. CHAMADA REAL DO DOCKER
+      const imageName = await BuildService.buildImage(
+        repositoryUrl,
+        branch,
+        projectName
+      );
 
-      // Simula um log
-      console.log(`[${projectName}] Construindo imagem Docker... (Fake)`);
+      // 3. NOVO: RODAR O CONTAINER
+      // Assumimos porta 3000 por enquanto (padrão Node)
+      const url = await ContainerService.startContainer(
+        projectName,
+        imageName,
+        3000
+      );
 
-      // 3. Atualiza status para LIVE (Sucesso)
+      // 4. Status: LIVE (Sucesso)
       await prisma.deployment.update({
         where: { id: deploymentId },
         data: {
           status: "LIVE",
           finishedAt: new Date(),
+          // Vamos salvar a URL gerada no log ou num campo futuro (por enquanto console)
         },
       });
 
-      console.log(`[${projectName}] Deploy finalizado com sucesso! 🚀`);
+      console.log(
+        `[${projectName}] Deploy Finalizado! Acesse em: http://${url}`
+      );
     } catch (error) {
       console.error(`[${projectName}] Falha no deploy:`, error);
 
