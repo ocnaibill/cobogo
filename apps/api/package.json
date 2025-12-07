@@ -6,6 +6,7 @@
   "license": "AGPL-3.0-or-later",
   "scripts": {
     "dev": "nodemon src/server.ts",
+    "worker": "ts-node src/worker.ts",
     "build": "tsc",
     "start": "node dist/server.js"
   },
