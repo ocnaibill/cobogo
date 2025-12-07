@@ -13,10 +13,12 @@
   "author": "ocnaibill",
   "dependencies": {
     "@prisma/client": "^5.22.0",
+    "bullmq": "^5.65.1",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "helmet": "^8.1.0",
+    "ioredis": "^5.8.2",
     "zod": "^4.1.13"
   },
   "devDependencies": {
