@@ -1,0 +1,15 @@
+{
+  "name": "cobogo-root",
+  "version": "0.0.1",
+  "description": "Monorepo da plataforma Cobogó PaaS",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
+  "workspaces": [
+    "apps/*",
+    "packages/*" 
+  ],
+  "scripts": {
+    "dev:api": "npm run dev --workspace=@cobogo/api",
+    "db:migrate": "npx prisma migrate dev --schema=apps/api/prisma/schema.prisma"
+  }
+}

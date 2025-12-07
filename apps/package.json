@@ -1,0 +1,10 @@
+{
+  "name": "cobogo",
+  "version": "0.0.1",
+  "description": "Uma plataforma PaaS open-source focada em Node.js",
+  "license": "AGPL-3.0-or-later",
+  "private": true, 
+  "workspaces": [
+    "apps/*"
+  ]
+}

@@ -1,0 +1,31 @@
+# Dependências
+node_modules
+npm-debug.log
+yarn-error.log
+
+# Build
+dist
+build
+.next
+out
+
+# Ambiente e Segredos
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# IDEs e SOs
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Volumes docker locais
+postgres_data

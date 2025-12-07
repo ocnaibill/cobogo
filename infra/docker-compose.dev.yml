@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  # Banco de Dados Principal do Projeto
+  postgres:
+    image: postgres:15-alpine
+    container_name: cobogo-db
+    environment:
+      POSTGRES_USER: cobogo
+      POSTGRES_PASSWORD: devpassword 
+      POSTGRES_DB: cobogo_core
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - cobogo-net
+
+  # Redis (Para filas de build e logs real-time)
+  redis:
+    image: redis:7-alpine
+    container_name: cobogo-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - cobogo-net
+
+volumes:
+  postgres_data:
+
+networks:
+  cobogo-net:
+    driver: bridge

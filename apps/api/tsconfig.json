@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    /* Configurações Básicas */
+    "target": "es2016",                       /* Transforma recursos muito novos para JS compatível */
+    "module": "commonjs",                     /* CRÍTICO: Transforma 'import' em 'require' para o Node entender */
+    "moduleResolution": "node",               /* Ajuda a achar pacotes no node_modules */
+    "outDir": "./dist",                       /* Onde fica o código compilado */
+    "rootDir": "./src",                       /* Onde está seu código fonte */
+    
+    /* Interoperabilidade */
+    "esModuleInterop": true,                  /* Permite importar pacotes CommonJS como se fossem ESM */
+    "forceConsistentCasingInFileNames": true, /* Garante que Linux e Windows se comportem igual com maiúsculas */
+
+    /* Checagem de Tipos */
+    "strict": true,                           /* Ativa o modo rigoroso (bom para evitar bugs) */
+    "skipLibCheck": true                      /* Pula a checagem de tipos dentro de node_modules (acelera o build) */
+    
+    /* REMOVIDO: "verbatimModuleSyntax": true */ 
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules"]
+}
