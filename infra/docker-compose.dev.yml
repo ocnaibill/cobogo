@@ -1,4 +1,4 @@
-version: '3.8'
+version: "3.8"
 
 services:
   # Banco de Dados Principal do Projeto
@@ -7,7 +7,7 @@ services:
     container_name: cobogo-db
     environment:
       POSTGRES_USER: cobogo
-      POSTGRES_PASSWORD: devpassword 
+      POSTGRES_PASSWORD: devpassword
       POSTGRES_DB: cobogo_core
     ports:
       - "5432:5432"
@@ -25,9 +25,27 @@ services:
     networks:
       - cobogo-net
 
+  #Traefik (Para hospedagem da rede)
+  traefik:
+    image: traefik:v2.10
+    container_name: cobogo-proxy
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+    ports:
+      - "80:80"
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - cobogo-net
+
 volumes:
   postgres_data:
 
 networks:
   cobogo-net:
+    name: cobogo-net
     driver: bridge
