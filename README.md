@@ -6,6 +6,17 @@ Uma plataforma open-source de **_Platform as a Service_ (PaaS)** para orquestra�
 
 **Foco:** Developer Experience (DX), Auto-hospedagem e Soberania de dados.
 
+## Documentação do projeto
+
+O código atual corresponde ao protótipo Node.js descrito abaixo. A documentação do TCC apresenta a evolução proposta para Go/React, com requisitos, decisões e critérios de avaliação ainda sujeitos a revisão.
+
+- [Documento mestre: escopo, requisitos, arquitetura, telas e roadmap](docs/PROJETO-MESTRE.md)
+- [Motor de heurísticas e apoio por modelos de decisão](docs/MOTOR-DE-HEURISTICAS.md)
+- [Referências comentadas e trabalhos relacionados](docs/REFERENCIAS-COMENTADAS.md)
+- [Pesquisa sobre heurísticas, evidências e decisão assistida](docs/pesquisa/HEURISTICAS-REFERENCIAS.md)
+
+Os documentos incluem diagramas Mermaid e links para suas prévias SVG.
+
 ## 💡 A Identidade
 
 O nome **Cobogó** faz referência ao elemento arquitetônico modernista, ícone de Brasília. Assim como o cobogó é um bloco modular que permite a permeabilidade da luz e ventilação sem comprometer a estrutura, esta plataforma atua como uma estrutura modular para containers, gerenciando o fluxo de tráfego e dados enquanto garante o isolamento e segurança de cada serviço.
