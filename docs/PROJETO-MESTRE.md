@@ -2,9 +2,9 @@
 
 > Deploy automático guiado por heurísticas.
 >
-> Autor: Bianco Da Costa Oliveira · Versão 0.4 · 17 de outubro de 2026
+> Autor: Bianco Da Costa Oliveira · Versão 0.5 · 20 de outubro de 2026
 >
-> **Estado: proposta inicial para revisão.** Este documento especifica o projeto futuro; não descreve funcionalidades já implementadas. Não autoriza apagar a implementação atual nem alterar a infraestrutura do homelab.
+> **Estado: proposta inicial para revisão.** Este documento especifica o projeto futuro; não descreve funcionalidades já implementadas. A remoção do protótipo segue DEC-22; alterações na infraestrutura do homelab continuam fora do escopo deste documento.
 
 ## 1. Como usar este documento
 
@@ -23,7 +23,7 @@ Este é o ponto de entrada para produto, requisitos, arquitetura e avaliação a
 
 Os requisitos e metas abaixo são **propostos**, salvo indicação de informação confirmada pelo autor. Aprovar este documento estabelece a linha de base; não significa que os requisitos estejam implementados. Ao mudar uma decisão, registrar data, motivo e requisitos afetados. Os diagramas Mermaid dentro deste arquivo são a fonte canônica; as imagens em `diagramas/` são prévias derivadas.
 
-Leitura orientada: [escopo e entregas](#6-recorte-de-escopo-e-entregas), [requisitos funcionais](#9-requisitos-funcionais), [requisitos não funcionais](#10-requisitos-não-funcionais), [arquitetura](#12-arquitetura-proposta), [variáveis e segredos](#171-variáveis-env-e-segredos), [telas e dashboard](#18-experiência-de-uso-telas-e-observabilidade), [avaliação](#19-avaliação-técnica-e-de-produtividade), [experimento com modelos](#194-experimento-com-modelos-de-decisão), [DECs](#20-decisões-de-projeto--decs) e [roadmap](#21-roadmap-e-critérios-de-saída).
+Leitura orientada: [escopo e entregas](#6-recorte-de-escopo-e-entregas), [requisitos funcionais](#9-requisitos-funcionais), [requisitos não funcionais](#10-requisitos-não-funcionais), [arquitetura](#12-arquitetura-proposta), [variáveis e segredos](#171-variáveis-env-e-segredos), [execução, DOD e tenancy](#172-execução-dod-e-isolamento-entre-projetos), [telas e dashboard](#18-experiência-de-uso-telas-e-observabilidade), [avaliação](#19-avaliação-técnica-e-de-produtividade), [experimento com modelos](#194-experimento-com-modelos-de-decisão), [DECs](#20-decisões-de-projeto--decs) e [roadmap](#21-roadmap-e-critérios-de-saída).
 
 Prévias dos diagramas: [contexto](diagramas/01-contexto.svg), [arquitetura](diagramas/02-arquitetura.svg), [modelo de dados](diagramas/03-modelo-de-dados.svg), [pipeline de deploy](diagramas/04-pipeline-deploy.svg), [sequência](diagramas/05-sequencia-deploy.svg), [estados](diagramas/06-estados-deploy.svg), [CI/CD do Cobogó](diagramas/07-pipeline-cobogo.svg), [ciclo dos segredos](diagramas/08-ciclo-segredos.svg) e [experimento de decisão](diagramas/09-experimento-decisao.svg).
 
@@ -39,7 +39,7 @@ A [matriz de referências comentadas](REFERENCIAS-COMENTADAS.md) identifica os d
 - O autor quer preenchimento guiado das variáveis necessárias, proteção de segredos durante todo o ciclo e acompanhamento geral, por stack e por contêiner na dashboard.
 - O motor de heurísticas continua principal. O autor solicitou pesquisar e planejar testes com Jev, Laya e Julia-1; os projetos e o artigo de referência foram confirmados por links fornecidos por ele.
 - A implementação local existente usa Node.js/TypeScript, PostgreSQL, Redis/BullMQ e Traefik. O README a apresenta como um protótipo de PaaS para Node.js. Isso é contexto histórico, não obrigação da nova arquitetura.
-- O autor considera substituir a implementação atual. A decisão de descarte permanece aberta; preservar o histórico e avaliar aprendizados antes de removê-la.
+- A implementação local existente será substituída por um backend em Go. O protótipo Node/TypeScript é preservado como referência até a primeira fatia vertical em Go funcionar; a remoção segue DEC-22 e o histórico permanece acessível pela tag `prototype-node`.
 
 Fonte conceitual: anotações fornecidas pelo autor, com os blocos “Cobogó — Deploy automático guiado por heurísticas” e “Parte 2: o inimigo agora é o mesmo”. A segunda formulação da pesquisa orienta esta proposta por explicitar produtividade e deploy funcional.
 
@@ -308,21 +308,32 @@ flowchart TB
     worker --> analyzer["Analisador e regras versionadas"]
     analyzer --> planner["Plano e templates"]
     planner --> worker
-    worker -->|"Build e ciclo de vida"| engine["Docker Engine"]
+    worker -->|"Build e ciclo de vida"| proxyRw["Proxy Docker — escrita"]
     worker -->|"Grava artefatos"| artifactStore
-    collector["Coletor operacional limitado"] -->|"Stats e eventos permitidos"| engine
+    collector["Coletor operacional limitado"] -->|"Stats e eventos permitidos"| proxyRo["Proxy Docker — leitura"]
+    proxyRw -->|"BUILD, CONTAINERS, IMAGES, NETWORKS, VOLUMES"| engine["Docker Engine do host"]
+    proxyRo -->|"CONTAINERS e EVENTS, sem POST"| engine
     collector -->|"Amostras e atualização"| coreDb
     engine --> app["Aplicação do projeto"]
     engine --> auxiliaryDb[("PostgreSQL do projeto")]
     app -->|"Rede privada do projeto"| auxiliaryDb
-    engine -->|"Descoberta restrita"| socketProxy["Acesso filtrado de descoberta"]
-    traefik["Traefik"] -->|"Lê serviços permitidos"| socketProxy
+    engine -->|"Descoberta restrita"| proxyDiscovery["Proxy Docker — descoberta"]
+    traefik["Traefik"] -->|"Lê serviços permitidos"| proxyDiscovery
+    proxyDiscovery -->|"Somente leitura"| engine
     traefik -->|"HTTP para release ativa"| app
     cloudflared["cloudflared proposto"] -->|"Preserva hostname"| traefik
     cloudflareEdge["Cloudflare"] -->|"Tráfego pelo túnel"| cloudflared
 ```
 
 O diagrama inclui capacidades do MVP completo. D0 pode omitir o banco auxiliar; a descoberta do proxy deve respeitar RNF-03. O armazenamento local é suficiente no servidor único: banco guarda metadados e caminhos opacos, não um fluxo ilimitado de logs.
+
+O Cobogó roda em containers na mesma VM, falando com o daemon **do host** pelos proxies filtrados — nunca com um daemon aninhado (DEC-19). Os containers das aplicações são irmãos do plano de controle no daemon do host, o que mantém o roteamento por label visível ao Traefik. Três redes separam as fronteiras:
+
+| Rede | Participantes | Regra |
+| --- | --- | --- |
+| `cobogo-control` | API, PostgreSQL interno, worker, collector e os três proxies | Nenhuma aplicação publicada participa |
+| `cobogo-ingress` | Traefik e as releases ativas | Só roteamento; sem acesso ao banco de controle |
+| `cobogo-proj-<id>` | Aplicação e seu serviço auxiliar | Uma por projeto; volume e credencial exclusivos |
 
 ### 12.3 Fila e concorrência
 
@@ -341,6 +352,7 @@ Configuração inicial de planejamento: 4 vCPU, 8 GiB RAM e disco com folga para
 | Camada | Proposta | Observação |
 | --- | --- | --- |
 | Virtualização | VM Linux dedicada | Backup e restauração administrados no homelab |
+| Runtime do Cobogó | Containers na VM, falando com o daemon do host por proxy filtrado | Sem DinD (DEC-19); só o worker recebe escrita no Docker |
 | Entrada externa | Cloudflare Tunnel até o Traefik | Alternativa: DNS e entrada HTTPS direta; decidir após conhecer a rede |
 | Proxy | Traefik com exposição explícita | Apenas aplicações selecionadas; painel administrativo protegido |
 | Rede de controle | API, worker e PostgreSQL interno | Não publicar PostgreSQL nem Docker na Internet |
@@ -358,6 +370,8 @@ Manter hostname original no encaminhamento ao Traefik e aceitar cabeçalhos de p
 ### 14.1 Dois papéis distintos
 
 **Banco do Cobogó:** PostgreSQL para projetos, planos, deploys, eventos, jobs e configuração. Migrações versionadas desde a primeira implementação; chaves, índices e transações para integridade. Evidências e planos podem usar JSONB, preservando colunas relacionais para identidade e estado.
+
+A escolha não se justifica por ser padrão, e sim por autorização, recuperação e disciplina de backup (DEC-21). A aplicação nunca conecta como superusuário. Três roles delimitam o privilégio: a API lê o domínio e escreve apenas projetos, configurações e pedidos de deploy; o worker reivindica jobs, grava eventos e é o único que lê ciphertext de `env_variables`; o collector escreve apenas em `metric_samples`. `pg_dump` agendado e ensaio de restauração fazem parte de RNF-11 e da issue #28.
 
 **Banco da aplicação:** uma instância PostgreSQL isolada por projeto no MVP, com credencial própria e volume nomeado. É simples de entender e limpar, mas consome mais memória que bancos separados em uma mesma instância. Número máximo de projetos depende da medição do homelab. MySQL, MongoDB e Redis não são necessários para comprovar a proposta inicial.
 
@@ -714,6 +728,40 @@ flowchart LR
     executor -->|"Eventos sem valores"| auditTrail["Auditoria sanitizada"]
 ```
 
+### 17.2 Execução, DOD e isolamento entre projetos
+
+O Cobogó é executado em containers, mas **não** com Docker-in-Docker. A distinção importa (DEC-19):
+
+| Modelo | O que é | Efeito aqui |
+| --- | --- | --- |
+| DinD | Um `dockerd` dentro do container, com `--privileged` | Containers criados ficam invisíveis ao Traefik do host; cache de imagens duplicado; `overlay2` aninhado não é suportado pelo kernel |
+| DOD | O container fala com o daemon **do host** por socket filtrado | Containers criados são irmãos no daemon do host; roteamento por label funciona; custo ≈ nativo |
+
+O proxy filtra por **prefixo de URL** (HAProxy), não inspeciona o corpo das requisições. Com `POST` e `CONTAINERS` liberados, um worker comprometido ainda consegue criar container privilegiado com o sistema de arquivos do host montado. O proxy reduz superfície contra erro de implementação; **não contém um worker comprometido**. O socket é equivalente a root no host, e montá-lo como somente leitura não o torna somente leitura. Por isso o worker é o componente mais privilegiado do sistema, e a API não recebe Docker de nenhuma forma.
+
+Invariantes verificáveis:
+
+1. Aplicações publicadas nunca participam da rede de controle; proxies nunca participam da rede de ingress nem de rede de projeto.
+2. Cada projeto usa volume nomeado próprio, com prefixo derivado do identificador do projeto; a propriedade é validada antes de qualquer efeito, e volume de outro projeto nunca é montado.
+3. Bind mount de caminho do host não é gerado pelo Cobogó nem aceito de configuração do repositório.
+4. O repositório analisado não influencia `HostConfig`: modo de rede, privilégio, capabilities, devices, labels de roteamento e volumes vêm do plano e da política da plataforma.
+5. O build roda em rede própria, sem segredos e sem rota para a rede de controle.
+6. Worker executa sem privilégio, com sistema de arquivos somente leitura, capabilities removidas e limites de CPU, memória, disco e duração.
+7. Imagens base são fixadas por digest e registradas por deploy.
+
+**Fronteira de confiança (DEC-20).** O recorte do D0 e do MVP é o nível A: operador confiável e corpus selecionado, sem cadastro público. O modelo de dados e o worker devem ser projetados para o nível B — vários usuários conhecidos — por meio de propriedade explícita (`owner_id`), autorização em toda consulta, nomes de recurso derivados do projeto, quota por projeto e auditoria com ator. Esse preparo não altera a topologia de execução. O nível C, com código hostil de desconhecidos, está fora de escopo: exige daemon ou host separado, runtime com isolamento próprio (microVM, gVisor ou similar), política de egresso, controle de abuso e faturamento, e não é um requisito desta pesquisa.
+
+```mermaid
+flowchart LR
+    nivelA["A — operador único e corpus selecionado"] --> nivelB["B — usuários conhecidos com autorização"]
+    nivelB --> nivelC["C — multi-tenant hostil"]
+    nivelA -.->|"D0 e MVP"| escopo["Escopo deste TCC"]
+    nivelB -.->|"Projetar agora, entregar depois"| extensao["Extensão"]
+    nivelC -.->|"Fora de escopo"| fora["Outro problema de pesquisa"]
+```
+
+[Abrir diagrama](diagramas/12-tenancy-niveis.svg).
+
 ## 18. Experiência de uso, telas e observabilidade
 
 Fluxo principal: **importar → entender o plano → preencher/vincular o necessário → acompanhar deploy → observar a aplicação**. Um plano completo pode seguir a partir do pedido de deploy, sem confirmação intermediária repetitiva. A plataforma deve reduzir a configuração exigida, preservando decisões compreensíveis.
@@ -946,6 +994,10 @@ Todas as decisões técnicas abaixo estão **propostas**. A direção Go/React r
 | DEC-16 | Observação com coletor limitado e armazenamento inicial no PostgreSQL | Stack de monitoramento dedicada aumenta operação; custo e retenção devem ser medidos antes de ampliar histórico |
 | DEC-17 | Estudar Jev/Laya/Julia-1 primeiro offline e em modo observação | Inserção direta no caminho crítico mistura pesquisa, disponibilidade e efeitos; não é necessária para D0 |
 | DEC-18 | H+D apenas em executor experimental com validação e referência independente | Resposta estruturada não assegura acerto; manter heurísticas operacionais e documentar ganho ou ausência dele |
+| DEC-19 | Cobogó em containers falando com o daemon do host por proxies filtrados; DinD proibido | Sem aninhamento o Traefik continua vendo as releases e o custo é ≈ nativo; ver 17.2 e `decisoes/DEC-19-topologia-de-execucao-e-tenancy.md` |
+| DEC-20 | Uma fronteira de confiança no D0/MVP; projetar para vários usuários conhecidos; multi-tenant hostil fora de escopo | Tenancy não gera evidência para a pergunta de pesquisa e amplia a superfície de falha; o preparo para o nível B custa pouco se feito agora |
+| DEC-21 | PostgreSQL interno com roles separados e sem superusuário na aplicação | Autorização por role, recuperação e backup disciplinado; mantém DEC-03 e `SKIP LOCKED` no §12.3 |
+| DEC-22 | Protótipo Node preservado por tag `prototype-node` e removido após a primeira fatia vertical em Go | É a única implementação executável hoje e registra decisões de roteamento e build; remoção sem perda de histórico |
 
 Para escolhas com impacto relevante, desdobrar futuramente em `docs/decisoes/DEC-NNN-titulo.md` com estado, contexto, decisão, alternativas, consequências, critérios de revisão e evidência de validação. Não criar uma coleção de decisões aprovadas por antecipação.
 
@@ -956,7 +1008,7 @@ O calendário considera 17/10/2026 como início deste planejamento, desenvolvime
 | Marco | Janela proposta | Critério de saída |
 | --- | --- | --- |
 | M0 — Base de projeto | Segunda quinzena de outubro/2026 | Documento revisado, escopo D0 acordado, recursos da VM inventariados e três exemplos Node escolhidos |
-| M1 — Primeira fatia completa | Final de outubro a primeira metade de novembro/2026 | Um repositório Node chega a imagem e contêiner verificado, com plano e logs persistidos |
+| M1 — Primeira fatia completa | Final de outubro a primeira metade de novembro/2026 | Um repositório Node chega a imagem e contêiner verificado, com plano e logs persistidos; protótipo marcado com tag `prototype-node` antes da fatia e removido depois que ela funciona |
 | M2 — Demonstração D0 | Segunda metade de novembro/2026 | React aciona fluxo Go; sucesso e falha explicados; autenticação; URL acessível no homelab |
 | M3 — Entrega mínima | Início de dezembro/2026 como alvo conservador | Roteiro repetido em ambiente preparado, vídeo, limitações e evidências guardadas |
 | M4 — MVP por perfis | Dezembro/2026 a março/2027 | Python, estático, overrides, variáveis guiadas e ciclo de segredos com aceitação; revisão de literatura em paralelo |
@@ -1008,7 +1060,7 @@ Uma funcionalidade está pronta quando cumpre os critérios de aceitação, apre
 | AB-02 | Quantas horas semanais estão disponíveis e quais entregas o orientador exige? | Antes de comprometer o cronograma |
 | AB-03 | Quais CPU, RAM, disco e arquitetura a VM pode receber? | Antes de definir limites e instalar infraestrutura |
 | AB-04 | Qual domínio/subdomínios serão usados? Há Tunnel ativo, CGNAT ou restrição de entrada? | Antes de publicar D0 |
-| AB-05 | Preservar protótipo como histórico e começar backend novo, ou reaproveitar partes? | Antes de alterar código |
+| AB-05 | Resolvida por DEC-22: protótipo preservado pela tag `prototype-node` e removido após a primeira fatia vertical em Go | Resolvida em 20/10/2026 |
 | AB-06 | Quais frameworks Python devem ter prioridade: FastAPI, Flask ou Django? | Antes de M4; proposta atual: FastAPI e Flask |
 | AB-07 | A configuração declarativa será só no painel ou haverá arquivo próprio do Cobogó? | Antes de estabilizar overrides; evitar duas fontes sem precedência |
 | AB-08 | Quem participará do estudo e quais exigências institucionais se aplicam? | Antes do recrutamento |
@@ -1057,3 +1109,4 @@ A [pesquisa complementar do motor](pesquisa/HEURISTICAS-REFERENCIAS.md) inicia e
 | 0.2 | 17/10/2026 | Ciclo de `.env` e segredos, telas TEL-01 a TEL-12, dashboard geral/stack/contêiner e trilha experimental Jev/Laya/Julia-1, com fontes primárias e limites explícitos |
 | 0.3 | 17/10/2026 | Triagem dos dez PDFs, matriz de referências, comparação direta com Sampaio/DRAFT e fundamentação de diagnóstico/métricas, incluindo consulta ao PDF de Wu et al. (2020) |
 | 0.4 | 17/10/2026 | Especificação própria do motor, pipeline e sub-regras de banco; pesquisa metodológica complementar; prioridade experimental proposta para interpretação do papel do banco e orientação ao usuário |
+| 0.5 | 20/10/2026 | Topologia de execução sem DinD com proxies filtrados e redes separadas (DEC-19), fronteira de confiança e níveis de tenancy (DEC-20), PostgreSQL com roles (DEC-21) e destino do protótipo (DEC-22); AB-05 resolvida |
