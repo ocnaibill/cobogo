@@ -1,6 +1,6 @@
 # Cobogó — motor de heurísticas e apoio por modelos de decisão
 
-> Versão 0.1 · 17 de outubro de 2026 · Especificação proposta, sem implementação.
+> Versão 0.2 · 25 de outubro de 2026 · HEU-01, HEU-02 e HEU-05 (perfil P-NODE) implementadas na fatia Go M1; as demais regras, incluindo todo o desdobramento de HEU-06 e a ficha de HEU-09 abaixo, seguem como especificação proposta, sem implementação.
 >
 > Complementa o [documento mestre](PROJETO-MESTRE.md), especialmente HEU-01 a HEU-09, RN-13/15/17, RF-08/12/13/21/27/28 e DEC-07/09/17/18. A fundamentação, os artigos reunidos e o roteiro de busca estão em [Pesquisa sobre heurísticas e decisão](pesquisa/HEURISTICAS-REFERENCIAS.md).
 
@@ -157,23 +157,153 @@ Cada regra terá: ID estável, versão, estado proposto/validado/retirado, objet
 
 ### 6.1 Desdobramento de HEU-06
 
-Os sufixos abaixo são sub-regras propostas, preservando os IDs do mestre.
+Os sufixos abaixo são sub-regras propostas, preservando os IDs do mestre. A leitura de [T-H01/T-H02](pesquisa/HEURISTICAS-REFERENCIAS.md#4-fontes-técnicas-primárias-para-consultar) (detect/build plan dos Cloud Native Buildpacks e arquitetura do Railpack) confirma uma distinção que já estava implícita no §2: toda sub-regra desta família declara um `requires` (um fato técnico — "este alvo parece precisar de X") ou um `provides` (uma decisão operacional — "X será satisfeito assim"). HEU-06.1 a HEU-06.5 só produzem `requires`; nenhuma delas escolhe destino. HEU-06.6 é a dobradiça: transforma um `requires` sustentado em pendência de intenção. HEU-06.7 a HEU-06.9 são as únicas que produzem `provides`, e só a partir de uma escolha do usuário — nunca da evidência isolada. Essa separação é a mesma que o resolvedor dos Buildpacks aplica entre a fase *detect* (declarar) e a fase *build* (prover), e evita o erro de deixar uma regra técnica decidir uma questão de intenção.
 
-| ID | Condição e resultado | Limite/pendência |
-| --- | --- | --- |
-| HEU-06.1 | Driver reconhecido gera candidato a família de banco, com grupo e origem | Não afirmar uso em runtime |
-| HEU-06.2 | Schema de ORM/configuração declarativa reconhecida identifica engine e referência de configuração | ORM genérico, configuração dinâmica ou múltiplos datasources exigem análise própria |
-| HEU-06.3 | Declaração inequívoca de produção e referência de configuração sustentam requisito no alvo | Static analysis parcial não comprova alcançabilidade de todo caminho |
-| HEU-06.4 | Referências apenas de teste geram hipótese restrita a teste | Se cobertura de runtime for incompleta, registrar desconhecido em vez de “não usa” |
-| HEU-06.5 | Condição opcional reconhecida gera requisito condicionado | Perguntar se a funcionalidade estará ativa quando isso não estiver configurado |
-| HEU-06.6 | Uso plausível sem destino aceito gera pendência de intenção | Modelo pode orientar pergunta; não selecionar silenciosamente criar/externo |
-| HEU-06.7 | Serviço existente selecionado gera candidato de vínculo | Validar identidade, engine, propriedade, ambiente e campos necessários |
-| HEU-06.8 | Solicitação explícita de novo PostgreSQL gera proposta de provisionamento | Exigir capacidade/limites, volume, retenção e mapeamento; demais engines podem ser reconhecidas e continuar não suportadas |
-| HEU-06.9 | Banco externo escolhido gera proposta de configuração de conexão | Só habilitar esse caminho quando seu contrato estiver implementado; não copiar dados nem substituir serviço externo |
-| HEU-06.10 | Indícios incompatíveis no mesmo alvo/ambiente geram conflito | PostgreSQL + MySQL não se resolvem por popularidade, contagem de pistas ou preferência do modelo |
-| HEU-06.11 | Necessidade de migração reconhecida gera pendência separada | Nunca executar comando inferido ou considerar rollback da imagem como rollback de dados |
+Cada ficha abaixo segue o formato do §6: ID, versão/estado, perfis, pré-condição, evidências aceitas, condição → conclusão, campos afetados, conflitos, limite, pergunta associada e exemplos positivo/negativo, referenciando os cenários C01–C16 do §9.1 quando aplicável. Antes de promover qualquer uma de proposta para validada, aplicar a disciplina de [REF-02](REFERENCIAS-COMENTADAS.md#ref-02--learning-from-understanding-and-supporting-devops-artifacts-for-docker) (binnacle): medir a regra contra um pequeno corpus de repositórios não relacionados entre si — não só o exemplo que a inspirou — e verificar se ela não é *ungeneralizable* (uma coincidência do corpus de origem, como o caso real do paper em que `sed` "sempre" aparecia com `-i`).
 
-**Ficha exemplo — HEU-06.6, versão proposta 0.1:** aplica-se quando há evidência plausível de uso de banco no alvo e falta intenção registrada para o ambiente. Consome IDs das evidências e o estado dos vínculos; produz `pendência: escolher_destino_banco`. Se a necessidade também for desconhecida, primeiro pede revisão de uso/escopo. Conflitos técnicos permanecem visíveis. Resultado positivo: perguntar uma vez e revalidar a escolha. Resultado negativo: se já existir vínculo vigente compatível, reutilizá-lo. Aceitação: nenhum cenário dessa regra sozinho adiciona uma operação de criação ao plano.
+#### HEU-06.1 — presença do driver
+
+- **Versão/estado:** proposta 0.2 · **Perfis:** qualquer perfil com lista de dependências reconhecida (hoje nenhum perfil Go implementado lê isso)
+- **Pré-condição:** análise de dependências do perfil já concluída
+- **Evidências aceitas (`requires`):** nome de driver/pacote de banco reconhecido em `dependencies`
+- **Condição → conclusão:** driver presente → candidato a família de banco, com grupo e origem registrados
+- **Campos afetados (`provides`):** nenhum; é o primeiro elo da cadeia, não decide nada
+- **Conflitos:** nenhum isolado; multiplica-se com HEU-06.10 se houver driver de mais de uma família no mesmo alvo
+- **Limite:** não afirma uso em runtime (categoria "indício", §4.2); a dependência pode ser peso-morto ou só de teste
+- **Pergunta associada:** nenhuma
+- **Exemplos:** positivo — C01 (driver isolado mantém pendência "insuficiente", não cria nada); negativo — nenhum driver reconhecido no perfil
+
+#### HEU-06.2 — schema de ORM ou configuração declarativa
+
+- **Versão/estado:** proposta 0.2 · **Perfis:** qualquer perfil com parser de schema declarativo suportado (ex.: Prisma/Drizzle para P-NODE, quando o parser existir)
+- **Pré-condição:** HEU-06.1 já aplicada, ou leitura direta de um schema estruturado reconhecido
+- **Evidências aceitas (`requires`):** schema declarativo em formato suportado, com engine e `datasource` únicos
+- **Condição → conclusão:** schema aponta engine X e variável de referência Y → candidato reforçado, com engine identificada
+- **Campos afetados (`provides`):** nenhum; eleva a confiança do `requires`, não decide provedor
+- **Conflitos:** schema inconsistente com o driver de HEU-06.1 → conflito material (HEU-06.10)
+- **Limite:** ORM genérico sem engine fixa, configuração dinâmica (função/variável condicional) ou múltiplos `datasource` não são interpretados — vira "desconhecido", nunca "não usa"
+- **Pergunta associada:** nenhuma diretamente; pode gerar pedido de revisão de evidências se o schema não for interpretável
+- **Exemplos:** positivo — C08 (ORM configurado explicitamente para SQLite; não cria PostgreSQL); negativo — `datasource` resolvido só em tempo de execução, fora do alcance da análise estática
+
+#### HEU-06.3 — declaração inequívoca de produção
+
+- **Versão/estado:** proposta 0.2 · **Perfis:** qualquer
+- **Pré-condição:** evidência de HEU-06.1/06.2 já classificada por escopo (§4.1, campo "Escopo")
+- **Evidências aceitas (`requires`):** declaração ou documentação inequívoca de uso em produção, com referência de configuração resolvida no alvo
+- **Condição → conclusão:** uso de produção sustentado → requisito classificado `RUNTIME_REQUIRED` (vocabulário do §7.2)
+- **Campos afetados (`provides`):** nenhum; ainda é inferência técnica, não intenção
+- **Conflitos:** contradiz HEU-06.4 se também houver evidência de restrição a teste no mesmo escopo → HEU-06.10
+- **Limite:** cobertura estática parcial não garante que todo caminho de execução realmente alcança o uso; "analisado" não é "exaustivo"
+- **Pergunta associada:** nenhuma diretamente; dispara HEU-06.6 em seguida
+- **Exemplos:** positivo — C03; negativo — C07 (configuração dinâmica impede concluir runtime; correto é "insuficiente", não "requerido")
+
+#### HEU-06.4 — referência restrita a teste
+
+- **Versão/estado:** proposta 0.2 · **Perfis:** qualquer
+- **Evidências aceitas (`requires`):** referência de banco presente só em arquivos/configuração de teste, sem contraparte em produção
+- **Condição → conclusão:** evidência restrita a teste → `NON_RUNTIME_ONLY` (§7.2); não bloqueia o deploy de produção
+- **Campos afetados (`provides`):** nenhum
+- **Conflitos:** evidência de produção no mesmo escopo → HEU-06.10
+- **Limite:** ausência de evidência de produção não é prova de ausência; cobertura incompleta deve virar "desconhecido", nunca "não usa"
+- **Pergunta associada:** nenhuma
+- **Exemplos:** positivo — C06; cuidado — C07 não se resolve aqui (cobertura insuficiente, não restrição comprovada)
+
+#### HEU-06.5 — condição opcional
+
+- **Versão/estado:** proposta 0.2 · **Perfis:** qualquer
+- **Evidências aceitas (`requires`):** uso de banco atrelado a uma funcionalidade/flag ainda não resolvida
+- **Condição → conclusão:** dependência condicional → `RUNTIME_CONDITIONAL`
+- **Campos afetados (`provides`):** nenhum
+- **Conflitos:** resolver a funcionalidade pode reclassificar o caso para HEU-06.3 ou HEU-06.4
+- **Limite:** não presumir a funcionalidade ativa nem inativa por padrão
+- **Pergunta associada:** "esta funcionalidade estará habilitada neste ambiente?"
+- **Exemplos:** positivo — C09
+
+#### HEU-06.6 — pendência de intenção (dobradiça requires → provides)
+
+- **Versão/estado:** proposta 0.2 (revisão da versão 0.1) · **Perfis:** qualquer
+- **Pré-condição:** HEU-06.3 ou HEU-06.5 concluída com `requires` sustentado; nenhuma intenção vigente registrada
+- **Evidências aceitas:** o próprio `requires` já estabelecido; nenhuma evidência nova do repositório é necessária aqui
+- **Condição → conclusão:** uso plausível sem destino aceito → `pendência: escolher_destino_banco`. Se a necessidade também for desconhecida, primeiro pede revisão de uso/escopo antes desta pendência
+- **Campos afetados:** nenhum `provides` ainda — esta regra só abre a decisão, não a resolve
+- **Conflitos:** conflitos técnicos (HEU-06.10) permanecem visíveis e têm prioridade sobre perguntar destino
+- **Limite:** o modelo experimental pode orientar qual pergunta/template usar (§7.2); nunca seleciona criar/externo silenciosamente (RN-17)
+- **Pergunta associada:** ver exemplo de interação, §7.4
+- **Exemplos:** resultado positivo — perguntar uma vez e revalidar a escolha; resultado negativo — se já existir vínculo vigente compatível, reutilizá-lo sem perguntar de novo
+- **Aceitação:** nenhum cenário desta regra sozinho adiciona uma operação de criação ao plano
+
+#### HEU-06.7 — vínculo a serviço existente
+
+- **Versão/estado:** proposta 0.2 · **Perfis:** qualquer
+- **Pré-condição:** HEU-06.6 resolvida com escolha "existente" (camada "intenção de operação", §2 — vem do usuário, não do repositório)
+- **Evidências aceitas:** nenhuma do repositório é exigida; a escolha do usuário é a entrada
+- **Condição → conclusão:** escolha "existente" + serviço compatível → candidato de vínculo
+- **Campos afetados (`provides`):** referência de vínculo (identidade do serviço); nunca cria recurso
+- **Conflitos:** engine do serviço escolhido incompatível com HEU-06.1/06.2 → bloqueio
+- **Limite:** não decide por popularidade, proximidade de pasta ou contagem de pistas (ver C11)
+- **Pergunta associada:** nenhuma adicional se a escolha já é válida
+- **Exemplos:** positivo — C13 (reutilizar vínculo vigente sem repetir pergunta); negativo — C11 (banco de outra aplicação no mesmo repositório; excluir do alvo ou pedir seleção explícita)
+
+#### HEU-06.8 — solicitação de novo PostgreSQL gerido
+
+- **Versão/estado:** proposta 0.2 · **Perfis:** qualquer (só PostgreSQL implementado, DEC-09)
+- **Pré-condição:** HEU-06.6 resolvida com escolha "novo"
+- **Evidências aceitas:** intenção explícita do usuário, não fato do repositório
+- **Condição → conclusão:** escolha "novo" + engine suportada + capacidade/quota disponível (DEC-20, nível B) → plano de criação
+- **Campos afetados (`provides`):** serviço, volume, credencial e rede de projeto (`cobogo-proj-<id>`, §12.2)
+- **Conflitos:** engine não suportada → não suportado explícito, nunca "melhor esforço" com outra engine
+- **Limite:** exige capacidade/limites, volume, política de retenção e mapeamento de variável antes de confirmar
+- **Pergunta associada:** confirmação única; não repetir a cada deploy se o serviço continuar válido
+- **Exemplos:** positivo — C05; negativo — C14 (duas dependências reais no mesmo alvo; fora do perfil inicial se não suportado, não escolher uma arbitrariamente)
+
+#### HEU-06.9 — conexão a banco externo
+
+- **Versão/estado:** proposta 0.2 · **Perfis:** qualquer
+- **Pré-condição:** HEU-06.6 resolvida com escolha "externo"
+- **Evidências aceitas:** intenção do usuário + credencial fornecida pelo fluxo de segredos (RF-10), nunca por esta regra diretamente
+- **Condição → conclusão:** escolha "externo" + conexão informada → referência protegida de conexão
+- **Campos afetados (`provides`):** vínculo da variável de configuração (ex. `DATABASE_URL`) ao segredo versionado; o valor nunca aparece no plano
+- **Conflitos:** nenhum técnico; o risco é operacional (RNF-14, segredo-canário)
+- **Limite:** verificação de conexão, quando existir, não prova correção funcional nem autoriza alterar dados externos; não copia dados nem substitui o serviço externo
+- **Pergunta associada:** nenhuma adicional após a credencial ser aceita
+- **Exemplos:** positivo — C04
+
+#### HEU-06.10 — conflito de evidências
+
+- **Versão/estado:** proposta 0.2 · **Perfis:** qualquer
+- **Evidências aceitas:** duas ou mais evidências de mesma autoridade, escopo e alvo, mutuamente incompatíveis
+- **Condição → conclusão:** conflito material → `CONFLICTING_EVIDENCE` (§7.2); nunca resolvido por contagem de pistas
+- **Campos afetados:** nenhum `provides`; bloqueia até revisão humana
+- **Conflitos:** esta é a própria regra de conflito — aplica-se a qualquer par de HEU-06.1–06.5 incompatível no mesmo escopo
+- **Limite:** um modelo de decisão pode sinalizar o conflito; nunca escolhe um lado sozinho (RN-17)
+- **Pergunta associada:** "encontramos evidências incompatíveis; qual está correta para este ambiente?"
+- **Exemplos:** positivo — C10; negativo/fronteira — C15 (opções incompatíveis com a situação real oferecidas ao modelo; correto é abster-se, preservando a pendência)
+
+#### HEU-06.11 — migração separada
+
+- **Versão/estado:** proposta 0.2 · **Perfis:** qualquer
+- **Evidências aceitas:** presença de ferramenta/diretório de migração reconhecido (ex. `prisma/migrations`)
+- **Condição → conclusão:** migração detectada → pendência separada de comando e política de execução (RN-13); não desaparece automaticamente do plano
+- **Campos afetados:** pendências `comando_migracao` e `politica_execucao`
+- **Conflitos:** nenhum com as demais sub-regras; é ortogonal à escolha de destino
+- **Limite:** nunca inferir ou executar o comando por convenção; rollback de imagem não desfaz migração já aplicada
+- **Pergunta associada:** "qual comando de migração deve rodar, e quando?"
+- **Exemplos:** nenhum cenário C01–C16 cobre esta regra hoje — lacuna a registrar ao materializar novos casos (§11.3 do motor)
+
+### 6.2 Ficha completa de HEU-09 — descoberta de variáveis de configuração
+
+HEU-09 ainda não tinha ficha no formato do §6, só a linha-resumo na tabela do catálogo inicial (§6). A descoberta guiada já está detalhada operacionalmente no [§17.1 do mestre](PROJETO-MESTRE.md#171-variáveis-env-e-segredos) (inventário, classificação de origem/exposição, tabela de exemplo); esta ficha formaliza a regra que alimenta aquele fluxo.
+
+- **Versão/estado:** proposta 0.2 · **Perfis:** qualquer perfil (hoje implementada em Go só para porta, via HEU-05; esta ficha generaliza para as demais variáveis)
+- **Pré-condição:** alvo e perfil já resolvidos
+- **Evidências aceitas (`requires`):** nomes declarados em `.env.example`; schemas de configuração reconhecidos (ex. validadores de schema, quando o parser existir); referências estáticas suportadas (`process.env.NOME` literal — nunca `process.env[variável]` dinâmico)
+- **Condição → conclusão:** nome encontrado em fonte aceita → entrada no inventário: nome, origem da evidência, obrigatoriedade a confirmar, tipo declarado, serviço consumidor e escopo (tabela do §17.1)
+- **Campos afetados (`provides`):** nenhum automaticamente — cada entrada vira pendência até o usuário (ou HEU-06.7/06.8/06.9, para `DATABASE_URL`) classificar a origem do valor (fornecido, gerado, vinculado ou default não secreto) e a exposição (segredo de runtime, configuração de runtime ou configuração pública de build)
+- **Conflitos:** mesmo nome com tipo ou obrigatoriedade divergentes entre fontes (ex. `.env.example` marca opcional, schema marca obrigatório) → conflito material, preservar ambas as evidências
+- **Limite:** `process.env.X` isolado não prova obrigatoriedade (mesmo espírito de RN-02 para porta, HEU-05); `.env.example` não é presumido livre de segredos; a regra não executa nem expande o arquivo (RN-08); variável exposta a bundle público (ex. prefixo `VITE_`) nunca é tratada como segredo protegido, mesmo cifrada (DEC-15)
+- **Pergunta associada:** template por variável — "esta variável é obrigatória? qual o valor? vincular a qual serviço?" (TEL-05)
+- **Exemplos:** positivo — `DATABASE_URL` referenciado sem valor vira pendência de vínculo, resolvida junto com HEU-06.6; `PORT` já resolvido por HEU-05 não duplica pergunta; negativo — nome citado só em comentário/README sem uso estático reconhecido não entra no inventário
+- **Fonte/justificativa:** §17.1 do mestre; vocabulário `requires`/`provides` de [T-H01/T-H02](pesquisa/HEURISTICAS-REFERENCIAS.md#4-fontes-técnicas-primárias-para-consultar) (nome declarado é `requires` de configuração; classificar origem é `provides`/intenção); [REF-02](REFERENCIAS-COMENTADAS.md#ref-02--learning-from-understanding-and-supporting-devops-artifacts-for-docker) reforça não inflar confiança por repetição da mesma evidência em `.env.example` e em um `.env` real encontrado no Git — é duplicação de indício, não duas observações independentes (§4.2, §10)
 
 ## 7. Caso central: “precisamos criar um banco?”
 
@@ -367,3 +497,4 @@ Esta seção define critérios; não implementa testes nesta fase documental.
 | Versão | Data | Alteração |
 | --- | --- | --- |
 | 0.1 | 17/10/2026 | Contrato de evidências, pipeline, desdobramento de HEU-06, intenção de banco, apoio semântico, cenários e protocolo de avaliação; literatura complementar vinculada |
+| 0.2 | 25/10/2026 | Fichas completas de HEU-06.1–06.11 e nova ficha de HEU-09 no formato do §6, com vocabulário `requires`/`provides` (leitura de T-H01/T-H02) e disciplina de validação de regra contra corpus pequeno antes de promover de proposta a validada (releitura de REF-02). Cabeçalho atualizado para refletir HEU-01/02/05 implementadas na fatia Go M1 |

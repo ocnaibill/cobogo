@@ -164,7 +164,7 @@ Para cada candidato, registrar: consulta/base/data; título; autores; ano/veícu
 
 ## 7. Ordem de leitura e entregas
 
-1. **Motor:** REF-02 + T-H01/T-H02 → completar fichas HEU-01/02/06/09 e contrato do plano.
+1. **Motor:** REF-02 + T-H01/T-H02 → completar fichas HEU-01/02/06/09 e contrato do plano. **Feito em 25/10/2026:** HEU-01/02/05 já implementadas na fatia Go M1; fichas completas de HEU-06.1–06.11 e HEU-09 escritas em [MOTOR-DE-HEURISTICAS.md §6](../MOTOR-DE-HEURISTICAS.md#6-catálogo-e-formato-de-uma-regra), usando o vocabulário `requires`/`provides` de T-H01/T-H02 e a disciplina de validação de regra contra corpus pequeno de REF-02.
 2. **Abstenção e confiança:** P-H01/P-H02 → definir métricas, denominadores e limites de uso de scores.
 3. **Interação e vínculo:** P-H04 + T-H03 → simular as perguntas para três intenções de banco.
 4. **Experimento:** P-H06 + cartões → fixar uma pergunta, modelos elegíveis, partições e registro de falha.
