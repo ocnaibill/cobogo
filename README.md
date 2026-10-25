@@ -1,14 +1,14 @@
 # Project Cobogó
 
-> **Status:** Atlas (v0.1) | Licença: AGPLv3
+> **Status:** M1 em Go (fatia vertical inicial) | Licença: AGPLv3
 
-Uma plataforma open-source de **_Platform as a Service_ (PaaS)** para orquestração simplificada de aplicações Node.js. O Cobogó abstrai a complexidade do Docker e Proxy Reverso, permitindo que desenvolvedores façam deploy de seus repositórios Git com um clique.
+Uma plataforma open-source de **_Platform as a Service_ (PaaS)** guiada por heurísticas: analisa um repositório, produz um plano de deploy explicável, gera o Dockerfile e conduz a aplicação até um contêiner verificado.
 
-**Foco:** Developer Experience (DX), Auto-hospedagem e Soberania de dados.
+**Foco:** Developer Experience (DX), explicabilidade das decisões e auto-hospedagem.
 
 ## Documentação do projeto
 
-O código atual corresponde ao protótipo Node.js descrito abaixo. A documentação do TCC apresenta a evolução proposta para Go/React, com requisitos, decisões e critérios de avaliação ainda sujeitos a revisão.
+O protótipo original em Node.js/TypeScript foi preservado na tag [`prototype-node`](https://github.com/ocnaibill/cobogo/tree/prototype-node) e removido do `main` após a primeira fatia vertical em Go entrar em funcionamento (DEC-22). O código atual implementa o recorte M1 do documento mestre: um perfil (Node.js/npm), análise explicável, geração de Dockerfile, build e contêiner reais.
 
 - [Documento mestre: escopo, requisitos, arquitetura, telas e roadmap](docs/PROJETO-MESTRE.md)
 - [Motor de heurísticas e apoio por modelos de decisão](docs/MOTOR-DE-HEURISTICAS.md)
@@ -17,131 +17,84 @@ O código atual corresponde ao protótipo Node.js descrito abaixo. A documentaç
 
 Os documentos incluem diagramas Mermaid e links para suas prévias SVG.
 
-## 💡 A Identidade
+## 💡 A identidade
 
 O nome **Cobogó** faz referência ao elemento arquitetônico modernista, ícone de Brasília. Assim como o cobogó é um bloco modular que permite a permeabilidade da luz e ventilação sem comprometer a estrutura, esta plataforma atua como uma estrutura modular para containers, gerenciando o fluxo de tráfego e dados enquanto garante o isolamento e segurança de cada serviço.
 
-## 🛠️ Tech Stack
+## 🛠️ Tech stack
 
-O projeto utiliza uma arquitetura de Monorepo gerenciada por NPM Workspaces.
+- **Backend:** Go, API e worker como processos separados (DEC-01, DEC-02)
+- **Banco de dados:** PostgreSQL, com fila de jobs via `SKIP LOCKED` (DEC-03, §12.3)
+- **Build e execução:** Docker Engine SDK oficial (`github.com/docker/docker`)
+- **Frontend:** React (ainda não iniciado; chega em M2)
 
-- **Backend:** Node.js, Express, TypeScript
+Ver [§12 do mestre](docs/PROJETO-MESTRE.md#12-arquitetura-proposta) para a arquitetura completa e [§17.2](docs/PROJETO-MESTRE.md#172-execução-dod-e-isolamento-entre-projetos) para a topologia de execução prevista no homelab (DEC-19). Em M1, o worker fala direto com o daemon Docker local; os três proxies filtrados entram ao implantar na VM do Proxmox.
 
-- **Validação & ORM:** Zod, Prisma
+## **🚀 Como rodar localmente (desenvolvimento)**
 
-- **Banco de Dados:** PostgreSQL
+### **1. Pré-requisitos**
 
-- **Filas & Cache:** Redis, BullMQ
-
-- **Infraestrutura:** Docker, Dockerode (Docker API)
-
-- **Proxy Reverso:** Traefik v2
-
-## **🚀 Como Rodar Localmente (Development)**
-
-Siga os passos abaixo para iniciar o ambiente de desenvolvimento completo.
-
-### **1\. Pré-requisitos**
-
-Certifique-se de ter instalado:
-
-- **Node.js** (lts/krypton ou superior)
-- **Docker Desktop** (Deve estar rodando)
+- **Go** 1.25 ou superior
+- **Docker** (rodando e acessível localmente)
+- **PostgreSQL** (pode ser o do `infra/docker-compose.dev.yml`)
 - **Git**
 
-### **2\. Instalação**
+### **2. Banco de dados**
 
-Clone o repositório e instale as dependências. Como é um monorepo, o comando na raiz instala tudo.
-
-```
-git clone https://github.com/ocnaibill/cobogo.git
-cd cobogo
-npm install
+```bash
+docker compose -f infra/docker-compose.dev.yml up -d postgres
 ```
 
-### **3\. Configuração de Variáveis (.env)**
+As migrations são aplicadas automaticamente pela API/worker na inicialização.
 
-Configure as variáveis de ambiente da API. Um arquivo de exemplo já está configurado para o ambiente Docker padrão.
+### **3. Rodando API e worker**
 
-```
-cd apps/api
-cp .env.example .env
-```
+Em dois terminais, na raiz do projeto:
 
-**Nota:** Verifique se o arquivo .env gerado contém REDIS_HOST=localhost e DATABASE_URL apontando para a porta 5432\.
-
-### **4\. Subindo a Infraestrutura (Docker)**
-
-Volte para a raiz do projeto e inicie os containers de suporte (Postgres, Redis e Traefik):
-
-##### Na raiz do projeto (cobogo/)
-
-```
-docker compose \-f infra/docker-compose.dev.yml up \-d
+```bash
+# Terminal 1 — API
+DATABASE_URL="postgres://cobogo:devpassword@localhost:5432/cobogo_core?sslmode=disable" go run ./cmd/api
 ```
 
-### **5\. Configurando o Banco de Dados**
-
-Com os containers rodando, execute as migrações do Prisma para criar as tabelas no PostgreSQL:
-
-##### Na raiz do projeto
-
-```
-npm run db:migrate
+```bash
+# Terminal 2 — Worker
+DATABASE_URL="postgres://cobogo:devpassword@localhost:5432/cobogo_core?sslmode=disable" go run ./cmd/worker
 ```
 
-### **6\. Iniciando a Aplicação**
+A API sobe em `http://localhost:8080` por padrão (`API_ADDR` para trocar).
 
-O sistema é composto por dois processos principais que devem rodar simultaneamente. Abra **dois terminais**:
+## **🧪 Como testar (fluxo de deploy)**
 
-```
-Terminal 1: API Server
-Responsável por receber requisições HTTP e gerenciar o banco de dados.
+Ainda sem frontend (chega em M2); use `curl` ou um cliente HTTP.
 
-Na raiz
+### **1. Registrar um projeto**
 
-npm run dev:api
-A API rodará em http://localhost:3001
-```
-
-```
-
-Terminal 2: Deploy Worker
-Responsável por processar a fila, clonar repositórios e construir imagens Docker.
-cd apps/api
-npm run worker
+```bash
+curl -X POST localhost:8080/projects -H 'content-type: application/json' -d '{
+  "slug": "meu-app-teste",
+  "repository_url": "https://github.com/exemplo/repositorio",
+  "root_directory": ""
+}'
 ```
 
-## **🧪 Como Testar (Fluxo de Deploy)**
+### **2. Disparar o deploy**
 
-Como o Frontend ainda está em desenvolvimento, utilize o **Postman** ou **Insomnia**.
-
-### **1\. Criar um Projeto**
-
-Envie uma requisição POST para registrar o projeto e validar o repositório Git.
-
-- **URL:** POST http://localhost:3001/projects
-- **Body (JSON):**
-
-```
-{
-  "name": "meu-app-teste",
-  "repositoryUrl": "https://github.com/jatins/express-hello-world.git",
-  "branch": "main"
-}
+```bash
+curl -X POST localhost:8080/projects/<id>/deployments -H 'content-type: application/json' -d '{
+  "idempotency_key": "tentativa-1",
+  "port": 3000
+}'
 ```
 
-### **2\. Disparar o Deploy**
+`port` é o override explícito (RN-03); se a análise não encontrar um contrato de porta inferível, o deploy para em `NEEDS_INPUT` em vez de inventar um valor (RN-02).
 
-Copie o id retornado no passo anterior e dispare o processo de build.
+### **3. Acompanhar o plano e os eventos**
 
-- **URL:** POST http://localhost:3001/projects/:id/deploy
+```bash
+curl localhost:8080/deployments/<id>
+```
 
-### **3\. Acessar a Aplicação**
-
-Aguarde o Worker finalizar o processo (acompanhe os logs no Terminal 2). Quando finalizar, acesse no seu navegador:
-
-👉 **http://meu-app-teste.localhost**
+Ao suceder, a resposta inclui a `release` com a porta publicada no host para acesso direto ao contêiner.
 
 ## Licença
 

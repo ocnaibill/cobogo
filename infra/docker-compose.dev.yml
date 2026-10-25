@@ -1,7 +1,7 @@
-version: "3.8"
-
 services:
-  # Banco de Dados Principal do Projeto
+  # PostgreSQL interno do Cobogó: metadados, análises, deploys, jobs e
+  # eventos (DEC-03, DEC-21). Bancos auxiliares de projetos são isolados
+  # por projeto e não entram aqui (§14.1 do mestre).
   postgres:
     image: postgres:15-alpine
     container_name: cobogo-db
@@ -13,39 +13,6 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    networks:
-      - cobogo-net
-
-  # Redis (Para filas de build e logs real-time)
-  redis:
-    image: redis:7-alpine
-    container_name: cobogo-redis
-    ports:
-      - "6379:6379"
-    networks:
-      - cobogo-net
-
-  #Traefik (Para hospedagem da rede)
-  traefik:
-    image: traefik:v2.10
-    container_name: cobogo-proxy
-    command:
-      - "--api.insecure=true"
-      - "--providers.docker=true"
-      - "--providers.docker.exposedbydefault=false"
-      - "--entrypoints.web.address=:80"
-    ports:
-      - "80:80"
-      - "8080:8080"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    networks:
-      - cobogo-net
 
 volumes:
   postgres_data:
-
-networks:
-  cobogo-net:
-    name: cobogo-net
-    driver: bridge
