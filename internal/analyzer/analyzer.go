@@ -1,7 +1,9 @@
 // Package analyzer implementa o catálogo inicial de heurísticas (§11.2) do
 // perfil P-NODE: HEU-01 (package.json + lockfile npm), HEU-02
-// (scripts.start) e HEU-05 (contrato de porta). Não executa nenhum código
-// do repositório (RN-08) — apenas lê arquivos e grifos textuais.
+// (scripts.start), HEU-05 (contrato de porta) e HEU-09 (descoberta de
+// variáveis de configuração, só a camada `requires`: ver ficha em
+// docs/MOTOR-DE-HEURISTICAS.md §6.2). Não executa nenhum código do
+// repositório (RN-08) — apenas lê arquivos e grifos textuais.
 package analyzer
 
 import (
@@ -131,6 +133,19 @@ func Analyze(rootDir string, portOverride *int) (domain.AnalysisResult, error) {
 		result.Pending = append(result.Pending, domain.PendingField{
 			Field:  "port",
 			Reason: "nenhum contrato de porta identificado nas evidências suportadas; informe a porta",
+		})
+	}
+
+	configVars, err := discoverConfigVariables(rootDir)
+	if err != nil {
+		return result, err
+	}
+	if len(configVars) > 0 {
+		result.ConfigVariables = configVars
+		result.Evidences = append(result.Evidences, domain.Evidence{
+			Rule:        "HEU-09",
+			Description: fmt.Sprintf("%d variável(is) de configuração descoberta(s); obrigatoriedade e exposição ainda não classificadas", len(configVars)),
+			Source:      ".env.example, process.env.*",
 		})
 	}
 

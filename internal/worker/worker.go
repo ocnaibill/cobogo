@@ -123,10 +123,11 @@ func (w *Worker) process(ctx context.Context, job *domain.Job, dep *domain.Deplo
 		return
 	}
 	w.emit(ctx, dep.ID, "analyzing", "completed", map[string]any{
-		"outcome":   result.Outcome,
-		"evidences": result.Evidences,
-		"pending":   result.Pending,
-		"conflicts": result.Conflicts,
+		"outcome":          result.Outcome,
+		"evidences":        result.Evidences,
+		"pending":          result.Pending,
+		"conflicts":        result.Conflicts,
+		"config_variables": result.ConfigVariables,
 	})
 
 	switch result.Outcome {

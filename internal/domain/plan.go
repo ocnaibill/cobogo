@@ -37,13 +37,26 @@ type Plan struct {
 	Dockerfile     string `json:"dockerfile"`
 }
 
+// ConfigVariable é uma entrada do inventário de HEU-09: um nome de
+// variável descoberto e suas origens. Por si só não decide obrigatoriedade,
+// origem do valor ou exposição — essa classificação pertence ao fluxo de
+// configuração guiada (§17.1 do mestre, TEL-05), ainda não implementado.
+// Por isso uma variável descoberta vira evidência, nunca um PendingField
+// que bloqueie o plano.
+type ConfigVariable struct {
+	Name               string   `json:"name"`
+	DeclaredInExample  bool     `json:"declared_in_example"`
+	ReferencedInSource []string `json:"referenced_in_source,omitempty"`
+}
+
 // AnalysisResult é o que o analisador produz para um SHA: evidências,
 // pendências, conflitos e o plano candidato quando pronto.
 type AnalysisResult struct {
-	Outcome      AnalysisOutcome `json:"outcome"`
-	Evidences    []Evidence      `json:"evidences"`
-	Pending      []PendingField  `json:"pending"`
-	Conflicts    []string        `json:"conflicts,omitempty"`
-	Plan         *Plan           `json:"plan,omitempty"`
-	RulesVersion string          `json:"rules_version"`
+	Outcome         AnalysisOutcome  `json:"outcome"`
+	Evidences       []Evidence       `json:"evidences"`
+	Pending         []PendingField   `json:"pending"`
+	Conflicts       []string         `json:"conflicts,omitempty"`
+	Plan            *Plan            `json:"plan,omitempty"`
+	ConfigVariables []ConfigVariable `json:"config_variables,omitempty"`
+	RulesVersion    string           `json:"rules_version"`
 }
