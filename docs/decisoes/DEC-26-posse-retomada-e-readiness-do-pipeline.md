@@ -1,6 +1,6 @@
 # DEC-26 — Posse, retomada e readiness do pipeline
 
-> **Estado:** proposta de 16/11/2026, aguardando revisão do autor. **3d implementado** (itens 1 a 7); 3e (itens 8 a 13) pendente.
+> **Estado:** proposta de 16/11/2026, aguardando revisão do autor. **3d e 3e implementados** (itens 1 a 13).
 >
 > **Escopo:** como o worker reivindica, mantém, perde e retoma um job (3d) e como confirma que a aplicação subiu e explica a falha (3e, que absorve o diagnóstico 3c do DEC-24). Fecha a parte 3 do backend.
 >
@@ -37,7 +37,7 @@ A leitura do worker, do store e do adaptador Docker contra o mestre mostrou lacu
 10. **Saída precoce.** A cada tentativa da sonda o worker confere se o contêiner ainda roda; se saiu, a verificação falha na hora com o código de saída, em vez de esperar o prazo.
 11. **Log da falha.** Em falha de início ou de readiness, o worker guarda as **últimas 50 linhas** do log do contêiner (limite de 8 KiB) no evento de falha. Antes de gravar, remove toda ocorrência dos **valores** das variáveis do projeto (comprimento mínimo de 4 caracteres; abaixo disso não há como diferenciar de texto comum). Isso cumpre RN-11 sem prometer detectar qualquer segredo que a aplicação imprima.
 12. **Diagnóstico (DEC-24 item 11).** O worker cruza o log com o inventário HEU-09 da análise do deploy (variáveis referenciadas no código, mesmo ausentes do exemplo) e as variáveis do projeto sem valor:
-    - `confirmed`: o nome de uma variável sem valor aparece no log, ou há um padrão fechado ("is not defined", "is required", "missing required environment variable", "not set") junto do nome. A mensagem diz "provável causa: `X` não foi preenchida".
+    - `confirmed`: uma linha do log cita o nome de uma variável sem valor **e** reclama de falta, por um padrão fechado ("is not defined", "is required", "missing", "not set", "must be set"...). A mensagem diz "provável causa: `X` não foi preenchida". Refinamento da implementação: o nome citado **sem** reclamação (por exemplo, impresso num log de início normal) conta como `possible`, não `confirmed`.
     - `possible`: o contêiner saiu e há variáveis sem valor com aviso `likely_required`, `undeclared` ou `referenced_only`; lista-as sem afirmar.
     - `unknown`: nenhum dos dois.
     O diagnóstico é registrado no evento de falha e em `failure_reason`; nunca afirma causa sem o nome no log.
@@ -61,11 +61,15 @@ A leitura do worker, do store e do adaptador Docker contra o mestre mostrou lacu
 - A verificação de posse protege o banco, não o Docker; o intervalo entre a última checagem e a ação no daemon permanece.
 - Valores secretos com menos de 4 caracteres não são redigidos do log.
 - O diagnóstico depende dos formatos de mensagem de cada runtime; o corpus mede quanto acerta antes de confiar nele para mais que `possible`.
+- O diagnóstico só enxerga variáveis do inventário da análise (nomes literais no código e no `.env.example`); uma aplicação que reclama de uma variável que a análise não viu (acesso dinâmico, biblioteca) fica `unknown`, ainda com o log e o código de saída. Verificado em execução.
 - Cancelamento pelo usuário de uma etapa ativa continua fora de escopo (o mestre limita a antes da execução ou durante a espera por informação).
 - A readiness aceita 404 em `/`: prova servidor HTTP no ar, não aplicação funcional (o oráculo funcional por repositório é do experimento, RN-01).
 
 - **Verificado em execução (3d):** com `SIGKILL` do worker durante o build, o job fica `LEASED`, o novo worker espera o lease vencer (não rouba um lease válido), reivindica na geração 2, registra o evento `attempt` com `resumed: true` e conclui sobre o mesmo SHA, com um único contêiner. Com `SIGTERM`, o job volta a `PENDING` com 0 tentativas e o novo worker o conclui na primeira tentativa.
-- **Limite encontrado:** o nome do contêiner (`cobogo-<slug>-<sha7>`) é o mesmo para dois deploys distintos do mesmo projeto e commit, então o segundo colide com o primeiro enquanto ele existir. A retomada do **mesmo** deploy está coberta (item 5); a atualização com release anterior preservada é o RF-15 (MVP) e resolve nomes por release.
+- **Colisão de nomes (encontrada e corrigida):** o nome do contêiner era `cobogo-<slug>-<sha7>`; um segundo deploy do mesmo projeto e commit falhava com "nome já em uso" enquanto o primeiro existisse. Observado em execução. O nome passou a levar o deploy (`cobogo-<slug>-<deploy8>`): o mesmo deploy mantém o nome em qualquer tentativa e deploys distintos convivem. Aposentar a release anterior continua sendo o RF-15 (MVP).
+
+- **Verificado em execução (3e):** um deploy cuja aplicação sai com código 2 depois de imprimir o valor de uma variável do projeto falha em `VERIFYING` na hora (sem esperar os 120 s), com `exit_code`, as linhas do log com o valor trocado por `[REDIGIDO]` (e ausente do JSON inteiro da API), nenhum contêiner sobrando, e um novo deploy do mesmo projeto e commit conclui. Com a aplicação saudável, o evento `probe` registra caminho e status.
+- **Registry:** `PullParent` foi desligado no build. Uma falha transitória do Docker Hub (`Bad Gateway`, observada em execução) derrubava um build cujas imagens já estavam no cache. As imagens são garantidas antes do build (`EnsureImage`) e atualizadas pelo worker ao iniciar (`PullImage`).
 
 ## Critérios de revisão
 

@@ -14,5 +14,6 @@ type Plan struct {
 	ExecutionMode  string `json:"execution_mode"`
 	Port           int    `json:"port"`
 	PortOrigin     string `json:"port_origin"`
+	HealthPath     string `json:"health_path"`
 	Dockerfile     string `json:"dockerfile"`
 }

@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,6 +24,7 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
 )
 
@@ -148,7 +150,10 @@ func (r *Runtime) Build(ctx context.Context, workspaceDir, dockerfile, imageTag,
 		Tags:       []string{imageTag},
 		Dockerfile: "Dockerfile.cobogo",
 		Remove:     true,
-		PullParent: true,
+		// Não consulta o registry a cada build: um Docker Hub fora do ar não
+		// pode derrubar um build cujas imagens já estão no cache. As imagens
+		// são garantidas antes (EnsureImage) e atualizadas pelo worker (PullImage).
+		PullParent: false,
 	})
 	if err != nil {
 		return BuildResult{}, fmt.Errorf("dockerrt: iniciar build: %w", err)
@@ -236,21 +241,28 @@ func (r *Runtime) Run(ctx context.Context, imageTag, containerName string, conta
 		return RunResult{}, fmt.Errorf("dockerrt: criar contêiner: %w", err)
 	}
 
+	// Depois do create, toda falha devolve o ID do contêiner: quem chama
+	// precisa dele para ler o log e limpar, por exemplo quando a aplicação cai
+	// no boot e o daemon já não publica a porta.
+	partial := RunResult{ContainerID: created.ID}
 	if err := r.cli.ContainerStart(ctx, created.ID, container.StartOptions{}); err != nil {
-		return RunResult{}, fmt.Errorf("dockerrt: iniciar contêiner: %w", err)
+		return partial, fmt.Errorf("dockerrt: iniciar contêiner: %w", err)
 	}
 
 	inspect, err := r.cli.ContainerInspect(ctx, created.ID)
 	if err != nil {
-		return RunResult{}, fmt.Errorf("dockerrt: inspecionar contêiner: %w", err)
+		return partial, fmt.Errorf("dockerrt: inspecionar contêiner: %w", err)
 	}
 	bindings, ok := inspect.NetworkSettings.Ports[portSpec]
 	if !ok || len(bindings) == 0 {
-		return RunResult{}, fmt.Errorf("dockerrt: porta %s não foi publicada pelo daemon", portSpec)
+		if inspect.State != nil && !inspect.State.Running {
+			return partial, &ExitedError{ExitCode: inspect.State.ExitCode}
+		}
+		return partial, fmt.Errorf("dockerrt: porta %s não foi publicada pelo daemon", portSpec)
 	}
 	hostPort, err := strconv.Atoi(bindings[0].HostPort)
 	if err != nil {
-		return RunResult{}, fmt.Errorf("dockerrt: porta de host inválida: %w", err)
+		return partial, fmt.Errorf("dockerrt: porta de host inválida: %w", err)
 	}
 
 	return RunResult{ContainerID: created.ID, HostPort: hostPort}, nil
@@ -289,11 +301,16 @@ func (r *Runtime) RemoveByDeployment(ctx context.Context, deploymentID string) e
 }
 
 // EnsureImage baixa a imagem se ela ainda não está no cache do daemon, para o
-// primeiro build não gastar o prazo no download (DEC-26).
+// build não depender do registry quando ela já existe (DEC-26).
 func (r *Runtime) EnsureImage(ctx context.Context, ref string) error {
 	if _, _, err := r.cli.ImageInspectWithRaw(ctx, ref); err == nil {
 		return nil
 	}
+	return r.PullImage(ctx, ref)
+}
+
+// PullImage baixa (ou atualiza) a imagem do registry, mesmo que já exista.
+func (r *Runtime) PullImage(ctx context.Context, ref string) error {
 	body, err := r.cli.ImagePull(ctx, ref, image.PullOptions{})
 	if err != nil {
 		return fmt.Errorf("dockerrt: baixar %s: %w", ref, err)
@@ -305,40 +322,123 @@ func (r *Runtime) EnsureImage(ctx context.Context, ref string) error {
 	return nil
 }
 
-// ProbeReady consulta repetidamente path na porta publicada até três
-// respostas válidas consecutivas dentro do prazo (§15, "probe inicial").
-func ProbeReady(ctx context.Context, hostPort int, path string, expectedStatus int, timeout time.Duration) error {
+// ExitedError indica que o contêiner terminou: a aplicação caiu em vez de
+// ficar no ar. Não vale esperar o prazo da sonda.
+type ExitedError struct{ ExitCode int }
+
+func (e *ExitedError) Error() string {
+	return fmt.Sprintf("o contêiner terminou com código de saída %d antes de responder", e.ExitCode)
+}
+
+// State devolve se o contêiner ainda roda e, se terminou, o código de saída.
+func (r *Runtime) State(ctx context.Context, containerID string) (running bool, exitCode int, err error) {
+	inspect, err := r.cli.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return false, 0, fmt.Errorf("dockerrt: inspecionar contêiner: %w", err)
+	}
+	if inspect.State == nil {
+		return false, 0, errors.New("dockerrt: o daemon não informou o estado do contêiner")
+	}
+	return inspect.State.Running, inspect.State.ExitCode, nil
+}
+
+// LogTail devolve as últimas lines linhas do log do contêiner (stdout e
+// stderr juntos), sem tratar o conteúdo. Quem chama redige segredos antes de
+// guardá-lo (RN-11).
+func (r *Runtime) LogTail(ctx context.Context, containerID string, lines int) (string, error) {
+	body, err := r.cli.ContainerLogs(ctx, containerID, container.LogsOptions{
+		ShowStdout: true, ShowStderr: true, Tail: strconv.Itoa(lines),
+	})
+	if err != nil {
+		return "", fmt.Errorf("dockerrt: ler log do contêiner: %w", err)
+	}
+	defer body.Close()
+	var out bytes.Buffer
+	if _, err := stdcopy.StdCopy(&out, &out, body); err != nil {
+		return "", fmt.Errorf("dockerrt: decodificar log do contêiner: %w", err)
+	}
+	return out.String(), nil
+}
+
+// ProbeResult é a última resposta HTTP da sonda.
+type ProbeResult struct {
+	Path   string
+	Status int
+}
+
+// Healthy diz se a resposta foi 2xx; qualquer outra abaixo de 500 passou na
+// sonda, mas merece aviso (DEC-26 item 8).
+func (p ProbeResult) Healthy() bool { return p.Status >= 200 && p.Status < 300 }
+
+const probeConsecutive = 3
+
+// Variáveis só para os testes poderem encurtar a sonda.
+var (
+	probeInterval    = time.Second
+	probeRequestTime = 3 * time.Second
+)
+
+// ProbeReady consulta path na porta publicada até três respostas HTTP
+// consecutivas com status abaixo de 500 dentro do prazo (§15, "probe
+// inicial"). Redirecionamentos não são seguidos: o que se mede é a resposta do
+// próprio contêiner. O que a sonda prova é que há um servidor HTTP respondendo
+// na porta certa, não que a aplicação funcione (RN-01).
+//
+// alive, quando não nulo, é consultado a cada rodada; se o contêiner terminou,
+// a sonda falha na hora com *ExitedError em vez de esperar o prazo.
+func ProbeReady(ctx context.Context, hostPort int, path string, timeout time.Duration, alive func(context.Context) (bool, int, error)) (ProbeResult, error) {
 	if path == "" {
 		path = "/"
 	}
-	if expectedStatus == 0 {
-		expectedStatus = http.StatusOK
-	}
 	url := fmt.Sprintf("http://127.0.0.1:%d%s", hostPort, path)
+	client := &http.Client{
+		Timeout:       probeRequestTime,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 
 	deadline := time.Now().Add(timeout)
 	consecutive := 0
-	httpClient := &http.Client{Timeout: 3 * time.Second}
+	last := ProbeResult{Path: path}
+	lastObservation := "sem resposta"
 
 	for time.Now().Before(deadline) {
-		resp, err := httpClient.Get(url)
-		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode == expectedStatus {
-				consecutive++
-				if consecutive >= 3 {
-					return nil
-				}
-				time.Sleep(500 * time.Millisecond)
-				continue
+		if alive != nil {
+			running, exitCode, err := alive(ctx)
+			if err == nil && !running {
+				return last, &ExitedError{ExitCode: exitCode}
 			}
 		}
-		consecutive = 0
+
+		resp, err := client.Get(url)
+		switch {
+		case err != nil:
+			consecutive = 0
+			lastObservation = "conexão recusada ou sem resposta"
+		case resp.StatusCode < 500:
+			resp.Body.Close()
+			last.Status = resp.StatusCode
+			consecutive++
+			if consecutive >= probeConsecutive {
+				return last, nil
+			}
+			select {
+			case <-ctx.Done():
+				return last, ctx.Err()
+			case <-time.After(probeInterval / 2):
+			}
+			continue
+		default:
+			resp.Body.Close()
+			consecutive = 0
+			last.Status = resp.StatusCode
+			lastObservation = fmt.Sprintf("respondeu %d", resp.StatusCode)
+		}
+
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Second):
+			return last, ctx.Err()
+		case <-time.After(probeInterval):
 		}
 	}
-	return fmt.Errorf("dockerrt: readiness não confirmada em %s para %s", timeout, url)
+	return last, fmt.Errorf("dockerrt: readiness não confirmada em %s para %s (%s)", timeout, url, lastObservation)
 }

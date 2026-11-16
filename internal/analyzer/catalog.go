@@ -108,6 +108,7 @@ func NodeCatalog() Catalog {
 			{Name: domain.FieldExecutionMode, Overridable: true, Validate: validateExecutionMode},
 			{Name: domain.FieldNodeVersion, Overridable: true, Validate: validateNodeVersion},
 			{Name: domain.FieldPort, Required: true, Overridable: true, Validate: validatePort},
+			{Name: domain.FieldHealthPath, Overridable: true, Validate: validateHealthPath},
 		},
 	}
 }
@@ -130,6 +131,23 @@ func validateCommand(v string) error {
 	if strings.HasSuffix(v, "\\") {
 		// Num Dockerfile, a barra no fim continuaria na instrução seguinte.
 		return errors.New("o comando não pode terminar em barra invertida")
+	}
+	return nil
+}
+
+// validateHealthPath aceita um caminho HTTP simples para a sonda: começa com
+// "/", sem espaço nem caractere de controle, até 256 bytes (DEC-26 item 9).
+func validateHealthPath(v string) error {
+	switch {
+	case !strings.HasPrefix(v, "/"):
+		return fmt.Errorf("%q deve começar com /", v)
+	case len(v) > 256:
+		return errors.New("o caminho excede 256 bytes")
+	}
+	for _, r := range v {
+		if r <= ' ' || r == 0x7f {
+			return errors.New("o caminho não pode ter espaço nem caractere de controle")
+		}
 	}
 	return nil
 }

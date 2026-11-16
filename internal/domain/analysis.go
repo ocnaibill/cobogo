@@ -19,6 +19,7 @@ const (
 	FieldBuildCommand   = "build_command"
 	FieldExecutionMode  = "execution_mode"
 	FieldNodeVersion    = "node_version"
+	FieldHealthPath     = "health_path"
 	FieldPort           = "port"
 )
 

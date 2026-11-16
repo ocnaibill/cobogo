@@ -77,7 +77,7 @@ func deploy(t *testing.T, rt *dockerrt.Runtime, dir string, overrides map[string
 	}
 	t.Cleanup(func() { _ = rt.Remove(context.Background(), run.ContainerID) })
 
-	if err := dockerrt.ProbeReady(ctx, run.HostPort, "/", 200, time.Minute); err != nil {
+	if _, err := dockerrt.ProbeReady(ctx, run.HostPort, plan.HealthPath, time.Minute, nil); err != nil {
 		logs, _ := exec.Command("docker", "logs", run.ContainerID).CombinedOutput()
 		t.Fatalf("probe: %v\ncontainer log:\n%s", err, logs)
 	}

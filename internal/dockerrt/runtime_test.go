@@ -2,12 +2,15 @@ package dockerrt
 
 import (
 	"context"
+	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/api/types/image"
 )
 
 // Precisam de Docker e da imagem node:26-slim; só rodam com COBOGO_TEST_DOCKER=1.
@@ -94,5 +97,67 @@ func TestEnsureImage(t *testing.T) {
 	defer cancel()
 	if err := rt.EnsureImage(ctx, "cobogo-test/imagem-que-nao-existe:0"); err == nil {
 		t.Error("a missing image must be reported")
+	}
+}
+
+// buildTestImage constrói uma imagem a partir de um Dockerfile mínimo.
+func buildTestImage(t *testing.T, rt *Runtime, tag, dockerfile string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	if _, err := rt.Build(ctx, t.TempDir(), dockerfile, tag, "node:26-slim", nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = rt.cli.ImageRemove(context.Background(), tag, image.RemoveOptions{Force: true}) })
+}
+
+// Uma aplicação que cai no boot deixa o log e o código de saída à disposição.
+func TestRunReturnsTheContainerWhenTheAppCrashesAtBoot(t *testing.T) {
+	rt := dockerForTest(t)
+	buildTestImage(t, rt, "cobogo-test/crash:1", `FROM node:26-slim
+CMD ["node", "-e", "console.error('Error: DATABASE_URL is not defined'); process.exit(3)"]
+`)
+	res, err := rt.Run(context.Background(), "cobogo-test/crash:1", "cobogo-test-crash", 3000, nil, "deploy-crash-test")
+	t.Cleanup(func() { _ = rt.Remove(context.Background(), res.ContainerID) })
+	if res.ContainerID == "" {
+		t.Fatalf("the container ID must come back even when the start fails: %v", err)
+	}
+
+	// Pode ser o daemon já ter publicado a porta antes de o processo cair; nesse
+	// caso a sonda é quem acusa a saída. Os dois caminhos devem dar o mesmo.
+	if err == nil {
+		_, err = ProbeReady(context.Background(), res.HostPort, "/", 20*time.Second, func(c context.Context) (bool, int, error) {
+			return rt.State(c, res.ContainerID)
+		})
+	}
+	var exited *ExitedError
+	if !errors.As(err, &exited) || exited.ExitCode != 3 {
+		t.Fatalf("err = %v, want ExitedError with code 3", err)
+	}
+
+	logs, lerr := rt.LogTail(context.Background(), res.ContainerID, 50)
+	if lerr != nil || !strings.Contains(logs, "DATABASE_URL is not defined") {
+		t.Errorf("log = %q, err %v", logs, lerr)
+	}
+	if running, code, serr := rt.State(context.Background(), res.ContainerID); serr != nil || running || code != 3 {
+		t.Errorf("state = running %v code %d err %v", running, code, serr)
+	}
+}
+
+func TestLogTailKeepsOnlyTheLastLines(t *testing.T) {
+	rt := dockerForTest(t)
+	buildTestImage(t, rt, "cobogo-test/lines:1", `FROM node:26-slim
+CMD ["node", "-e", "for (let i = 1; i <= 200; i++) console.log('linha ' + i)"]
+`)
+	res, _ := rt.Run(context.Background(), "cobogo-test/lines:1", "cobogo-test-lines", 3000, nil, "deploy-lines-test")
+	t.Cleanup(func() { _ = rt.Remove(context.Background(), res.ContainerID) })
+	time.Sleep(2 * time.Second)
+
+	logs, err := rt.LogTail(context.Background(), res.ContainerID, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs, "linha 200") || strings.Contains(logs, "linha 100\n") || len(strings.Split(strings.TrimSpace(logs), "\n")) != 50 {
+		t.Errorf("tail has %d lines, first/last: %.40q", len(strings.Split(strings.TrimSpace(logs), "\n")), logs)
 	}
 }

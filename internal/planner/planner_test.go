@@ -175,6 +175,21 @@ func TestFromAnalysisUsesTheResolvedNodeVersion(t *testing.T) {
 	}
 }
 
+func TestHealthPathComesFromTheAnalysis(t *testing.T) {
+	fields := map[string]domain.Field{
+		domain.FieldProfile: {Value: "P-NODE"}, domain.FieldPort: {Value: "3000"}, domain.FieldStartCommand: {Value: "node a.js"},
+	}
+	plan, err := FromAnalysis(readyAnalysis(fields))
+	if err != nil || plan.HealthPath != "/" {
+		t.Errorf("default health path = %q, %v", plan.HealthPath, err)
+	}
+	fields[domain.FieldHealthPath] = domain.Field{Value: "/healthz", Origin: domain.OriginOverride}
+	plan, err = FromAnalysis(readyAnalysis(fields))
+	if err != nil || plan.HealthPath != "/healthz" {
+		t.Errorf("overridden health path = %q, %v", plan.HealthPath, err)
+	}
+}
+
 func TestExecutionModeDefaultsToProduction(t *testing.T) {
 	res := readyAnalysis(map[string]domain.Field{
 		domain.FieldProfile:      {Value: "P-NODE"},

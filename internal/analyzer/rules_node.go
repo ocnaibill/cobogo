@@ -134,9 +134,12 @@ func ruleHEU05() Rule {
 		Meta: RuleMeta{
 			ID: "HEU-05", Version: ruleVersion, State: RuleProposed,
 			Requires: []string{"HEU-01"},
-			Fields:   []string{domain.FieldPort},
+			Fields:   []string{domain.FieldPort, domain.FieldHealthPath},
 		},
 		Apply: func(in RuleInput) RuleOutput {
+			// Caminho da sonda de readiness: o padrão é a raiz; só um override
+			// o muda (DEC-26).
+			defaultHealth := domain.Proposal{Field: domain.FieldHealthPath, Value: "/", Origin: domain.OriginDefault}
 			refs := in.Named(kindEnvReference, "PORT")
 			var runtime []domain.Evidence
 			for _, e := range refs {
@@ -160,7 +163,10 @@ func ruleHEU05() Rule {
 					msg += fmt.Sprintf(" (%d arquivo(s) não puderam ser lidos; ver cobertura)", n)
 				}
 			}
-			return RuleOutput{Pending: []domain.Finding{finding(domain.FieldPort, msg, cited...)}}
+			return RuleOutput{
+				Proposals: []domain.Proposal{defaultHealth},
+				Pending:   []domain.Finding{finding(domain.FieldPort, msg, cited...)},
+			}
 		},
 	}
 }

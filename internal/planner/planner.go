@@ -28,6 +28,8 @@ type NodePlanInput struct {
 	BuildCommand string
 	// Mode é domain.ModeProduction (padrão) ou domain.ModeDevelopment.
 	Mode string
+	// HealthPath é o caminho da sonda de readiness; vazio usa "/".
+	HealthPath string
 	// NodeVersion é a major do Node (domain.SupportedNodeVersions); vazio usa
 	// domain.DefaultNodeVersion.
 	NodeVersion string
@@ -68,6 +70,7 @@ func FromAnalysis(res domain.AnalysisResult) (domain.Plan, error) {
 		BuildCommand: res.Fields[domain.FieldBuildCommand].Value,
 		Mode:         mode,
 		NodeVersion:  version,
+		HealthPath:   res.Fields[domain.FieldHealthPath].Value,
 		Port:         port,
 		PortOrigin:   string(portField.Origin),
 	}), nil
@@ -81,6 +84,9 @@ func BuildNodePlan(in NodePlanInput) domain.Plan {
 	}
 	if in.NodeVersion == "" {
 		in.NodeVersion = domain.DefaultNodeVersion
+	}
+	if in.HealthPath == "" {
+		in.HealthPath = "/"
 	}
 	// Em desenvolvimento não há build nem prune: o servidor de
 	// desenvolvimento compila por conta própria.
@@ -103,6 +109,7 @@ func BuildNodePlan(in NodePlanInput) domain.Plan {
 		ExecutionMode:  in.Mode,
 		Port:           in.Port,
 		PortOrigin:     in.PortOrigin,
+		HealthPath:     in.HealthPath,
 		Dockerfile:     renderNodeDockerfile(in, install),
 	}
 }

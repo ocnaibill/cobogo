@@ -18,10 +18,12 @@ import (
 	"time"
 
 	"github.com/ocnaibill/cobogo/internal/analyzer"
+	"github.com/ocnaibill/cobogo/internal/diagnosis"
 	"github.com/ocnaibill/cobogo/internal/dockerrt"
 	"github.com/ocnaibill/cobogo/internal/domain"
 	"github.com/ocnaibill/cobogo/internal/gitsource"
 	"github.com/ocnaibill/cobogo/internal/planner"
+	"github.com/ocnaibill/cobogo/internal/redact"
 	"github.com/ocnaibill/cobogo/internal/store"
 
 	"github.com/google/uuid"
@@ -31,8 +33,10 @@ const (
 	leaseDuration       = 60 * time.Second // RNF-07
 	heartbeatInterval   = 15 * time.Second // RNF-07
 	maxAttempts         = 3
-	buildTimeout        = 10 * time.Minute // RNF-05
-	readinessTimeout    = 90 * time.Second
+	buildTimeout        = 10 * time.Minute  // RNF-05
+	readinessTimeout    = 120 * time.Second // RNF-05
+	logTailLines        = 50
+	logTailBytes        = 8 << 10
 	defaultPollInterval = 2 * time.Second
 	releaseTimeout      = 10 * time.Second
 	warmUpTimeout       = 30 * time.Minute
@@ -82,14 +86,15 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 }
 
-// warmUp baixa as imagens do catálogo em segundo plano, para o primeiro build
-// de cada versão não gastar o prazo no download (DEC-26). Falhas só são
-// registradas: o build baixa o que faltar.
+// warmUp baixa e atualiza as imagens do catálogo em segundo plano, para o
+// primeiro build de cada versão não gastar o prazo no download e para as
+// correções das imagens base chegarem sem depender do registry a cada build
+// (DEC-26). Falhas só são registradas: o build usa o que já está no cache.
 func (w *Worker) warmUp(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, warmUpTimeout)
 	defer cancel()
 	for _, ref := range planner.CatalogImages() {
-		if err := w.runtime.EnsureImage(ctx, ref); err != nil {
+		if err := w.runtime.PullImage(ctx, ref); err != nil {
 			if ctx.Err() != nil {
 				return
 			}
@@ -97,6 +102,14 @@ func (w *Worker) warmUp(ctx context.Context) {
 		}
 	}
 	w.log.Info("imagens do catálogo prontas")
+}
+
+// containerNameFor dá a cada deploy um nome próprio de contêiner. Com slug e SHA
+// apenas, dois deploys do mesmo projeto e commit colidiriam; com o deploy no
+// nome, uma release anterior convive com a candidata até a atualização segura
+// (RF-15) decidir o que aposentar.
+func containerNameFor(slug string, deploymentID uuid.UUID) string {
+	return fmt.Sprintf("cobogo-%s-%s", slug, deploymentID.String()[:8])
 }
 
 // stageError liga uma falha ao estágio do pipeline em que ocorreu.
@@ -204,19 +217,76 @@ func (w *Worker) finish(ctx context.Context, o *store.Owned) {
 	}
 }
 
-// fail registra a falha terminal do deploy.
+// failureDetail é o que se sabe sobre uma aplicação que não subiu: o final do
+// log (já redigido), o código de saída e o diagnóstico (DEC-26 itens 11 e 12).
+type failureDetail struct {
+	LogTail   string
+	ExitCode  *int
+	Diagnosis diagnosis.Diagnosis
+}
+
+// detailedError é uma falha de estágio acompanhada de failureDetail.
+type detailedError struct {
+	err    error
+	detail failureDetail
+}
+
+func (e *detailedError) Error() string { return e.err.Error() }
+func (e *detailedError) Unwrap() error { return e.err }
+
+// investigate junta log e diagnóstico de um contêiner que não ficou no ar.
+// projectValues são os valores das variáveis do projeto, removidos do log antes
+// de qualquer gravação (RN-11); inventory e have vêm da análise e do projeto.
+func (w *Worker) investigate(ctx context.Context, containerID string, cause error, projectValues []string, inventory []domain.ConfigVariable, have map[string]string) failureDetail {
+	ictx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
+	defer cancel()
+
+	var detail failureDetail
+	var exited *dockerrt.ExitedError
+	if errors.As(cause, &exited) {
+		code := exited.ExitCode
+		detail.ExitCode = &code
+	}
+
+	raw, err := w.runtime.LogTail(ictx, containerID, logTailLines)
+	if err != nil {
+		w.log.Warn("ler log do contêiner", "erro", err)
+	}
+	redacted := redact.Values(redact.Clean(raw), projectValues)
+	detail.LogTail = redact.Tail(redacted, logTailBytes)
+	detail.Diagnosis = diagnosis.Diagnose(redacted, diagnosis.Unset(inventory, have), detail.ExitCode != nil)
+	return detail
+}
+
+// fail registra a falha terminal do deploy. Quando há detalhe (log e
+// diagnóstico), ele vai no evento e a causa provável entra no motivo.
 func (w *Worker) fail(ctx context.Context, o *store.Owned, dep *domain.Deployment, cause error) {
 	stage := "PIPELINE"
 	var se *stageError
 	if errors.As(cause, &se) {
 		stage = se.stage
 	}
+	payload := map[string]any{"error": cause.Error()}
+	reason := cause.Error()
+
+	var de *detailedError
+	if errors.As(cause, &de) {
+		payload["log_tail"] = de.detail.LogTail
+		if de.detail.ExitCode != nil {
+			payload["exit_code"] = *de.detail.ExitCode
+		}
+		payload["diagnosis"] = de.detail.Diagnosis
+		if de.detail.Diagnosis.Message != "" {
+			reason += " — " + de.detail.Diagnosis.Message
+		}
+	}
+
 	w.log.Error("deploy falhou", "deployment", dep.ID, "estagio", stage, "erro", cause)
-	if err := o.Transition(ctx, dep.ID, domain.DeploymentFailed, cause.Error()); err != nil {
+	if err := o.Transition(ctx, dep.ID, domain.DeploymentFailed, reason); err != nil {
 		w.log.Error("registrar falha", "erro", err)
 		return
 	}
-	_ = w.emit(ctx, o, dep.ID, stage, "failed", map[string]any{"error": cause.Error()})
+	_ = w.emit(ctx, o, dep.ID, stage, "failed", payload)
 }
 
 // pipeline percorre os estágios do §15. Devolve nil quando o deploy chegou a
@@ -325,13 +395,19 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 		shortSHA = shortSHA[:7]
 	}
 	imageTag := fmt.Sprintf("cobogo/%s:%s", project.Slug, shortSHA)
-	containerName := fmt.Sprintf("cobogo-%s-%s", project.Slug, shortSHA)
+	containerName := containerNameFor(project.Slug, dep.ID)
 
 	// --- BUILDING ---
 	if err := o.Transition(ctx, dep.ID, domain.DeploymentBuilding, ""); err != nil {
 		return at("BUILDING", err)
 	}
 	buildCtx, cancelBuild := context.WithTimeout(ctx, buildTimeout)
+	for _, ref := range []string{plan.BuildImage, plan.Runtime} {
+		if err := w.runtime.EnsureImage(buildCtx, ref); err != nil {
+			cancelBuild()
+			return at("BUILDING", err)
+		}
+	}
 	buildResult, err := w.runtime.Build(buildCtx, rootDir, plan.Dockerfile, imageTag, plan.Runtime, func(line string) {
 		_ = w.emit(ctx, o, dep.ID, "building", "log", map[string]any{"line": line})
 	})
@@ -365,6 +441,16 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 	if err != nil {
 		return at("STARTING", fmt.Errorf("carregar variáveis do projeto: %w", err))
 	}
+	// Valores que um log de falha precisa redigir: os do projeto, sem PORT
+	// (da plataforma, não é segredo e aparece em qualquer log).
+	projectValues := make([]string, 0, len(envValues))
+	for _, v := range envValues {
+		projectValues = append(projectValues, v)
+	}
+	have := make(map[string]string, len(envValues))
+	for name := range envValues {
+		have[name] = ""
+	}
 	envValues["PORT"] = fmt.Sprint(plan.Port)
 	delivered := make([]map[string]any, 0, len(envMeta))
 	for _, v := range envMeta {
@@ -380,22 +466,30 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 		return at("STARTING", err)
 	}
 	runResult, err := w.runtime.Run(ctx, imageTag, containerName, plan.Port, envValues, dep.ID.String())
+
+	// A partir do create existe uma candidata: qualquer saída sem sucesso a
+	// remove, pelo ID (se a posse foi perdida, o novo dono pode ter a dele, com
+	// o mesmo label de deploy).
+	succeeded := false
+	if runResult.ContainerID != "" {
+		defer func() {
+			if !succeeded {
+				cleanup, done := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
+				defer done()
+				if err := w.runtime.Remove(cleanup, runResult.ContainerID); err != nil {
+					w.log.Warn("remover candidata", "deployment", dep.ID, "erro", err)
+				}
+			}
+		}()
+	}
 	if err != nil {
+		if runResult.ContainerID != "" && ctx.Err() == nil {
+			// O contêiner existe mas não ficou no ar (por exemplo, caiu no boot
+			// por falta de uma variável): o log e o diagnóstico explicam.
+			err = &detailedError{err: err, detail: w.investigate(ctx, runResult.ContainerID, err, projectValues, result.ConfigVariables, have)}
+		}
 		return at("STARTING", err)
 	}
-	// A partir daqui existe uma candidata: qualquer saída sem sucesso a remove.
-	// Remove só o contêiner desta tentativa, pelo ID: se a posse foi perdida,
-	// o novo dono pode ter o dele, com o mesmo label de deploy.
-	succeeded := false
-	defer func() {
-		if !succeeded {
-			cleanup, done := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
-			defer done()
-			if err := w.runtime.Remove(cleanup, runResult.ContainerID); err != nil {
-				w.log.Warn("remover candidata", "deployment", dep.ID, "erro", err)
-			}
-		}
-	}()
 	if err := w.emit(ctx, o, dep.ID, "starting", "completed", map[string]any{"container_id": runResult.ContainerID, "host_port": runResult.HostPort, "env": delivered}); err != nil {
 		return err
 	}
@@ -404,8 +498,21 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 	if err := o.Transition(ctx, dep.ID, domain.DeploymentVerifying, ""); err != nil {
 		return at("VERIFYING", err)
 	}
-	if err := dockerrt.ProbeReady(ctx, runResult.HostPort, "/", 200, readinessTimeout); err != nil {
+	probe, err := dockerrt.ProbeReady(ctx, runResult.HostPort, plan.HealthPath, readinessTimeout, func(c context.Context) (bool, int, error) {
+		return w.runtime.State(c, runResult.ContainerID)
+	})
+	if err != nil {
+		if ctx.Err() == nil {
+			err = &detailedError{err: err, detail: w.investigate(ctx, runResult.ContainerID, err, projectValues, result.ConfigVariables, have)}
+		}
 		return at("VERIFYING", err)
+	}
+	probePayload := map[string]any{"path": probe.Path, "status": probe.Status, "healthy": probe.Healthy()}
+	if !probe.Healthy() {
+		probePayload["warning"] = fmt.Sprintf("a aplicação respondeu %d em %s: está no ar, mas não respondeu 2xx; se a rota certa for outra, informe health_path", probe.Status, probe.Path)
+	}
+	if err := w.emit(ctx, o, dep.ID, "verifying", "probe", probePayload); err != nil {
+		return err
 	}
 
 	if _, err := o.CreateRelease(ctx, dep.ID, buildResult.ImageID, runResult.ContainerID, "active", "healthy", runResult.HostPort); err != nil {

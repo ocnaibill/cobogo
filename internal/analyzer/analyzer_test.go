@@ -58,6 +58,7 @@ func nodeFields(start string, extra map[string]wantField) map[string]wantField {
 		domain.FieldPackageManager: {value: "npm", origin: domain.OriginInference},
 		domain.FieldExecutionMode:  {value: "production", origin: domain.OriginDefault},
 		domain.FieldNodeVersion:    {value: "26", origin: domain.OriginDefault},
+		domain.FieldHealthPath:     {value: "/", origin: domain.OriginDefault},
 	}
 	if start != "" {
 		fields[domain.FieldStartCommand] = wantField{value: start, origin: domain.OriginDeclaration}
@@ -195,6 +196,7 @@ func fixtures() []fixture {
 					domain.FieldPackageManager: {value: "npm", origin: domain.OriginInference},
 					domain.FieldExecutionMode:  {value: "production", origin: domain.OriginDefault},
 					domain.FieldNodeVersion:    {value: "26", origin: domain.OriginDefault},
+					domain.FieldHealthPath:     {value: "/", origin: domain.OriginDefault},
 					domain.FieldStartCommand:   {value: "node index.js", origin: domain.OriginOverride},
 					domain.FieldPort:           {value: "3000", origin: domain.OriginOverride},
 				},
@@ -211,6 +213,7 @@ func fixtures() []fixture {
 					domain.FieldPackageManager: {value: "npm", origin: domain.OriginInference},
 					domain.FieldExecutionMode:  {value: "production", origin: domain.OriginDefault},
 					domain.FieldNodeVersion:    {value: "26", origin: domain.OriginDefault},
+					domain.FieldHealthPath:     {value: "/", origin: domain.OriginDefault},
 					domain.FieldStartCommand:   {value: "node server.js", origin: domain.OriginOverride, overrode: 1},
 					domain.FieldPort:           {value: "3000", origin: domain.OriginOverride},
 				},
@@ -727,6 +730,9 @@ func TestCheckOverrides(t *testing.T) {
 		{"port": " 3000 ", "start_command": "node server.js", "build_command": "npm run build"},
 		{"execution_mode": "development"},
 		{"execution_mode": "production"},
+		{"health_path": "/"},
+		{"health_path": "/healthz"},
+		{"health_path": "/api/v1/status?full=1"},
 	}
 	for _, in := range valid {
 		if err := CheckOverrides(in); err != nil {
@@ -742,8 +748,14 @@ func TestCheckOverrides(t *testing.T) {
 		"empty command":          {"start_command": "   "},
 		"multi-line command":     {"start_command": "node a.js\nrm -rf /"},
 		"trailing backslash would swallow the next Dockerfile line": {"build_command": "npm run build \\"},
-		"nul in command":         {"start_command": "node a.js\x00"},
-		"unknown execution mode": {"execution_mode": "staging"},
+		"nul in command":              {"start_command": "node a.js\x00"},
+		"unknown execution mode":      {"execution_mode": "staging"},
+		"health path without a slash": {"health_path": "healthz"},
+		"health path with a space":    {"health_path": "/a b"},
+		"health path with a newline":  {"health_path": "/a\nb"},
+		"health path with a tab":      {"health_path": "/a\tb"},
+		"health path too long":        {"health_path": "/" + strings.Repeat("a", 256)},
+		"health path as a full url":   {"health_path": "http://evil.example/x"},
 	}
 	for name, in := range invalid {
 		if err := CheckOverrides(in); err == nil {
