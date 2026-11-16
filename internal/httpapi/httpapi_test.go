@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -94,14 +95,17 @@ func TestAnswerDeployment(t *testing.T) {
 	}
 
 	// O worker deixou o deploy em NEEDS_INPUT.
-	if err := h.st.UpdateDeploymentState(t.Context(), dep.ID, domain.DeploymentNeedsInput, ""); err != nil {
-		t.Fatal(err)
-	}
-	job, _, err := h.st.ClaimNextJob(t.Context(), 1)
+	job, _, err := h.st.ClaimNextJob(t.Context(), time.Minute, 3)
 	if err != nil || job == nil {
 		t.Fatalf("claim: %v %v", job, err)
 	}
-	if err := h.st.MarkJobDone(t.Context(), job.ID); err != nil {
+	owned := h.st.Owned(store.LeaseOf(job))
+	for _, to := range []domain.DeploymentState{domain.DeploymentFetching, domain.DeploymentAnalyzing, domain.DeploymentNeedsInput} {
+		if err := owned.Transition(t.Context(), dep.ID, to, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := owned.Finish(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 

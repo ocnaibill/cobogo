@@ -148,3 +148,14 @@ func jsonString(s string) string {
 	_ = enc.Encode(s) // só falha com tipos não serializáveis
 	return strings.TrimRight(buf.String(), "\n")
 }
+
+// CatalogImages lista as imagens que o catálogo pode usar (todas as versões
+// suportadas, de build e de execução), para o worker baixá-las antes do
+// primeiro build.
+func CatalogImages() []string {
+	var images []string
+	for _, v := range domain.SupportedNodeVersions {
+		images = append(images, nodeBuildImage(v), nodeRuntimeImage(v))
+	}
+	return images
+}

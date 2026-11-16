@@ -1,10 +1,16 @@
 // Package worker conduz o pipeline de deploy (§15 do mestre): aquisição,
 // análise, geração, build, início e verificação. É o componente mais
 // privilegiado do sistema (§17.2) — só ele fala com o Docker.
+//
+// Posse e retomada (DEC-26): o worker mantém o lease do job com heartbeat, só
+// grava sobre o deploy enquanto for o dono, devolve o job à fila ao ser
+// desligado e retoma, do início e sobre o mesmo SHA, o que um worker anterior
+// deixou pela metade.
 package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -22,9 +28,14 @@ import (
 )
 
 const (
-	defaultLease        = 5 * time.Minute
-	defaultPollInterval = 2 * time.Second
+	leaseDuration       = 60 * time.Second // RNF-07
+	heartbeatInterval   = 15 * time.Second // RNF-07
+	maxAttempts         = 3
+	buildTimeout        = 10 * time.Minute // RNF-05
 	readinessTimeout    = 90 * time.Second
+	defaultPollInterval = 2 * time.Second
+	releaseTimeout      = 10 * time.Second
+	warmUpTimeout       = 30 * time.Minute
 )
 
 type Worker struct {
@@ -40,6 +51,8 @@ func New(st *store.Store, rt *dockerrt.Runtime, log *slog.Logger) *Worker {
 // Run bloqueia reivindicando e processando um job por vez (RNF-05: um build
 // simultâneo em M1), até ctx ser cancelado.
 func (w *Worker) Run(ctx context.Context) error {
+	go w.warmUp(ctx)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -47,8 +60,11 @@ func (w *Worker) Run(ctx context.Context) error {
 		default:
 		}
 
-		job, dep, err := w.store.ClaimNextJob(ctx, defaultLease)
+		job, dep, err := w.store.ClaimNextJob(ctx, leaseDuration, maxAttempts)
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			w.log.Error("reivindicar job", "erro", err)
 			time.Sleep(defaultPollInterval)
 			continue
@@ -66,91 +82,229 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 }
 
-func (w *Worker) emit(ctx context.Context, deploymentID uuid.UUID, stage, eventType string, payload map[string]any) {
-	if err := w.store.AppendEvent(ctx, deploymentID, stage, eventType, payload); err != nil {
-		w.log.Error("gravar evento", "estagio", stage, "erro", err)
+// warmUp baixa as imagens do catálogo em segundo plano, para o primeiro build
+// de cada versão não gastar o prazo no download (DEC-26). Falhas só são
+// registradas: o build baixa o que faltar.
+func (w *Worker) warmUp(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, warmUpTimeout)
+	defer cancel()
+	for _, ref := range planner.CatalogImages() {
+		if err := w.runtime.EnsureImage(ctx, ref); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			w.log.Warn("baixar imagem do catálogo", "imagem", ref, "erro", err)
+		}
 	}
+	w.log.Info("imagens do catálogo prontas")
 }
 
-func (w *Worker) fail(ctx context.Context, dep *domain.Deployment, stage string, cause error) {
-	w.log.Error("deploy falhou", "deployment", dep.ID, "estagio", stage, "erro", cause)
-	if err := w.store.UpdateDeploymentState(ctx, dep.ID, domain.DeploymentFailed, cause.Error()); err != nil {
-		w.log.Error("registrar falha", "erro", err)
-	}
-	w.emit(ctx, dep.ID, stage, "failed", map[string]any{"error": cause.Error()})
+// stageError liga uma falha ao estágio do pipeline em que ocorreu.
+type stageError struct {
+	stage string
+	err   error
 }
 
-func (w *Worker) process(ctx context.Context, job *domain.Job, dep *domain.Deployment) {
-	defer func() {
-		if err := w.store.MarkJobDone(ctx, job.ID); err != nil {
-			w.log.Error("concluir job", "erro", err)
+func (e *stageError) Error() string { return e.err.Error() }
+func (e *stageError) Unwrap() error { return e.err }
+
+func at(stage string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &stageError{stage: stage, err: err}
+}
+
+// keepLease renova o lease a cada interval enquanto ctx não terminar. Se a
+// renovação revelar que a posse foi perdida, cancela o pipeline com essa
+// causa; falhas transitórias só são registradas e tentadas de novo. A função
+// devolvida para o heartbeat e espera a goroutine encerrar.
+func keepLease(ctx context.Context, cancel context.CancelCauseFunc, interval time.Duration, renew func(context.Context) error, log *slog.Logger) (stop func()) {
+	hbCtx, stopCtx := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-hbCtx.Done():
+				return
+			case <-ticker.C:
+				switch err := renew(hbCtx); {
+				case err == nil:
+				case errors.Is(err, store.ErrLeaseLost):
+					cancel(store.ErrLeaseLost)
+					return
+				case hbCtx.Err() == nil:
+					log.Warn("renovar lease", "erro", err)
+				}
+			}
 		}
 	}()
+	return func() {
+		stopCtx()
+		<-done
+	}
+}
+
+// emit grava um evento. Só a perda de posse interrompe o pipeline; outras
+// falhas de gravação do evento são registradas em log.
+func (w *Worker) emit(ctx context.Context, o *store.Owned, deploymentID uuid.UUID, stage, eventType string, payload map[string]any) error {
+	err := o.AppendEvent(ctx, deploymentID, stage, eventType, payload)
+	if errors.Is(err, store.ErrLeaseLost) {
+		return err
+	}
+	if err != nil && ctx.Err() == nil {
+		w.log.Error("gravar evento", "estagio", stage, "erro", err)
+	}
+	return nil
+}
+
+// process executa um job reivindicado e decide o destino dele: concluído,
+// falho, devolvido à fila (desligamento) ou abandonado (posse perdida).
+func (w *Worker) process(ctx context.Context, job *domain.Job, dep *domain.Deployment) {
+	owned := w.store.Owned(store.LeaseOf(job))
+
+	pctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	stop := keepLease(pctx, cancel, heartbeatInterval, func(c context.Context) error {
+		return owned.Renew(c, leaseDuration)
+	}, w.log)
+
+	err := w.pipeline(pctx, owned, job, dep)
+	stop()
+
+	// Gravações finais não podem depender de ctx: no desligamento ele já foi
+	// cancelado, e é justamente quando o job precisa voltar à fila.
+	final, done := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
+	defer done()
+
+	switch {
+	case errors.Is(err, store.ErrLeaseLost), errors.Is(context.Cause(pctx), store.ErrLeaseLost):
+		// Outro worker é o dono agora: nada mais é gravado por aqui.
+		w.log.Warn("posse do job perdida; abandonando sem gravar", "deployment", dep.ID)
+	case err == nil:
+		w.finish(final, owned)
+	case ctx.Err() != nil:
+		// Desligamento: o job volta à fila sem contar a tentativa.
+		w.log.Info("desligando: devolvendo o job à fila", "deployment", dep.ID)
+		if rerr := owned.Release(final); rerr != nil && !errors.Is(rerr, store.ErrLeaseLost) {
+			w.log.Error("devolver job à fila", "erro", rerr)
+		}
+	default:
+		w.fail(final, owned, dep, err)
+		w.finish(final, owned)
+	}
+}
+
+func (w *Worker) finish(ctx context.Context, o *store.Owned) {
+	if err := o.Finish(ctx); err != nil && !errors.Is(err, store.ErrLeaseLost) {
+		w.log.Error("concluir job", "erro", err)
+	}
+}
+
+// fail registra a falha terminal do deploy.
+func (w *Worker) fail(ctx context.Context, o *store.Owned, dep *domain.Deployment, cause error) {
+	stage := "PIPELINE"
+	var se *stageError
+	if errors.As(cause, &se) {
+		stage = se.stage
+	}
+	w.log.Error("deploy falhou", "deployment", dep.ID, "estagio", stage, "erro", cause)
+	if err := o.Transition(ctx, dep.ID, domain.DeploymentFailed, cause.Error()); err != nil {
+		w.log.Error("registrar falha", "erro", err)
+		return
+	}
+	_ = w.emit(ctx, o, dep.ID, stage, "failed", map[string]any{"error": cause.Error()})
+}
+
+// pipeline percorre os estágios do §15. Devolve nil quando o deploy chegou a
+// um estado final ou de espera (inclusive NEEDS_INPUT e UNSUPPORTED) e um erro
+// quando falhou ou foi interrompido.
+func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, dep *domain.Deployment) error {
+	// Um job reivindicado depois de o deploy já ter terminado ou estar
+	// esperando resposta (o worker anterior caiu antes de concluí-lo) não tem
+	// o que executar.
+	if dep.State.IsTerminal() || dep.State == domain.DeploymentNeedsInput {
+		return nil
+	}
+
+	if err := w.emit(ctx, o, dep.ID, "pipeline", "attempt", map[string]any{
+		"number": job.AttemptCount, "resumed": job.AttemptCount > 1,
+	}); err != nil {
+		return err
+	}
 
 	project, err := w.store.GetProject(ctx, dep.ProjectID)
 	if err != nil {
-		w.fail(ctx, dep, "FETCHING", fmt.Errorf("carregar projeto: %w", err))
-		return
+		return at("FETCHING", fmt.Errorf("carregar projeto: %w", err))
 	}
 
 	// --- FETCHING ---
-	w.store.UpdateDeploymentState(ctx, dep.ID, domain.DeploymentFetching, "")
-	w.emit(ctx, dep.ID, "fetching", "started", nil)
+	if err := o.Transition(ctx, dep.ID, domain.DeploymentFetching, ""); err != nil {
+		return at("FETCHING", err)
+	}
+	if err := w.emit(ctx, o, dep.ID, "fetching", "started", nil); err != nil {
+		return err
+	}
 
-	// Um deploy já com SHA fixado (resposta a uma pendência, RF-08) reutiliza
-	// o mesmo commit, mesmo que a branch tenha avançado (RN-04).
+	// Um deploy já com SHA fixado (resposta a uma pendência, RF-08, ou
+	// retomada) reutiliza o mesmo commit, mesmo que a branch tenha avançado
+	// (RN-04).
 	ws, err := gitsource.Fetch(ctx, project.RepositoryURL, gitsource.Options{Ref: dep.CommitSHA})
 	if err != nil {
-		w.fail(ctx, dep, "FETCHING", err)
-		return
+		return at("FETCHING", err)
 	}
 	defer ws.Cleanup()
 
-	if err := w.store.SetDeploymentCommitSHA(ctx, dep.ID, ws.CommitSHA); err != nil {
-		w.fail(ctx, dep, "FETCHING", err)
-		return
+	if err := o.SetCommitSHA(ctx, dep.ID, ws.CommitSHA); err != nil {
+		return at("FETCHING", err)
 	}
 	dep.CommitSHA = ws.CommitSHA
-	w.emit(ctx, dep.ID, "fetching", "completed", map[string]any{"commit_sha": ws.CommitSHA})
+	if err := w.emit(ctx, o, dep.ID, "fetching", "completed", map[string]any{"commit_sha": ws.CommitSHA}); err != nil {
+		return err
+	}
 
 	// --- ANALYZING ---
-	w.store.UpdateDeploymentState(ctx, dep.ID, domain.DeploymentAnalyzing, "")
+	if err := o.Transition(ctx, dep.ID, domain.DeploymentAnalyzing, ""); err != nil {
+		return at("ANALYZING", err)
+	}
 	rootDir := filepath.Join(ws.Dir, project.RootDirectory)
 
 	result, err := analyzer.Analyze(os.DirFS(rootDir), analyzer.Input{Overrides: dep.Overrides})
 	if err != nil {
-		w.fail(ctx, dep, "ANALYZING", err)
-		return
+		return at("ANALYZING", err)
 	}
-	if _, err := w.store.SaveAnalysis(ctx, dep.ID, dep.ProjectID, ws.CommitSHA, result); err != nil {
-		w.fail(ctx, dep, "ANALYZING", err)
-		return
+	if _, err := o.SaveAnalysis(ctx, dep.ID, dep.ProjectID, ws.CommitSHA, result); err != nil {
+		return at("ANALYZING", err)
 	}
-	w.emit(ctx, dep.ID, "analyzing", "completed", map[string]any{
+	if err := w.emit(ctx, o, dep.ID, "analyzing", "completed", map[string]any{
 		"outcome":  result.Outcome,
 		"analysis": result,
-	})
+	}); err != nil {
+		return err
+	}
 
 	switch result.Outcome {
 	case domain.AnalysisUnsupported:
-		w.store.UpdateDeploymentState(ctx, dep.ID, domain.DeploymentUnsupported, "perfil não suportado pelas evidências disponíveis")
-		return
+		return at("ANALYZING", o.Transition(ctx, dep.ID, domain.DeploymentUnsupported, ""))
 	case domain.AnalysisNeedsInput:
 		// RF-08: a pendência não ocupa o worker. A resposta chega por
 		// POST /deployments/{id}/answers, que reenfileira o mesmo deploy
 		// para o SHA já fixado.
-		w.store.UpdateDeploymentState(ctx, dep.ID, domain.DeploymentNeedsInput, "")
-		return
+		return at("ANALYZING", o.Transition(ctx, dep.ID, domain.DeploymentNeedsInput, ""))
 	}
 
 	// --- GENERATING ---
-	w.store.UpdateDeploymentState(ctx, dep.ID, domain.DeploymentGenerating, "")
+	if err := o.Transition(ctx, dep.ID, domain.DeploymentGenerating, ""); err != nil {
+		return at("GENERATING", err)
+	}
 	plan, err := planner.FromAnalysis(result)
 	if err != nil {
-		w.fail(ctx, dep, "GENERATING", err)
-		return
+		return at("GENERATING", err)
 	}
-	w.emit(ctx, dep.ID, "generating", "completed", map[string]any{
+	if err := w.emit(ctx, o, dep.ID, "generating", "completed", map[string]any{
 		"profile":         plan.Profile,
 		"runtime":         plan.Runtime,
 		"build_image":     plan.BuildImage,
@@ -162,7 +316,9 @@ func (w *Worker) process(ctx context.Context, job *domain.Job, dep *domain.Deplo
 		"port":            plan.Port,
 		"port_origin":     plan.PortOrigin,
 		"dockerfile":      plan.Dockerfile,
-	})
+	}); err != nil {
+		return err
+	}
 
 	shortSHA := ws.CommitSHA
 	if len(shortSHA) > 7 {
@@ -172,29 +328,42 @@ func (w *Worker) process(ctx context.Context, job *domain.Job, dep *domain.Deplo
 	containerName := fmt.Sprintf("cobogo-%s-%s", project.Slug, shortSHA)
 
 	// --- BUILDING ---
-	w.store.UpdateDeploymentState(ctx, dep.ID, domain.DeploymentBuilding, "")
-	buildResult, err := w.runtime.Build(ctx, rootDir, plan.Dockerfile, imageTag, plan.Runtime, func(line string) {
-		w.emit(ctx, dep.ID, "building", "log", map[string]any{"line": line})
-	})
-	if err != nil {
-		w.fail(ctx, dep, "BUILDING", err)
-		return
+	if err := o.Transition(ctx, dep.ID, domain.DeploymentBuilding, ""); err != nil {
+		return at("BUILDING", err)
 	}
-	w.emit(ctx, dep.ID, "building", "completed", map[string]any{"image_id": buildResult.ImageID, "image_tag": buildResult.ImageTag})
+	buildCtx, cancelBuild := context.WithTimeout(ctx, buildTimeout)
+	buildResult, err := w.runtime.Build(buildCtx, rootDir, plan.Dockerfile, imageTag, plan.Runtime, func(line string) {
+		_ = w.emit(ctx, o, dep.ID, "building", "log", map[string]any{"line": line})
+	})
+	cancelBuild()
+	if err != nil {
+		if errors.Is(buildCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+			err = fmt.Errorf("o build excedeu o limite de %s: %w", buildTimeout, err)
+		}
+		return at("BUILDING", err)
+	}
+	if err := w.emit(ctx, o, dep.ID, "building", "completed", map[string]any{"image_id": buildResult.ImageID, "image_tag": buildResult.ImageTag}); err != nil {
+		return err
+	}
 
 	// --- PROVISIONING --- (sem serviços auxiliares em M1)
-	w.store.UpdateDeploymentState(ctx, dep.ID, domain.DeploymentProvisioning, "")
-	w.emit(ctx, dep.ID, "provisioning", "completed", map[string]any{"services": []string{}})
+	if err := o.Transition(ctx, dep.ID, domain.DeploymentProvisioning, ""); err != nil {
+		return at("PROVISIONING", err)
+	}
+	if err := w.emit(ctx, o, dep.ID, "provisioning", "completed", map[string]any{"services": []string{}}); err != nil {
+		return err
+	}
 
 	// --- STARTING ---
-	w.store.UpdateDeploymentState(ctx, dep.ID, domain.DeploymentStarting, "")
+	if err := o.Transition(ctx, dep.ID, domain.DeploymentStarting, ""); err != nil {
+		return at("STARTING", err)
+	}
 	// Variáveis do projeto (DEC-24): decifradas só aqui e entregues ao
 	// contêiner. Valores nunca entram em evento ou log; só nome e versão.
 	// PORT é da plataforma e vale sobre qualquer outro valor.
 	envValues, envMeta, err := w.store.RevealEnvValues(ctx, project.ID)
 	if err != nil {
-		w.fail(ctx, dep, "STARTING", fmt.Errorf("carregar variáveis do projeto: %w", err))
-		return
+		return at("STARTING", fmt.Errorf("carregar variáveis do projeto: %w", err))
 	}
 	envValues["PORT"] = fmt.Sprint(plan.Port)
 	delivered := make([]map[string]any, 0, len(envMeta))
@@ -202,27 +371,51 @@ func (w *Worker) process(ctx context.Context, job *domain.Job, dep *domain.Deplo
 		delivered = append(delivered, map[string]any{"name": v.Name, "version": v.Version})
 	}
 
-	runResult, err := w.runtime.Run(ctx, imageTag, containerName, plan.Port, envValues)
-	if err != nil {
-		w.fail(ctx, dep, "STARTING", err)
-		return
+	// Efeito idempotente (DEC-26): remove o que uma tentativa anterior deste
+	// deploy deixou, e confere a posse imediatamente antes de criar o contêiner.
+	if err := w.runtime.RemoveByDeployment(ctx, dep.ID.String()); err != nil {
+		return at("STARTING", err)
 	}
-	w.emit(ctx, dep.ID, "starting", "completed", map[string]any{"container_id": runResult.ContainerID, "host_port": runResult.HostPort, "env": delivered})
+	if err := o.Check(ctx); err != nil {
+		return at("STARTING", err)
+	}
+	runResult, err := w.runtime.Run(ctx, imageTag, containerName, plan.Port, envValues, dep.ID.String())
+	if err != nil {
+		return at("STARTING", err)
+	}
+	// A partir daqui existe uma candidata: qualquer saída sem sucesso a remove.
+	// Remove só o contêiner desta tentativa, pelo ID: se a posse foi perdida,
+	// o novo dono pode ter o dele, com o mesmo label de deploy.
+	succeeded := false
+	defer func() {
+		if !succeeded {
+			cleanup, done := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
+			defer done()
+			if err := w.runtime.Remove(cleanup, runResult.ContainerID); err != nil {
+				w.log.Warn("remover candidata", "deployment", dep.ID, "erro", err)
+			}
+		}
+	}()
+	if err := w.emit(ctx, o, dep.ID, "starting", "completed", map[string]any{"container_id": runResult.ContainerID, "host_port": runResult.HostPort, "env": delivered}); err != nil {
+		return err
+	}
 
 	// --- VERIFYING ---
-	w.store.UpdateDeploymentState(ctx, dep.ID, domain.DeploymentVerifying, "")
+	if err := o.Transition(ctx, dep.ID, domain.DeploymentVerifying, ""); err != nil {
+		return at("VERIFYING", err)
+	}
 	if err := dockerrt.ProbeReady(ctx, runResult.HostPort, "/", 200, readinessTimeout); err != nil {
-		_ = w.runtime.Remove(ctx, runResult.ContainerID)
-		w.fail(ctx, dep, "VERIFYING", err)
-		return
+		return at("VERIFYING", err)
 	}
 
-	if _, err := w.store.CreateRelease(ctx, dep.ID, buildResult.ImageID, runResult.ContainerID, "active", "healthy", runResult.HostPort); err != nil {
-		w.fail(ctx, dep, "VERIFYING", err)
-		return
+	if _, err := o.CreateRelease(ctx, dep.ID, buildResult.ImageID, runResult.ContainerID, "active", "healthy", runResult.HostPort); err != nil {
+		return at("VERIFYING", err)
 	}
-	w.store.UpdateDeploymentState(ctx, dep.ID, domain.DeploymentSucceeded, "")
-	w.emit(ctx, dep.ID, "verifying", "succeeded", map[string]any{
+	if err := o.Transition(ctx, dep.ID, domain.DeploymentSucceeded, ""); err != nil {
+		return at("VERIFYING", err)
+	}
+	succeeded = true
+	return w.emit(ctx, o, dep.ID, "verifying", "succeeded", map[string]any{
 		"url": fmt.Sprintf("http://127.0.0.1:%d/", runResult.HostPort),
 	})
 }

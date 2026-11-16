@@ -20,8 +20,15 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
+)
+
+const (
+	LabelManaged    = "cobogo.managed"
+	LabelDeployment = "cobogo.deployment"
 )
 
 // Runtime encapsula o ciclo de vida de build e execução de uma release.
@@ -195,7 +202,11 @@ type RunResult struct {
 // Run cria e inicia a candidata com a porta do contêiner publicada em uma
 // porta efêmera do host (RF-06). Nenhum bind mount do host é aceito aqui:
 // o repositório analisado nunca determina HostConfig (§17.2, invariante 4).
-func (r *Runtime) Run(ctx context.Context, imageTag, containerName string, containerPort int, env map[string]string) (RunResult, error) {
+//
+// Todo contêiner leva os labels cobogo.managed e cobogo.deployment, que
+// identificam o que o Cobogó criou para um deploy: uma retomada (DEC-26) remove
+// o que uma tentativa anterior deixou, sem tocar em recursos alheios (RF-18).
+func (r *Runtime) Run(ctx context.Context, imageTag, containerName string, containerPort int, env map[string]string, deploymentID string) (RunResult, error) {
 	portSpec := nat.Port(strconv.Itoa(containerPort) + "/tcp")
 
 	envList := make([]string, 0, len(env))
@@ -208,7 +219,8 @@ func (r *Runtime) Run(ctx context.Context, imageTag, containerName string, conta
 		Env:          envList,
 		ExposedPorts: nat.PortSet{portSpec: struct{}{}},
 		Labels: map[string]string{
-			"cobogo.managed": "true",
+			LabelManaged:    "true",
+			LabelDeployment: deploymentID,
 		},
 	}
 	hostCfg := &container.HostConfig{
@@ -250,6 +262,47 @@ func (r *Runtime) Remove(ctx context.Context, containerID string) error {
 	timeout := 5
 	_ = r.cli.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &timeout})
 	return r.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true})
+}
+
+// RemoveByDeployment remove, em qualquer estado, os contêineres que o Cobogó
+// criou para o deploy. Serve para retomar uma tentativa interrompida sem
+// colidir com o que ela deixou e para descartar a candidata de um worker que
+// perdeu a posse. Só toca contêineres com os dois labels do Cobogó.
+func (r *Runtime) RemoveByDeployment(ctx context.Context, deploymentID string) error {
+	list, err := r.cli.ContainerList(ctx, container.ListOptions{
+		All: true,
+		Filters: filters.NewArgs(
+			filters.Arg("label", LabelManaged+"=true"),
+			filters.Arg("label", LabelDeployment+"="+deploymentID),
+		),
+	})
+	if err != nil {
+		return fmt.Errorf("dockerrt: listar contêineres do deploy: %w", err)
+	}
+	var firstErr error
+	for _, c := range list {
+		if err := r.Remove(ctx, c.ID); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("dockerrt: remover contêiner %s: %w", c.ID[:12], err)
+		}
+	}
+	return firstErr
+}
+
+// EnsureImage baixa a imagem se ela ainda não está no cache do daemon, para o
+// primeiro build não gastar o prazo no download (DEC-26).
+func (r *Runtime) EnsureImage(ctx context.Context, ref string) error {
+	if _, _, err := r.cli.ImageInspectWithRaw(ctx, ref); err == nil {
+		return nil
+	}
+	body, err := r.cli.ImagePull(ctx, ref, image.PullOptions{})
+	if err != nil {
+		return fmt.Errorf("dockerrt: baixar %s: %w", ref, err)
+	}
+	defer body.Close()
+	if _, err := io.Copy(io.Discard, body); err != nil {
+		return fmt.Errorf("dockerrt: baixar %s: %w", ref, err)
+	}
+	return nil
 }
 
 // ProbeReady consulta repetidamente path na porta publicada até três

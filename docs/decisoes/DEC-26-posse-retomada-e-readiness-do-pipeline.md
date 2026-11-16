@@ -1,6 +1,6 @@
 # DEC-26 — Posse, retomada e readiness do pipeline
 
-> **Estado:** proposta de 16/11/2026, aguardando revisão do autor.
+> **Estado:** proposta de 16/11/2026, aguardando revisão do autor. **3d implementado** (itens 1 a 7); 3e (itens 8 a 13) pendente.
 >
 > **Escopo:** como o worker reivindica, mantém, perde e retoma um job (3d) e como confirma que a aplicação subiu e explica a falha (3e, que absorve o diagnóstico 3c do DEC-24). Fecha a parte 3 do backend.
 >
@@ -63,6 +63,9 @@ A leitura do worker, do store e do adaptador Docker contra o mestre mostrou lacu
 - O diagnóstico depende dos formatos de mensagem de cada runtime; o corpus mede quanto acerta antes de confiar nele para mais que `possible`.
 - Cancelamento pelo usuário de uma etapa ativa continua fora de escopo (o mestre limita a antes da execução ou durante a espera por informação).
 - A readiness aceita 404 em `/`: prova servidor HTTP no ar, não aplicação funcional (o oráculo funcional por repositório é do experimento, RN-01).
+
+- **Verificado em execução (3d):** com `SIGKILL` do worker durante o build, o job fica `LEASED`, o novo worker espera o lease vencer (não rouba um lease válido), reivindica na geração 2, registra o evento `attempt` com `resumed: true` e conclui sobre o mesmo SHA, com um único contêiner. Com `SIGTERM`, o job volta a `PENDING` com 0 tentativas e o novo worker o conclui na primeira tentativa.
+- **Limite encontrado:** o nome do contêiner (`cobogo-<slug>-<sha7>`) é o mesmo para dois deploys distintos do mesmo projeto e commit, então o segundo colide com o primeiro enquanto ele existir. A retomada do **mesmo** deploy está coberta (item 5); a atualização com release anterior preservada é o RF-15 (MVP) e resolve nomes por release.
 
 ## Critérios de revisão
 

@@ -65,6 +65,21 @@ func Pool(t *testing.T) *pgxpool.Pool {
 // Key é a chave fixa dos testes; nunca use fora deles.
 var Key = []byte("0123456789abcdef0123456789abcdef")
 
+// NewWithPool é como New, mas devolve também o pool do schema, para testes que
+// precisam alterar o banco diretamente (por exemplo, vencer um lease).
+func NewWithPool(t *testing.T) (*store.Store, *pgxpool.Pool) {
+	t.Helper()
+	pool := Pool(t)
+	if err := store.Migrate(context.Background(), pool); err != nil {
+		t.Fatalf("migrar schema de teste: %v", err)
+	}
+	box, err := secrets.NewBox(Key, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store.New(pool).WithCipher(box), pool
+}
+
 // New devolve um Store sobre um schema novo com todas as migrations aplicadas
 // e a cifra de variáveis configurada com Key.
 func New(t *testing.T) *store.Store {

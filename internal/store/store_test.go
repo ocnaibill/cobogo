@@ -27,22 +27,44 @@ func newProject(t *testing.T, st *store.Store) domain.Project {
 	return p
 }
 
+const (
+	testLease    = time.Minute
+	testAttempts = 3
+)
+
+// claim reivindica o próximo job, como faz o worker, e devolve a posse.
+func claim(t *testing.T, st *store.Store) (*store.Owned, *domain.Job, *domain.Deployment) {
+	t.Helper()
+	job, dep, err := st.ClaimNextJob(ctx, testLease, testAttempts)
+	if err != nil || job == nil {
+		t.Fatalf("claim: job=%v err=%v", job, err)
+	}
+	return st.Owned(store.LeaseOf(job)), job, dep
+}
+
 // awaitingInput leva um deploy ao ponto em que o worker o deixa quando a
-// análise pede informação: SHA fixado, NEEDS_INPUT e job concluído.
+// análise pede informação: SHA fixado, NEEDS_INPUT e job concluído. Reivindica
+// o próximo job pendente, então deve ser chamado antes de criar outros.
 func awaitingInput(t *testing.T, st *store.Store, overrides map[string]string) domain.Deployment {
 	t.Helper()
 	p := newProject(t, st)
-	dep, job, err := st.CreateDeploymentWithJob(ctx, p.ID, "k-"+uuid.NewString(), overrides)
+	dep, _, err := st.CreateDeploymentWithJob(ctx, p.ID, "k-"+uuid.NewString(), overrides)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SetDeploymentCommitSHA(ctx, dep.ID, "abc123"); err != nil {
+	o, _, _ := claim(t, st)
+	for _, step := range []domain.DeploymentState{domain.DeploymentFetching, domain.DeploymentAnalyzing} {
+		if err := o.Transition(ctx, dep.ID, step, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := o.SetCommitSHA(ctx, dep.ID, "abc123"); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.UpdateDeploymentState(ctx, dep.ID, domain.DeploymentNeedsInput, ""); err != nil {
+	if err := o.Transition(ctx, dep.ID, domain.DeploymentNeedsInput, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.MarkJobDone(ctx, job.ID); err != nil {
+	if err := o.Finish(ctx); err != nil {
 		t.Fatal(err)
 	}
 	return dep
@@ -81,7 +103,7 @@ func TestAnswerDeploymentRequeuesOnTheSameSHA(t *testing.T) {
 	st := storetest.New(t)
 	dep := awaitingInput(t, st, map[string]string{"port": "3000"})
 
-	if job, _, err := st.ClaimNextJob(ctx, time.Minute); err != nil || job != nil {
+	if job, _, err := st.ClaimNextJob(ctx, testLease, testAttempts); err != nil || job != nil {
 		t.Fatalf("the finished job must not be claimable before the answer: job=%v err=%v", job, err)
 	}
 
@@ -100,9 +122,12 @@ func TestAnswerDeploymentRequeuesOnTheSameSHA(t *testing.T) {
 		t.Errorf("overrides = %#v, want the merge %#v", answered.Overrides, want)
 	}
 
-	job, claimed, err := st.ClaimNextJob(ctx, time.Minute)
+	job, claimed, err := st.ClaimNextJob(ctx, testLease, testAttempts)
 	if err != nil || job == nil {
 		t.Fatalf("the answer must make the job claimable again: job=%v err=%v", job, err)
+	}
+	if job.AttemptCount != 1 {
+		t.Errorf("an answer starts a fresh run, attempt_count = %d, want 1", job.AttemptCount)
 	}
 	if claimed.ID != dep.ID || claimed.CommitSHA != "abc123" {
 		t.Errorf("claimed %s at %q, want the same deployment at the same SHA", claimed.ID, claimed.CommitSHA)
@@ -137,6 +162,7 @@ func TestAnswerEventRecordsFieldNamesNotValues(t *testing.T) {
 
 func TestAnswerRejectsWrongState(t *testing.T) {
 	st := storetest.New(t)
+	awaiting := awaitingInput(t, st, nil)
 	p := newProject(t, st)
 	queued, _, err := st.CreateDeploymentWithJob(ctx, p.ID, "k1", nil)
 	if err != nil {
@@ -150,11 +176,10 @@ func TestAnswerRejectsWrongState(t *testing.T) {
 		t.Errorf("answering an unknown deployment: err = %v, want ErrNotFound", err)
 	}
 
-	dep := awaitingInput(t, st, nil)
-	if _, err := st.AnswerDeployment(ctx, dep.ID, map[string]string{"port": "3000"}); err != nil {
+	if _, err := st.AnswerDeployment(ctx, awaiting.ID, map[string]string{"port": "3000"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.AnswerDeployment(ctx, dep.ID, map[string]string{"port": "3001"}); !errors.Is(err, store.ErrNotAwaitingInput) {
+	if _, err := st.AnswerDeployment(ctx, awaiting.ID, map[string]string{"port": "3001"}); !errors.Is(err, store.ErrNotAwaitingInput) {
 		t.Errorf("answering twice: err = %v, want ErrNotAwaitingInput", err)
 	}
 }

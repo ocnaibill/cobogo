@@ -71,7 +71,7 @@ func deploy(t *testing.T, rt *dockerrt.Runtime, dir string, overrides map[string
 	}
 	t.Cleanup(func() { _ = exec.Command("docker", "rmi", "-f", tag).Run() })
 
-	run, err := rt.Run(ctx, tag, "cobogo-test-"+strings.ToLower(strings.ReplaceAll(t.Name(), "/", "-")), plan.Port, map[string]string{"PORT": "3000"})
+	run, err := rt.Run(ctx, tag, "cobogo-test-"+strings.ToLower(strings.ReplaceAll(t.Name(), "/", "-")), plan.Port, map[string]string{"PORT": "3000"}, "planner-test")
 	if err != nil {
 		t.Fatal(err)
 	}

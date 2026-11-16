@@ -129,54 +129,97 @@ func (s *Store) CreateDeploymentWithJob(ctx context.Context, projectID uuid.UUID
 	return dep, job, nil
 }
 
-// ClaimNextJob reivindica um job pendente (ou com lease expirado) via
-// SKIP LOCKED, conforme §12.3. Retorna (nil, nil, nil) quando não há
-// trabalho disponível.
-func (s *Store) ClaimNextJob(ctx context.Context, lease time.Duration) (*domain.Job, *domain.Deployment, error) {
+// ClaimNextJob reivindica um job via SKIP LOCKED (§12.3): um PENDING ou um
+// LEASED cujo lease venceu (o worker anterior caiu; DEC-26). Cada
+// reivindicação incrementa a geração de posse e o número de tentativas. Um job
+// que já atingiu maxAttempts é encerrado e o deploy vai a FAILED, em vez de
+// derrubar o worker de novo. Devolve (nil, nil, nil) quando não há trabalho.
+func (s *Store) ClaimNextJob(ctx context.Context, lease time.Duration, maxAttempts int) (*domain.Job, *domain.Deployment, error) {
+	for {
+		job, dep, again, err := s.claimOnce(ctx, lease, maxAttempts)
+		if err != nil || !again {
+			return job, dep, err
+		}
+	}
+}
+
+// claimOnce devolve again=true quando só encerrou um job esgotado e há que
+// procurar o próximo.
+func (s *Store) claimOnce(ctx context.Context, lease time.Duration, maxAttempts int) (job *domain.Job, dep *domain.Deployment, again bool, err error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("store: abrir transação de claim: %w", err)
+		return nil, nil, false, fmt.Errorf("store: abrir transação de claim: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
-	var jobID uuid.UUID
+	var jobID, deploymentID uuid.UUID
+	var attempts int
 	err = tx.QueryRow(ctx, `
-		SELECT id FROM jobs
-		WHERE state = $1 AND (lease_until IS NULL OR lease_until < now())
+		SELECT id, deployment_id, attempt_count FROM jobs
+		WHERE (state = $1 AND (lease_until IS NULL OR lease_until < now()))
+		   OR (state = $2 AND lease_until < now())
 		ORDER BY created_at
 		FOR UPDATE SKIP LOCKED
-		LIMIT 1`, domain.JobPending,
-	).Scan(&jobID)
+		LIMIT 1`, domain.JobPending, domain.JobLeased,
+	).Scan(&jobID, &deploymentID, &attempts)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil, nil
+		return nil, nil, false, nil
 	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("store: selecionar próximo job: %w", err)
+		return nil, nil, false, fmt.Errorf("store: selecionar próximo job: %w", err)
 	}
 
-	now := time.Now().UTC()
-	leaseUntil := now.Add(lease)
-	var job domain.Job
+	if attempts >= maxAttempts {
+		if err := exhaustJob(ctx, tx, jobID, deploymentID, attempts); err != nil {
+			return nil, nil, false, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, nil, false, fmt.Errorf("store: confirmar encerramento do job: %w", err)
+		}
+		return nil, nil, true, nil
+	}
+
+	var claimed domain.Job
 	err = tx.QueryRow(ctx, `
-		UPDATE jobs SET state = $1, lease_until = $2, ownership_generation = ownership_generation + 1,
-			attempt_count = attempt_count + 1, updated_at = $3
-		WHERE id = $4
+		UPDATE jobs SET state = $1, lease_until = now() + make_interval(secs => $2),
+			ownership_generation = ownership_generation + 1, attempt_count = attempt_count + 1, updated_at = now()
+		WHERE id = $3
 		RETURNING id, deployment_id, state, lease_until, ownership_generation, attempt_count, created_at, updated_at`,
-		domain.JobLeased, leaseUntil, now, jobID,
-	).Scan(&job.ID, &job.DeploymentID, &job.State, &job.LeaseUntil, &job.OwnershipGeneration, &job.AttemptCount, &job.CreatedAt, &job.UpdatedAt)
+		domain.JobLeased, lease.Seconds(), jobID,
+	).Scan(&claimed.ID, &claimed.DeploymentID, &claimed.State, &claimed.LeaseUntil, &claimed.OwnershipGeneration, &claimed.AttemptCount, &claimed.CreatedAt, &claimed.UpdatedAt)
 	if err != nil {
-		return nil, nil, fmt.Errorf("store: marcar job como leased: %w", err)
+		return nil, nil, false, fmt.Errorf("store: marcar job como leased: %w", err)
 	}
 
-	dep, err := s.getDeploymentTx(ctx, tx, job.DeploymentID)
+	d, err := s.getDeploymentTx(ctx, tx, claimed.DeploymentID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
-
 	if err := tx.Commit(ctx); err != nil {
-		return nil, nil, fmt.Errorf("store: confirmar claim: %w", err)
+		return nil, nil, false, fmt.Errorf("store: confirmar claim: %w", err)
 	}
-	return &job, &dep, nil
+	return &claimed, &d, false, nil
+}
+
+// exhaustJob encerra um job que esgotou as tentativas e falha o deploy, se ele
+// ainda não terminou.
+func exhaustJob(ctx context.Context, tx pgx.Tx, jobID, deploymentID uuid.UUID, attempts int) error {
+	if _, err := tx.Exec(ctx, `UPDATE jobs SET state = $1, lease_until = NULL, updated_at = now() WHERE id = $2`, domain.JobDone, jobID); err != nil {
+		return fmt.Errorf("store: encerrar job esgotado: %w", err)
+	}
+	reason := fmt.Sprintf("tentativas esgotadas: o worker foi interrompido durante %d tentativas", attempts)
+	tag, err := tx.Exec(ctx, `
+		UPDATE deployments SET state = $1, failure_reason = $2, updated_at = now()
+		WHERE id = $3 AND state NOT IN ($4, $5, $6, $7, $8)`,
+		domain.DeploymentFailed, reason, deploymentID,
+		domain.DeploymentSucceeded, domain.DeploymentFailed, domain.DeploymentUnsupported, domain.DeploymentCancelled, domain.DeploymentNeedsInput)
+	if err != nil {
+		return fmt.Errorf("store: falhar deploy esgotado: %w", err)
+	}
+	if tag.RowsAffected() > 0 {
+		return appendEventTx(ctx, tx, deploymentID, "pipeline", "failed", map[string]any{"error": reason, "attempts": attempts})
+	}
+	return nil
 }
 
 const deploymentColumns = `id, project_id, analysis_id, commit_sha, state, idempotency_key, overrides, failure_reason, created_at, updated_at`
@@ -254,7 +297,7 @@ func (s *Store) AnswerDeployment(ctx context.Context, id uuid.UUID, answers map[
 	}
 
 	tag, err := tx.Exec(ctx, `
-		UPDATE jobs SET state = $1, lease_until = NULL, updated_at = now()
+		UPDATE jobs SET state = $1, lease_until = NULL, attempt_count = 0, updated_at = now()
 		WHERE deployment_id = $2 AND state = $3`,
 		domain.JobPending, id, domain.JobDone)
 	if err != nil {
@@ -281,66 +324,6 @@ func (s *Store) AnswerDeployment(ctx context.Context, id uuid.UUID, answers map[
 	return dep, nil
 }
 
-// SetDeploymentCommitSHA fixa o commit obtido (RF-02); ocorre uma vez, após
-// FETCHING.
-func (s *Store) SetDeploymentCommitSHA(ctx context.Context, id uuid.UUID, sha string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE deployments SET commit_sha = $1, updated_at = now() WHERE id = $2`, sha, id)
-	if err != nil {
-		return fmt.Errorf("store: registrar SHA do deployment: %w", err)
-	}
-	return nil
-}
-
-// UpdateDeploymentState avança a máquina de estados do §15.2.
-func (s *Store) UpdateDeploymentState(ctx context.Context, id uuid.UUID, state domain.DeploymentState, failureReason string) error {
-	var reason *string
-	if failureReason != "" {
-		reason = &failureReason
-	}
-	_, err := s.pool.Exec(ctx, `UPDATE deployments SET state = $1, failure_reason = $2, updated_at = now() WHERE id = $3`, state, reason, id)
-	if err != nil {
-		return fmt.Errorf("store: atualizar estado do deployment: %w", err)
-	}
-	return nil
-}
-
-// SaveAnalysis persiste o snapshot imutável da análise e o vincula ao
-// deployment em curso (RF-02, RF-03).
-func (s *Store) SaveAnalysis(ctx context.Context, deploymentID, projectID uuid.UUID, commitSHA string, result domain.AnalysisResult) (uuid.UUID, error) {
-	resultJSON, err := json.Marshal(result)
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("store: serializar resultado da análise: %w", err)
-	}
-
-	analysisID := uuid.New()
-	now := time.Now().UTC()
-
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("store: abrir transação de análise: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	_, err = tx.Exec(ctx, `
-		INSERT INTO analyses (id, project_id, commit_sha, rules_version, outcome, result, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		analysisID, projectID, commitSHA, result.CatalogVersion, result.Outcome, string(resultJSON), now,
-	)
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("store: inserir análise: %w", err)
-	}
-
-	_, err = tx.Exec(ctx, `UPDATE deployments SET analysis_id = $1, updated_at = now() WHERE id = $2`, analysisID, deploymentID)
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("store: vincular análise ao deployment: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return uuid.Nil, fmt.Errorf("store: confirmar análise: %w", err)
-	}
-	return analysisID, nil
-}
-
 func (s *Store) GetAnalysis(ctx context.Context, id uuid.UUID) (domain.Analysis, error) {
 	var a domain.Analysis
 	var resultRaw string
@@ -358,22 +341,6 @@ func (s *Store) GetAnalysis(ctx context.Context, id uuid.UUID) (domain.Analysis,
 		return domain.Analysis{}, fmt.Errorf("store: decodificar resultado da análise: %w", err)
 	}
 	return a, nil
-}
-
-// AppendEvent grava um evento imutável sem segredos (RF-07, RN-11). O
-// número de sequência é calculado dentro da mesma transação; adequado para
-// o worker único de M1 (RNF-05).
-func (s *Store) AppendEvent(ctx context.Context, deploymentID uuid.UUID, stage, eventType string, payload map[string]any) error {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("store: abrir transação de evento: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	if err := appendEventTx(ctx, tx, deploymentID, stage, eventType, payload); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
 }
 
 func appendEventTx(ctx context.Context, tx pgx.Tx, deploymentID uuid.UUID, stage, eventType string, payload map[string]any) error {
@@ -423,37 +390,6 @@ func (s *Store) ListEvents(ctx context.Context, deploymentID uuid.UUID) ([]domai
 		events = append(events, e)
 	}
 	return events, rows.Err()
-}
-
-// MarkJobDone encerra o job, liberando-o permanentemente.
-func (s *Store) MarkJobDone(ctx context.Context, jobID uuid.UUID) error {
-	_, err := s.pool.Exec(ctx, `UPDATE jobs SET state = $1, updated_at = now() WHERE id = $2`, domain.JobDone, jobID)
-	if err != nil {
-		return fmt.Errorf("store: concluir job: %w", err)
-	}
-	return nil
-}
-
-func (s *Store) CreateRelease(ctx context.Context, deploymentID uuid.UUID, imageID, containerID, operationalState, health string, hostPort int) (domain.Release, error) {
-	r := domain.Release{
-		ID:               uuid.New(),
-		DeploymentID:     deploymentID,
-		ImageID:          imageID,
-		ContainerID:      containerID,
-		OperationalState: operationalState,
-		Health:           health,
-		HostPort:         hostPort,
-		CreatedAt:        time.Now().UTC(),
-	}
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO releases (id, deployment_id, image_id, container_id, operational_state, health, host_port, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		r.ID, r.DeploymentID, r.ImageID, r.ContainerID, r.OperationalState, r.Health, r.HostPort, r.CreatedAt,
-	)
-	if err != nil {
-		return domain.Release{}, fmt.Errorf("store: criar release: %w", err)
-	}
-	return r, nil
 }
 
 func (s *Store) GetReleaseByDeployment(ctx context.Context, deploymentID uuid.UUID) (domain.Release, error) {
