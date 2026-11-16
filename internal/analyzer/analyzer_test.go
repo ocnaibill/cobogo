@@ -57,6 +57,7 @@ func nodeFields(start string, extra map[string]wantField) map[string]wantField {
 		domain.FieldProfile:        {value: "P-NODE", origin: domain.OriginInference},
 		domain.FieldPackageManager: {value: "npm", origin: domain.OriginInference},
 		domain.FieldExecutionMode:  {value: "production", origin: domain.OriginDefault},
+		domain.FieldNodeVersion:    {value: "26", origin: domain.OriginDefault},
 	}
 	if start != "" {
 		fields[domain.FieldStartCommand] = wantField{value: start, origin: domain.OriginDeclaration}
@@ -70,7 +71,7 @@ func fixtures() []fixture {
 	unsupportedByHEU01 := want{
 		outcome:     domain.AnalysisUnsupported,
 		unsupported: []string{"HEU-01"},
-		skipped:     []string{"HEU-02", "HEU-05", "HEU-09"},
+		skipped:     []string{"HEU-02", "HEU-05", "HEU-09", "HEU-10"},
 	}
 	portRepo := nodeRepo(startIndex, map[string]string{
 		"index.js": "const port = process.env.PORT || 3000;",
@@ -193,6 +194,7 @@ func fixtures() []fixture {
 					domain.FieldProfile:        {value: "P-NODE", origin: domain.OriginInference},
 					domain.FieldPackageManager: {value: "npm", origin: domain.OriginInference},
 					domain.FieldExecutionMode:  {value: "production", origin: domain.OriginDefault},
+					domain.FieldNodeVersion:    {value: "26", origin: domain.OriginDefault},
 					domain.FieldStartCommand:   {value: "node index.js", origin: domain.OriginOverride},
 					domain.FieldPort:           {value: "3000", origin: domain.OriginOverride},
 				},
@@ -208,6 +210,7 @@ func fixtures() []fixture {
 					domain.FieldProfile:        {value: "P-NODE", origin: domain.OriginInference},
 					domain.FieldPackageManager: {value: "npm", origin: domain.OriginInference},
 					domain.FieldExecutionMode:  {value: "production", origin: domain.OriginDefault},
+					domain.FieldNodeVersion:    {value: "26", origin: domain.OriginDefault},
 					domain.FieldStartCommand:   {value: "node server.js", origin: domain.OriginOverride, overrode: 1},
 					domain.FieldPort:           {value: "3000", origin: domain.OriginOverride},
 				},
@@ -1175,5 +1178,130 @@ func TestEnvFilesAreNotFollowedThroughSymlinks(t *testing.T) {
 	assertStrings(t, "gaps", gaps, []string{".env:symlink", ".env.example:symlink"})
 	if len(res.Warnings) != 0 || len(res.ConfigVariables) != 0 {
 		t.Errorf("a symlink must not be read: warnings=%v vars=%v", res.Warnings, res.ConfigVariables)
+	}
+}
+
+func nodeVersionOf(t *testing.T, pkg string, extra map[string]string, overrides map[string]string) (domain.Field, domain.AnalysisResult) {
+	t.Helper()
+	if overrides == nil {
+		overrides = map[string]string{}
+	}
+	overrides["port"] = "3000"
+	res, err := Analyze(toFS(nodeRepo(pkg, extra)), Input{Overrides: overrides})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res.Fields[domain.FieldNodeVersion], res
+}
+
+func TestNodeVersionSelection(t *testing.T) {
+	const start = `"scripts":{"start":"node index.js"}`
+	tests := []struct {
+		name       string
+		engines    string
+		nvmrc      string
+		want       string
+		origin     domain.Origin
+		wantWarned bool
+	}{
+		{"no declaration uses the default", "", "", "26", domain.OriginDefault, false},
+		{"a wide range picks the highest supported version", ">=18", "", "26", domain.OriginDeclaration, false},
+		{"a caret on a supported major picks it", "^22.12.0", "", "22", domain.OriginDeclaration, false},
+		{"an or-range picks the highest admitted", "22 || 24", "", "24", domain.OriginDeclaration, false},
+		{"a bounded range", ">=18.12.0 <=24", "", "24", domain.OriginDeclaration, false},
+		{"a hyphen range", "18 - 22", "", "22", domain.OriginDeclaration, false},
+		{"an exact pin of a supported major", "22.11.0", "", "22", domain.OriginDeclaration, false},
+		{"a tilde on a supported minor", "~24.1", "", "24", domain.OriginDeclaration, false},
+		{"x-range", "24.x", "", "24", domain.OriginDeclaration, false},
+		{"a wildcard admits everything, so the default", "*", "", "26", domain.OriginDeclaration, false},
+		{"an unsupported major warns and keeps the default", "20.x", "", "26", domain.OriginDefault, true},
+		{"an old caret warns", "^16.13.0", "", "26", domain.OriginDefault, true},
+		{"an upper bound below the catalog warns", "<19", "", "26", domain.OriginDefault, true},
+		{"a value that is not a range warns", "lts/*", "", "26", domain.OriginDefault, true},
+		{"nvmrc is used without engines", "", "v24.1.0\n", "24", domain.OriginDeclaration, false},
+		{"nvmrc with a major only", "", "22", "22", domain.OriginDeclaration, false},
+		{"nvmrc of an unsupported major warns", "", "18", "26", domain.OriginDefault, true},
+		{"nvmrc with an alias warns", "", "lts/iron", "26", domain.OriginDefault, true},
+		{"engines wins over nvmrc", ">=22 <25", "26", "24", domain.OriginDeclaration, false},
+		{"nvmrc is the fallback when engines admits nothing", "20.x", "22", "22", domain.OriginDeclaration, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pkg := `{` + start
+			if tt.engines != "" {
+				pkg += `,"engines":{"node":"` + tt.engines + `"}`
+			}
+			pkg += `}`
+			extra := map[string]string{}
+			if tt.nvmrc != "" {
+				extra[".nvmrc"] = tt.nvmrc
+			}
+			field, res := nodeVersionOf(t, pkg, extra, nil)
+			if field.Value != tt.want || field.Origin != tt.origin {
+				t.Errorf("node_version = %q (%s), want %q (%s)", field.Value, field.Origin, tt.want, tt.origin)
+			}
+			warned := strings.Contains(warningMessages(res), "HEU-10")
+			if warned != tt.wantWarned {
+				t.Errorf("warned = %v, want %v: %q", warned, tt.wantWarned, warningMessages(res))
+			}
+			if res.Outcome != domain.AnalysisReady {
+				t.Errorf("a version declaration must never block, outcome = %s", res.Outcome)
+			}
+		})
+	}
+}
+
+func TestNodeVersionWarningNamesWhatWasDeclared(t *testing.T) {
+	_, res := nodeVersionOf(t, `{"scripts":{"start":"node index.js"},"engines":{"node":"16.x"}}`, nil, nil)
+	got := warningMessages(res)
+	for _, want := range []string{`package.json#engines.node`, `"16.x"`, "Node 26", "22, 24, 26"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("warning %q missing %q", got, want)
+		}
+	}
+}
+
+func TestNodeVersionOverride(t *testing.T) {
+	field, res := nodeVersionOf(t, `{"scripts":{"start":"node index.js"},"engines":{"node":"^22"}}`, nil, map[string]string{"node_version": "24"})
+	if field.Value != "24" || field.Origin != domain.OriginOverride {
+		t.Errorf("override = %+v", field)
+	}
+	// O que o override cobriu fica registrado: a declaração do projeto e o padrão.
+	var covered []string
+	for _, p := range field.Overrode {
+		covered = append(covered, p.Value+"/"+string(p.Origin))
+	}
+	slices.Sort(covered)
+	assertStrings(t, "covered proposals", covered, []string{"22/declaration", "26/default"})
+	if res.Outcome != domain.AnalysisReady {
+		t.Errorf("outcome = %s", res.Outcome)
+	}
+
+	for _, bad := range []string{"20", "18", "latest", "26.1", "", "v26"} {
+		if err := CheckOverrides(map[string]string{"node_version": bad}); err == nil {
+			t.Errorf("node_version %q must be refused", bad)
+		}
+	}
+	for _, good := range []string{"22", "24", "26"} {
+		if err := CheckOverrides(map[string]string{"node_version": good}); err != nil {
+			t.Errorf("node_version %q: %v", good, err)
+		}
+	}
+}
+
+// engines com tipos inesperados não pode derrubar a leitura do manifesto.
+func TestWeirdEnginesDoNotInvalidateTheManifest(t *testing.T) {
+	for _, engines := range []string{`{"node":18}`, `{"node":null}`, `{"node":["a"]}`, `["node"]`, `"node"`} {
+		pkg := `{"scripts":{"start":"node index.js"},"engines":` + engines + `}`
+		res, err := Analyze(toFS(nodeRepo(pkg, nil)), Input{Overrides: map[string]string{"port": "3000"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if engines == `["node"]` || engines == `"node"` {
+			continue // não é um objeto: json.Unmarshal rejeita o manifesto, como qualquer JSON de formato inesperado
+		}
+		if res.Outcome != domain.AnalysisReady {
+			t.Errorf("engines %s: outcome %s, unsupported %+v", engines, res.Outcome, res.Unsupported)
+		}
 	}
 }

@@ -2,6 +2,9 @@ package planner_test
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -49,7 +52,7 @@ func writeProject(t *testing.T, files map[string]string) string {
 // contêiner (já com limpeza registrada).
 func deploy(t *testing.T, rt *dockerrt.Runtime, dir string, overrides map[string]string) (containerID string, hostPort int) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
 	res, err := analyzer.Analyze(os.DirFS(dir), analyzer.Input{Overrides: overrides})
@@ -81,6 +84,22 @@ func deploy(t *testing.T, rt *dockerrt.Runtime, dir string, overrides map[string
 	return run.ContainerID, run.HostPort
 }
 
+func httpBody(t *testing.T, hostPort int) string {
+	t.Helper()
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/", hostPort))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return string(body)
+}
+
+func execIn(id string, args ...string) (string, error) {
+	out, err := exec.Command("docker", append([]string{"exec", id}, args...)...).CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
 func containerEnv(t *testing.T, id, name string) string {
 	t.Helper()
 	out, err := exec.Command("docker", "exec", id, "printenv", name).Output()
@@ -98,17 +117,28 @@ func TestProductionBuildAndStartFindToolsInNodeModulesBin(t *testing.T) {
 		"package.json": `{
   "name": "app", "version": "1.0.0",
   "scripts": {
-    "build": "mkdirp dist && echo '<h1>built</h1>' > dist/index.html",
+    "build": "mkdirp dist && g++ --version > dist/index.html",
     "start": "http-server dist -p 3000 -a 0.0.0.0"
   },
   "dependencies": {"http-server": "14.1.1"},
   "devDependencies": {"mkdirp": "3.0.1"}
 }`,
 	})
-	id, _ := deploy(t, rt, dir, map[string]string{"port": "3000"})
+	id, hostPort := deploy(t, rt, dir, map[string]string{"port": "3000"})
 
 	if got := containerEnv(t, id, "NODE_ENV"); got != "production" {
 		t.Errorf("NODE_ENV = %q, want production", got)
+	}
+	if got, _ := execIn(id, "node", "--version"); !strings.HasPrefix(got, "v26.") {
+		t.Errorf("node --version = %q, want the default 26", got)
+	}
+	// O compilador existiu no estágio de build (o script o executou)...
+	if body := httpBody(t, hostPort); !strings.Contains(body, "g++") {
+		t.Errorf("the build stage did not have a compiler: %q", body)
+	}
+	// ...e não vai para a imagem de execução.
+	if out, err := execIn(id, "sh", "-c", "command -v g++ || command -v make || command -v python3"); err == nil {
+		t.Errorf("the runtime image carries build tools: %s", out)
 	}
 	// O build usou uma devDependency; ela não deve sobrar na imagem final.
 	if out, err := exec.Command("docker", "exec", id, "sh", "-c", "test -e node_modules/.bin/mkdirp").CombinedOutput(); err == nil {
@@ -129,5 +159,24 @@ func TestDevelopmentModeKeepsDevDependencies(t *testing.T) {
 
 	if got := containerEnv(t, id, "NODE_ENV"); got != "development" {
 		t.Errorf("NODE_ENV = %q, want development", got)
+	}
+}
+
+func TestOtherNodeVersionsRunTheSameProject(t *testing.T) {
+	rt := requireDocker(t)
+	dir := writeProject(t, map[string]string{
+		"package.json": `{
+  "name": "app", "version": "1.0.0",
+  "scripts": {"start": "http-server . -p 3000 -a 0.0.0.0"},
+  "dependencies": {"http-server": "14.1.1"}
+}`,
+	})
+	for _, version := range []string{"22", "24"} {
+		t.Run("node"+version, func(t *testing.T) {
+			id, _ := deploy(t, rt, dir, map[string]string{"port": "3000", "node_version": version})
+			if got, _ := execIn(id, "node", "--version"); !strings.HasPrefix(got, "v"+version+".") {
+				t.Errorf("node --version = %q, want v%s", got, version)
+			}
+		})
 	}
 }

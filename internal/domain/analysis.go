@@ -18,6 +18,7 @@ const (
 	FieldStartCommand   = "start_command"
 	FieldBuildCommand   = "build_command"
 	FieldExecutionMode  = "execution_mode"
+	FieldNodeVersion    = "node_version"
 	FieldPort           = "port"
 )
 
@@ -27,6 +28,13 @@ const (
 	ModeProduction  = "production"
 	ModeDevelopment = "development"
 )
+
+// SupportedNodeVersions são as versões major do Node que o catálogo aceita
+// (todas com suporte do projeto Node.js; DEC-25). DefaultNodeVersion vale
+// quando o projeto não declara versão ou declara uma que nenhuma admite.
+var SupportedNodeVersions = []string{"22", "24", "26"}
+
+const DefaultNodeVersion = "26"
 
 // Scope diz onde uma evidência se aplica (§4.1 do motor).
 type Scope string

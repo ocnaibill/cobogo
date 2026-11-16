@@ -153,6 +153,8 @@ func (w *Worker) process(ctx context.Context, job *domain.Job, dep *domain.Deplo
 	w.emit(ctx, dep.ID, "generating", "completed", map[string]any{
 		"profile":         plan.Profile,
 		"runtime":         plan.Runtime,
+		"build_image":     plan.BuildImage,
+		"node_version":    plan.NodeVersion,
 		"install_command": plan.InstallCommand,
 		"build_command":   plan.BuildCommand,
 		"start_command":   plan.StartCommand,

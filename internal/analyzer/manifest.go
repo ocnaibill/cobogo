@@ -49,6 +49,7 @@ func extractManifest(fsys fs.FS, x *Extraction) error {
 	var pkg struct {
 		Scripts    map[string]string `json:"scripts"`
 		Workspaces json.RawMessage   `json:"workspaces"`
+		Engines    map[string]any    `json:"engines"`
 	}
 	if err := json.Unmarshal(data, &pkg); err != nil {
 		invalid(err.Error())
@@ -72,6 +73,35 @@ func extractManifest(fsys fs.FS, x *Extraction) error {
 			scope = domain.ScopeBuild
 		}
 		x.emit(extractorManifest, domain.Evidence{Kind: kindScript, Name: name, Value: cmd, Source: "package.json#scripts." + name, Scope: scope})
+	}
+
+	if node, ok := pkg.Engines["node"].(string); ok && strings.TrimSpace(node) != "" {
+		x.emit(extractorManifest, domain.Evidence{Kind: kindEngines, Name: "node", Value: strings.TrimSpace(node), Source: "package.json#engines.node", Scope: domain.ScopeBuild})
+	}
+	return extractNvmrc(fsys, x)
+}
+
+// extractNvmrc lê a primeira linha de .nvmrc, que declara a versão de Node
+// que a pessoa desenvolvedora usa. Só a linha é guardada, nunca executada.
+func extractNvmrc(fsys fs.FS, x *Extraction) error {
+	data, state, err := readSmallFile(fsys, ".nvmrc")
+	if err != nil {
+		return err
+	}
+	switch state {
+	case fileMissing:
+		return nil
+	case fileSymlink:
+		x.gap(".nvmrc", "symlink")
+		return nil
+	case fileTooLarge:
+		x.gap(".nvmrc", "too_large")
+		return nil
+	}
+	x.filesRead++
+	first, _, _ := strings.Cut(string(data), "\n")
+	if value := strings.TrimSpace(first); value != "" {
+		x.emit(extractorManifest, domain.Evidence{Kind: kindNvmrc, Name: ".nvmrc", Value: value, Source: ".nvmrc", Line: 1, Scope: domain.ScopeBuild})
 	}
 	return nil
 }

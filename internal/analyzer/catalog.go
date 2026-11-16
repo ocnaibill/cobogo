@@ -89,7 +89,7 @@ type Catalog struct {
 	Fields     []FieldSpec
 }
 
-const nodeCatalogVersion = "p-node-0.2"
+const nodeCatalogVersion = "p-node-0.3"
 
 func NodeCatalog() Catalog {
 	return Catalog{
@@ -99,13 +99,14 @@ func NodeCatalog() Catalog {
 			{ID: extractorEnvFiles, Extract: extractEnvFiles},
 			{ID: extractorSource, Extract: extractSource},
 		},
-		Rules: []Rule{ruleHEU01(), ruleHEU02(), ruleHEU05(), ruleHEU09()},
+		Rules: []Rule{ruleHEU01(), ruleHEU02(), ruleHEU05(), ruleHEU09(), ruleHEU10()},
 		Fields: []FieldSpec{
 			{Name: domain.FieldProfile, Required: true},
 			{Name: domain.FieldPackageManager, Required: true},
 			{Name: domain.FieldStartCommand, Required: true, Overridable: true, Validate: validateCommand},
 			{Name: domain.FieldBuildCommand, Overridable: true, Validate: validateCommand},
 			{Name: domain.FieldExecutionMode, Overridable: true, Validate: validateExecutionMode},
+			{Name: domain.FieldNodeVersion, Overridable: true, Validate: validateNodeVersion},
 			{Name: domain.FieldPort, Required: true, Overridable: true, Validate: validatePort},
 		},
 	}

@@ -154,6 +154,7 @@ Cada regra terá: ID estável, versão, estado proposto/validado/retirado, objet
 | HEU-07 — Go | Registrar candidato e suporte disponível | Reconhecer `go.mod` não torna implementado o perfil opcional |
 | HEU-08 — Artefatos existentes | Informar Dockerfile/Compose e solicitar modo suportado | Compose de desenvolvimento não é autorização para replicá-lo em produção |
 | HEU-09 — Configuração | Descobrir nomes, origem, exposição e obrigatoriedade declarada | Nome `DATABASE_URL` não determina fornecedor, necessidade ou destino |
+| HEU-10 — Versão do runtime | Escolher a major do Node a partir de `engines.node` ou `.nvmrc` entre as versões suportadas (DEC-25); declaração inadmissível vira aviso | `engines` não é imposto pelo npm: pedir `20.x` não prova que o projeto quebra em uma versão mais nova |
 
 ### 6.1 Desdobramento de HEU-06
 

@@ -58,8 +58,9 @@ func TestFromAnalysis(t *testing.T) {
 		t.Errorf("unexpected plan: %+v", plan)
 	}
 	for _, want := range []string{
-		"ENV NODE_ENV=production", "ENV PATH=/app/node_modules/.bin:$PATH",
-		"RUN npm ci --omit=dev", "EXPOSE 3000", `CMD ["sh", "-c", "node server.js"]`, "USER node",
+		"FROM node:26 AS build", "FROM node:26-slim\n", "ENV NODE_ENV=production", "ENV PATH=/app/node_modules/.bin:$PATH",
+		"RUN npm ci --omit=dev", "COPY --from=build --chown=node:node /app /app",
+		"EXPOSE 3000", `CMD ["sh", "-c", "node server.js"]`, "USER node",
 	} {
 		if !strings.Contains(plan.Dockerfile, want) {
 			t.Errorf("Dockerfile missing %q:\n%s", want, plan.Dockerfile)
@@ -70,6 +71,47 @@ func TestFromAnalysis(t *testing.T) {
 	}
 	if plan.InstallCommand != "npm ci --omit=dev" {
 		t.Errorf("install command = %q", plan.InstallCommand)
+	}
+	if plan.Runtime != "node:26-slim" || plan.BuildImage != "node:26" || plan.NodeVersion != "26" {
+		t.Errorf("images = %q / %q (node %q)", plan.BuildImage, plan.Runtime, plan.NodeVersion)
+	}
+}
+
+// O build usa a imagem completa (compilador, python); a execução, a slim: o
+// que sobra na imagem final é só o resultado.
+func TestTwoStagesKeepTheToolchainOutOfTheRuntimeImage(t *testing.T) {
+	plan := BuildNodePlan(NodePlanInput{StartCommand: "node a.js", BuildCommand: "vite build", Port: 3000})
+	stages := strings.Split(plan.Dockerfile, "\nFROM ")
+	if len(stages) != 2 {
+		t.Fatalf("want 2 stages, got %d:\n%s", len(stages), plan.Dockerfile)
+	}
+	build, runtime := stages[0], stages[1]
+	for _, want := range []string{"RUN npm ci --include=dev", "RUN vite build", "RUN npm prune --omit=dev"} {
+		if !strings.Contains(build, want) {
+			t.Errorf("build stage missing %q:\n%s", want, build)
+		}
+	}
+	for _, unwanted := range []string{"npm ci", "vite build", "npm prune", "COPY . ."} {
+		if strings.Contains(runtime, unwanted) {
+			t.Errorf("runtime stage must not repeat %q:\n%s", unwanted, runtime)
+		}
+	}
+	if !strings.HasPrefix(runtime, "node:26-slim") || !strings.Contains(runtime, "USER node") || !strings.Contains(runtime, "CMD ") {
+		t.Errorf("runtime stage:\n%s", runtime)
+	}
+}
+
+func TestNodeVersionSelectsBothImages(t *testing.T) {
+	for _, version := range domain.SupportedNodeVersions {
+		plan := BuildNodePlan(NodePlanInput{StartCommand: "node a.js", NodeVersion: version, Port: 3000})
+		for _, want := range []string{"FROM node:" + version + " AS build", "FROM node:" + version + "-slim\n"} {
+			if !strings.Contains(plan.Dockerfile, want) {
+				t.Errorf("node %s: Dockerfile missing %q:\n%s", version, want, plan.Dockerfile)
+			}
+		}
+		if plan.NodeVersion != version {
+			t.Errorf("plan.NodeVersion = %q", plan.NodeVersion)
+		}
 	}
 }
 
@@ -87,8 +129,8 @@ func TestFromAnalysisWithBuildCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	order(t, plan.Dockerfile,
-		"ENV NODE_ENV=production", "ENV PATH=", "RUN npm ci --include=dev", "COPY --chown=node:node . .",
-		"RUN vite build", "RUN npm prune --omit=dev", "USER node", "CMD ")
+		"ENV NODE_ENV=production", "ENV PATH=", "RUN npm ci --include=dev", "COPY . .",
+		"RUN vite build", "RUN npm prune --omit=dev", "COPY --from=build", "USER node", "CMD ")
 	if plan.InstallCommand != "npm ci --include=dev" || plan.BuildCommand != "vite build" {
 		t.Errorf("plan = %+v", plan)
 	}
@@ -118,6 +160,18 @@ func TestDevelopmentModeInstallsEverythingAndSkipsBuild(t *testing.T) {
 		if strings.Contains(plan.Dockerfile, unwanted) {
 			t.Errorf("development image must not contain %q:\n%s", unwanted, plan.Dockerfile)
 		}
+	}
+}
+
+func TestFromAnalysisUsesTheResolvedNodeVersion(t *testing.T) {
+	res := readyAnalysis(map[string]domain.Field{
+		domain.FieldProfile:     {Value: "P-NODE"},
+		domain.FieldPort:        {Value: "3000"},
+		domain.FieldNodeVersion: {Value: "24", Origin: domain.OriginOverride},
+	})
+	plan, err := FromAnalysis(res)
+	if err != nil || plan.NodeVersion != "24" || plan.Runtime != "node:24-slim" || plan.BuildImage != "node:24" {
+		t.Errorf("plan = %+v, %v", plan, err)
 	}
 }
 
@@ -164,6 +218,9 @@ func TestFromAnalysisRejects(t *testing.T) {
 		"analysis not ready": {Outcome: domain.AnalysisNeedsInput, Fields: ok},
 		"unknown profile":    readyAnalysis(map[string]domain.Field{domain.FieldProfile: {Value: "P-PY"}, domain.FieldPort: {Value: "3000"}}),
 		"invalid port":       readyAnalysis(map[string]domain.Field{domain.FieldProfile: {Value: "P-NODE"}, domain.FieldPort: {Value: "abc"}}),
+		"unsupported node version": readyAnalysis(map[string]domain.Field{
+			domain.FieldProfile: {Value: "P-NODE"}, domain.FieldPort: {Value: "3000"}, domain.FieldNodeVersion: {Value: "20"},
+		}),
 		"unknown mode": readyAnalysis(map[string]domain.Field{
 			domain.FieldProfile: {Value: "P-NODE"}, domain.FieldPort: {Value: "3000"}, domain.FieldExecutionMode: {Value: "staging"},
 		}),

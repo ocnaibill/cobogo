@@ -5,6 +5,8 @@ package domain
 type Plan struct {
 	Profile        string `json:"profile"`
 	Runtime        string `json:"runtime"`
+	BuildImage     string `json:"build_image"`
+	NodeVersion    string `json:"node_version"`
 	PackageManager string `json:"package_manager"`
 	InstallCommand string `json:"install_command"`
 	BuildCommand   string `json:"build_command,omitempty"`

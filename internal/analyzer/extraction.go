@@ -18,6 +18,8 @@ const (
 	kindWorkspaces      = "manifest.workspaces"
 	kindLockfile        = "lockfile"
 	kindScript          = "npm.script"
+	kindEngines         = "runtime.engines"
+	kindNvmrc           = "runtime.nvmrc"
 	kindEnvDeclared     = "env.declared"
 	kindEnvReference    = "env.reference"
 )
