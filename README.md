@@ -81,20 +81,41 @@ curl -X POST localhost:8080/projects -H 'content-type: application/json' -d '{
 
 ```bash
 curl -X POST localhost:8080/projects/<id>/deployments -H 'content-type: application/json' -d '{
-  "idempotency_key": "tentativa-1",
-  "port": 3000
+  "idempotency_key": "tentativa-1"
 }'
 ```
 
-`port` é o override explícito (RN-03); se a análise não encontrar um contrato de porta inferível, o deploy para em `NEEDS_INPUT` em vez de inventar um valor (RN-02).
+Se a análise não encontrar um valor que não pode inferir, como a porta (RN-02), o deploy para em `NEEDS_INPUT` em vez de inventar um valor. Também é possível antecipar a resposta enviando `"overrides": {"port": "3000"}` neste corpo.
 
-### **3. Acompanhar o plano e os eventos**
+### **3. Responder pendências**
+
+```bash
+curl -X POST localhost:8080/deployments/<id>/answers -H 'content-type: application/json' -d '{
+  "overrides": {"port": "3000"}
+}'
+```
+
+Os campos aceitos são `port`, `start_command` e `build_command` (RN-03). A resposta reenfileira o **mesmo deploy** no **mesmo commit** já analisado (RF-08, RN-04), mesmo que a branch tenha avançado. Valores inválidos são recusados na hora (`400`); um deploy que não está em `NEEDS_INPUT` responde `409`.
+
+### **4. Acompanhar o plano e os eventos**
 
 ```bash
 curl localhost:8080/deployments/<id>
 ```
 
 Ao suceder, a resposta inclui a `release` com a porta publicada no host para acesso direto ao contêiner.
+
+## Testes automatizados
+
+```bash
+go test ./...
+```
+
+Os testes de integração com PostgreSQL (`store`, `httpapi`) usam um schema isolado por teste e são pulados se `COBOGO_TEST_DATABASE_URL` não estiver definida. Com o banco do passo 2 no ar:
+
+```bash
+COBOGO_TEST_DATABASE_URL="postgres://cobogo:devpassword@localhost:5432/cobogo_core?sslmode=disable" go test ./...
+```
 
 ## Licença
 

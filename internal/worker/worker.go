@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strconv"
 	"time"
 
 	"github.com/ocnaibill/cobogo/internal/analyzer"
@@ -98,7 +97,9 @@ func (w *Worker) process(ctx context.Context, job *domain.Job, dep *domain.Deplo
 	w.store.UpdateDeploymentState(ctx, dep.ID, domain.DeploymentFetching, "")
 	w.emit(ctx, dep.ID, "fetching", "started", nil)
 
-	ws, err := gitsource.Fetch(ctx, project.RepositoryURL, gitsource.Options{})
+	// Um deploy já com SHA fixado (resposta a uma pendência, RF-08) reutiliza
+	// o mesmo commit, mesmo que a branch tenha avançado (RN-04).
+	ws, err := gitsource.Fetch(ctx, project.RepositoryURL, gitsource.Options{Ref: dep.CommitSHA})
 	if err != nil {
 		w.fail(ctx, dep, "FETCHING", err)
 		return
@@ -116,11 +117,7 @@ func (w *Worker) process(ctx context.Context, job *domain.Job, dep *domain.Deplo
 	w.store.UpdateDeploymentState(ctx, dep.ID, domain.DeploymentAnalyzing, "")
 	rootDir := filepath.Join(ws.Dir, project.RootDirectory)
 
-	overrides := map[string]string{}
-	if dep.PortOverride != nil {
-		overrides[domain.FieldPort] = strconv.Itoa(*dep.PortOverride)
-	}
-	result, err := analyzer.Analyze(os.DirFS(rootDir), analyzer.Input{Overrides: overrides})
+	result, err := analyzer.Analyze(os.DirFS(rootDir), analyzer.Input{Overrides: dep.Overrides})
 	if err != nil {
 		w.fail(ctx, dep, "ANALYZING", err)
 		return
@@ -139,9 +136,9 @@ func (w *Worker) process(ctx context.Context, job *domain.Job, dep *domain.Deplo
 		w.store.UpdateDeploymentState(ctx, dep.ID, domain.DeploymentUnsupported, "perfil não suportado pelas evidências disponíveis")
 		return
 	case domain.AnalysisNeedsInput:
-		// RF-08: a pendência não ocupa o worker. M1 ainda não oferece
-		// correção no mesmo SHA (RF-08 completo); é preciso criar um novo
-		// deploy informando o campo pendente como override.
+		// RF-08: a pendência não ocupa o worker. A resposta chega por
+		// POST /deployments/{id}/answers, que reenfileira o mesmo deploy
+		// para o SHA já fixado.
 		w.store.UpdateDeploymentState(ctx, dep.ID, domain.DeploymentNeedsInput, "")
 		return
 	}

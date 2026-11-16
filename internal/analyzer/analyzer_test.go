@@ -669,3 +669,31 @@ func TestRulesGatingAndRetirement(t *testing.T) {
 		t.Errorf("outcome = %s, want %s", got.Outcome, domain.AnalysisUnsupported)
 	}
 }
+
+func TestCheckOverrides(t *testing.T) {
+	valid := []map[string]string{
+		nil,
+		{},
+		{"port": "3000"},
+		{"port": " 3000 ", "start_command": "node server.js", "build_command": "npm run build"},
+	}
+	for _, in := range valid {
+		if err := CheckOverrides(in); err != nil {
+			t.Errorf("CheckOverrides(%v) = %v, want nil", in, err)
+		}
+	}
+
+	invalid := map[string]map[string]string{
+		"unknown field":          {"dockerfile": "FROM scratch"},
+		"field without override": {"profile": "P-NODE"},
+		"port out of range":      {"port": "70000"},
+		"port not a number":      {"port": "exemplo"},
+		"empty command":          {"start_command": "   "},
+		"multi-line command":     {"start_command": "node a.js\nrm -rf /"},
+	}
+	for name, in := range invalid {
+		if err := CheckOverrides(in); err == nil {
+			t.Errorf("%s: CheckOverrides(%v) = nil, want an error", name, in)
+		}
+	}
+}

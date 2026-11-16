@@ -145,6 +145,20 @@ func checkOverrides(cat Catalog, in map[string]string) (valid map[string]string,
 	return valid, invalid, nil
 }
 
+// CheckOverrides valida overrides contra o catálogo atual antes de a API
+// aceitá-los: campo desconhecido, que não aceita override, ou valor inválido.
+// É validação estrutural; se o valor funciona só o build e a execução dizem.
+func CheckOverrides(in map[string]string) error {
+	_, invalid, err := checkOverrides(NodeCatalog(), in)
+	if err != nil {
+		return err
+	}
+	for _, field := range slices.Sorted(maps.Keys(invalid)) {
+		return fmt.Errorf("valor inválido para %q: %w", field, invalid[field])
+	}
+	return nil
+}
+
 // checkOwnership garante que uma regra só escreve nos campos que lhe
 // pertencem (§6 do motor).
 func checkOwnership(meta RuleMeta, out RuleOutput) error {

@@ -53,12 +53,13 @@ type Deployment struct {
 	CommitSHA      string          `json:"commit_sha"`
 	State          DeploymentState `json:"state"`
 	IdempotencyKey string          `json:"idempotency_key"`
-	// PortOverride é o valor explícito informado pelo solicitante (RN-03);
-	// tem precedência sobre qualquer inferência da análise.
-	PortOverride  *int      `json:"port_override,omitempty"`
-	FailureReason *string   `json:"failure_reason,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	// Overrides são valores explícitos do solicitante por campo do plano
+	// (RN-03, DEC-24); têm precedência sobre qualquer inferência da análise.
+	// Valores de variáveis de ambiente nunca passam por aqui.
+	Overrides     map[string]string `json:"overrides"`
+	FailureReason *string           `json:"failure_reason,omitempty"`
+	CreatedAt     time.Time         `json:"created_at"`
+	UpdatedAt     time.Time         `json:"updated_at"`
 }
 
 // JobState descreve a posse de processamento de um deployment pelo worker.

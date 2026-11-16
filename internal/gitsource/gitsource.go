@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -41,7 +42,12 @@ func Fetch(ctx context.Context, repositoryURL string, opts Options) (Workspace, 
 	if !strings.HasPrefix(repositoryURL, "https://") {
 		return Workspace{}, fmt.Errorf("gitsource: apenas URLs https:// são permitidas, recebido %q", repositoryURL)
 	}
+	return fetch(ctx, repositoryURL, opts)
+}
 
+// fetch não valida o esquema da URL; só Fetch, a porta de entrada pública,
+// aplica a restrição de RNF-04. Os testes usam repositórios locais.
+func fetch(ctx context.Context, repositoryURL string, opts Options) (Workspace, error) {
 	timeout := opts.Timeout
 	if timeout <= 0 {
 		timeout = defaultTimeout
@@ -54,18 +60,21 @@ func Fetch(ctx context.Context, repositoryURL string, opts Options) (Workspace, 
 		return Workspace{}, fmt.Errorf("gitsource: criar workspace: %w", err)
 	}
 
-	args := []string{"clone", "--depth", "1", "--no-tags", "--single-branch"}
-	if opts.Ref != "" {
-		args = append(args, "--branch", opts.Ref)
+	if shaPattern.MatchString(opts.Ref) {
+		// RF-08: responder uma pendência reutiliza o commit já fixado (RN-04),
+		// mesmo que a branch tenha avançado. `clone --branch` não aceita SHA.
+		err = fetchCommit(cctx, repositoryURL, opts.Ref, dir)
+	} else {
+		args := []string{"clone", "--depth", "1", "--no-tags", "--single-branch"}
+		if opts.Ref != "" {
+			args = append(args, "--branch", opts.Ref)
+		}
+		args = append(args, repositoryURL, dir)
+		err = runGit(cctx, "", args...)
 	}
-	args = append(args, repositoryURL, dir)
-
-	cmd := exec.CommandContext(cctx, "git", args...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	out, err := cmd.CombinedOutput()
 	if err != nil {
 		os.RemoveAll(dir)
-		return Workspace{}, fmt.Errorf("gitsource: clone falhou: %w: %s", err, strings.TrimSpace(string(out)))
+		return Workspace{}, err
 	}
 
 	sha, err := resolveHead(cctx, dir)
@@ -75,6 +84,37 @@ func Fetch(ctx context.Context, repositoryURL string, opts Options) (Workspace, 
 	}
 
 	return Workspace{Dir: dir, CommitSHA: sha}, nil
+}
+
+// shaPattern reconhece um SHA completo; abreviações são ambíguas e tratadas
+// como nome de branch ou tag.
+var shaPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+func fetchCommit(ctx context.Context, repositoryURL, sha, dir string) error {
+	steps := [][]string{
+		{"init", "--quiet"},
+		{"remote", "add", "origin", repositoryURL},
+		{"fetch", "--depth", "1", "--no-tags", "origin", sha},
+		{"checkout", "--quiet", "--detach", "FETCH_HEAD"},
+	}
+	for _, args := range steps {
+		if err := runGit(ctx, dir, args...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func runGit(ctx context.Context, dir string, args ...string) error {
+	if dir != "" {
+		args = append([]string{"-C", dir}, args...)
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("gitsource: git %s falhou: %w: %s", args[0], err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func resolveHead(ctx context.Context, dir string) (string, error) {

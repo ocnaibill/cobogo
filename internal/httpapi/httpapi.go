@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ocnaibill/cobogo/internal/analyzer"
 	"github.com/ocnaibill/cobogo/internal/store"
 )
 
@@ -31,6 +32,7 @@ func NewRouter(st *store.Store, log *slog.Logger) http.Handler {
 	mux.HandleFunc("GET /projects/{id}", s.handleGetProject)
 	mux.HandleFunc("POST /projects/{id}/deployments", s.handleCreateDeployment)
 	mux.HandleFunc("GET /deployments/{id}", s.handleGetDeployment)
+	mux.HandleFunc("POST /deployments/{id}/answers", s.handleAnswerDeployment)
 	return mux
 }
 
@@ -96,9 +98,9 @@ func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 
 type createDeploymentRequest struct {
 	IdempotencyKey string `json:"idempotency_key"`
-	// Port é o override explícito do solicitante (RN-03); usado quando a
-	// análise não encontra um contrato de porta inferível (RN-02).
-	Port *int `json:"port,omitempty"`
+	// Overrides são valores explícitos por campo do plano (RN-03, DEC-24);
+	// em geral só existem depois de uma pendência, mas podem ser antecipados.
+	Overrides map[string]string `json:"overrides,omitempty"`
 }
 
 // handleCreateDeployment implementa RF-05: cria a operação e retorna o ID
@@ -120,18 +122,65 @@ func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if err := analyzer.CheckOverrides(req.Overrides); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	if _, err := s.store.GetProject(r.Context(), projectID); errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "projeto não encontrado")
 		return
 	}
 
-	dep, _, err := s.store.CreateDeploymentWithJob(r.Context(), projectID, req.IdempotencyKey, req.Port)
+	dep, _, err := s.store.CreateDeploymentWithJob(r.Context(), projectID, req.IdempotencyKey, req.Overrides)
 	if err != nil {
 		s.log.Error("criar deployment", "erro", err)
 		writeError(w, http.StatusConflict, "não foi possível criar o deploy; idempotency_key já pode existir")
 		return
 	}
 	writeJSON(w, http.StatusAccepted, dep)
+}
+
+type answerRequest struct {
+	Overrides map[string]string `json:"overrides"`
+}
+
+// handleAnswerDeployment implementa RF-08: responde às pendências de um
+// deploy em NEEDS_INPUT e o reenfileira para o mesmo SHA, sem criar outro
+// deploy.
+func (s *Server) handleAnswerDeployment(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "id inválido")
+		return
+	}
+
+	var req answerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "corpo inválido: "+err.Error())
+		return
+	}
+	if len(req.Overrides) == 0 {
+		writeError(w, http.StatusBadRequest, "informe ao menos um override")
+		return
+	}
+	if err := analyzer.CheckOverrides(req.Overrides); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	dep, err := s.store.AnswerDeployment(r.Context(), id, req.Overrides)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, "deploy não encontrado")
+	case errors.Is(err, store.ErrNotAwaitingInput):
+		writeError(w, http.StatusConflict, "o deploy não está aguardando informações")
+	case err != nil:
+		s.log.Error("responder deployment", "erro", err)
+		writeError(w, http.StatusInternalServerError, "erro interno")
+	default:
+		writeJSON(w, http.StatusAccepted, dep)
+	}
 }
 
 type deploymentView struct {

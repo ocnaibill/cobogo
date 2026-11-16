@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,7 +19,12 @@ import (
 	"github.com/ocnaibill/cobogo/internal/domain"
 )
 
-var ErrNotFound = errors.New("store: registro não encontrado")
+var (
+	ErrNotFound = errors.New("store: registro não encontrado")
+	// ErrNotAwaitingInput indica uma resposta a um deploy que não está em
+	// NEEDS_INPUT (já respondido, em andamento ou encerrado).
+	ErrNotAwaitingInput = errors.New("store: o deploy não está aguardando informações")
+)
 
 type Store struct {
 	pool *pgxpool.Pool
@@ -66,14 +72,21 @@ func (s *Store) GetProject(ctx context.Context, id uuid.UUID) (domain.Project, e
 // CreateDeploymentWithJob cria o deploy e o job na mesma transação (§12.3),
 // evitando perder trabalho entre banco e fila. RN-07: idempotency_key é
 // única por projeto.
-func (s *Store) CreateDeploymentWithJob(ctx context.Context, projectID uuid.UUID, idempotencyKey string, portOverride *int) (domain.Deployment, domain.Job, error) {
+func (s *Store) CreateDeploymentWithJob(ctx context.Context, projectID uuid.UUID, idempotencyKey string, overrides map[string]string) (domain.Deployment, domain.Job, error) {
 	now := time.Now().UTC()
+	if overrides == nil {
+		overrides = map[string]string{}
+	}
+	overridesJSON, err := json.Marshal(overrides)
+	if err != nil {
+		return domain.Deployment{}, domain.Job{}, fmt.Errorf("store: serializar overrides: %w", err)
+	}
 	dep := domain.Deployment{
 		ID:             uuid.New(),
 		ProjectID:      projectID,
 		State:          domain.DeploymentQueued,
 		IdempotencyKey: idempotencyKey,
-		PortOverride:   portOverride,
+		Overrides:      overrides,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
@@ -92,9 +105,9 @@ func (s *Store) CreateDeploymentWithJob(ctx context.Context, projectID uuid.UUID
 	defer tx.Rollback(ctx)
 
 	_, err = tx.Exec(ctx, `
-		INSERT INTO deployments (id, project_id, commit_sha, state, idempotency_key, port_override, created_at, updated_at)
+		INSERT INTO deployments (id, project_id, commit_sha, state, idempotency_key, overrides, created_at, updated_at)
 		VALUES ($1, $2, '', $3, $4, $5, $6, $7)`,
-		dep.ID, dep.ProjectID, dep.State, dep.IdempotencyKey, dep.PortOverride, dep.CreatedAt, dep.UpdatedAt,
+		dep.ID, dep.ProjectID, dep.State, dep.IdempotencyKey, string(overridesJSON), dep.CreatedAt, dep.UpdatedAt,
 	)
 	if err != nil {
 		return domain.Deployment{}, domain.Job{}, fmt.Errorf("store: inserir deployment: %w", err)
@@ -165,34 +178,105 @@ func (s *Store) ClaimNextJob(ctx context.Context, lease time.Duration) (*domain.
 	return &job, &dep, nil
 }
 
-func (s *Store) getDeploymentTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) (domain.Deployment, error) {
+const deploymentColumns = `id, project_id, analysis_id, commit_sha, state, idempotency_key, overrides, failure_reason, created_at, updated_at`
+
+func scanDeployment(row pgx.Row) (domain.Deployment, error) {
 	var dep domain.Deployment
-	var analysisID *uuid.UUID
-	err := tx.QueryRow(ctx, `
-		SELECT id, project_id, analysis_id, commit_sha, state, idempotency_key, port_override, failure_reason, created_at, updated_at
-		FROM deployments WHERE id = $1`, id,
-	).Scan(&dep.ID, &dep.ProjectID, &analysisID, &dep.CommitSHA, &dep.State, &dep.IdempotencyKey, &dep.PortOverride, &dep.FailureReason, &dep.CreatedAt, &dep.UpdatedAt)
+	var overridesRaw string
+	err := row.Scan(&dep.ID, &dep.ProjectID, &dep.AnalysisID, &dep.CommitSHA, &dep.State, &dep.IdempotencyKey, &overridesRaw, &dep.FailureReason, &dep.CreatedAt, &dep.UpdatedAt)
+	if err != nil {
+		return domain.Deployment{}, err
+	}
+	if err := json.Unmarshal([]byte(overridesRaw), &dep.Overrides); err != nil {
+		return domain.Deployment{}, fmt.Errorf("decodificar overrides: %w", err)
+	}
+	if dep.Overrides == nil {
+		dep.Overrides = map[string]string{}
+	}
+	return dep, nil
+}
+
+func (s *Store) getDeploymentTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) (domain.Deployment, error) {
+	dep, err := scanDeployment(tx.QueryRow(ctx, `SELECT `+deploymentColumns+` FROM deployments WHERE id = $1`, id))
 	if err != nil {
 		return domain.Deployment{}, fmt.Errorf("store: buscar deployment: %w", err)
 	}
-	dep.AnalysisID = analysisID
 	return dep, nil
 }
 
 func (s *Store) GetDeployment(ctx context.Context, id uuid.UUID) (domain.Deployment, error) {
-	var dep domain.Deployment
-	var analysisID *uuid.UUID
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, project_id, analysis_id, commit_sha, state, idempotency_key, port_override, failure_reason, created_at, updated_at
-		FROM deployments WHERE id = $1`, id,
-	).Scan(&dep.ID, &dep.ProjectID, &analysisID, &dep.CommitSHA, &dep.State, &dep.IdempotencyKey, &dep.PortOverride, &dep.FailureReason, &dep.CreatedAt, &dep.UpdatedAt)
+	dep, err := scanDeployment(s.pool.QueryRow(ctx, `SELECT `+deploymentColumns+` FROM deployments WHERE id = $1`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Deployment{}, ErrNotFound
 	}
 	if err != nil {
 		return domain.Deployment{}, fmt.Errorf("store: buscar deployment: %w", err)
 	}
-	dep.AnalysisID = analysisID
+	return dep, nil
+}
+
+// AnswerDeployment registra a resposta do usuário a uma pendência (RF-08):
+// mescla os overrides, devolve o deploy à fila e reabre o job, tudo numa
+// transação. O commit já fixado é mantido, então a nova análise roda sobre o
+// mesmo SHA (RN-04). Só vale para um deploy em NEEDS_INPUT; respostas
+// concorrentes ao mesmo deploy não se duplicam.
+func (s *Store) AnswerDeployment(ctx context.Context, id uuid.UUID, answers map[string]string) (domain.Deployment, error) {
+	answersJSON, err := json.Marshal(answers)
+	if err != nil {
+		return domain.Deployment{}, fmt.Errorf("store: serializar respostas: %w", err)
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return domain.Deployment{}, fmt.Errorf("store: abrir transação de resposta: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	dep, err := scanDeployment(tx.QueryRow(ctx, `
+		UPDATE deployments
+		SET overrides = overrides || $1::jsonb, state = $2, failure_reason = NULL, updated_at = now()
+		WHERE id = $3 AND state = $4
+		RETURNING `+deploymentColumns,
+		string(answersJSON), domain.DeploymentQueued, id, domain.DeploymentNeedsInput))
+	if errors.Is(err, pgx.ErrNoRows) {
+		var exists bool
+		if qerr := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM deployments WHERE id = $1)`, id).Scan(&exists); qerr != nil {
+			return domain.Deployment{}, fmt.Errorf("store: verificar deployment: %w", qerr)
+		}
+		if !exists {
+			return domain.Deployment{}, ErrNotFound
+		}
+		return domain.Deployment{}, ErrNotAwaitingInput
+	}
+	if err != nil {
+		return domain.Deployment{}, fmt.Errorf("store: registrar resposta: %w", err)
+	}
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE jobs SET state = $1, lease_until = NULL, updated_at = now()
+		WHERE deployment_id = $2 AND state = $3`,
+		domain.JobPending, id, domain.JobDone)
+	if err != nil {
+		return domain.Deployment{}, fmt.Errorf("store: reabrir job: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return domain.Deployment{}, fmt.Errorf("store: o job do deploy %s não está concluído; não foi possível reenfileirar", id)
+	}
+
+	// Só os nomes dos campos vão para o evento (RN-11): um comando informado
+	// pode embutir um segredo.
+	fields := make([]string, 0, len(answers))
+	for field := range answers {
+		fields = append(fields, field)
+	}
+	sort.Strings(fields)
+	if err := appendEventTx(ctx, tx, id, "needs_input", "answered", map[string]any{"fields": fields}); err != nil {
+		return domain.Deployment{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Deployment{}, fmt.Errorf("store: confirmar resposta: %w", err)
+	}
 	return dep, nil
 }
 
@@ -279,6 +363,19 @@ func (s *Store) GetAnalysis(ctx context.Context, id uuid.UUID) (domain.Analysis,
 // número de sequência é calculado dentro da mesma transação; adequado para
 // o worker único de M1 (RNF-05).
 func (s *Store) AppendEvent(ctx context.Context, deploymentID uuid.UUID, stage, eventType string, payload map[string]any) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: abrir transação de evento: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if err := appendEventTx(ctx, tx, deploymentID, stage, eventType, payload); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func appendEventTx(ctx context.Context, tx pgx.Tx, deploymentID uuid.UUID, stage, eventType string, payload map[string]any) error {
 	if payload == nil {
 		payload = map[string]any{}
 	}
@@ -286,12 +383,6 @@ func (s *Store) AppendEvent(ctx context.Context, deploymentID uuid.UUID, stage, 
 	if err != nil {
 		return fmt.Errorf("store: serializar payload do evento: %w", err)
 	}
-
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("store: abrir transação de evento: %w", err)
-	}
-	defer tx.Rollback(ctx)
 
 	var nextSeq int
 	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(sequence), 0) + 1 FROM deployment_events WHERE deployment_id = $1`, deploymentID).Scan(&nextSeq); err != nil {
@@ -306,7 +397,7 @@ func (s *Store) AppendEvent(ctx context.Context, deploymentID uuid.UUID, stage, 
 	if err != nil {
 		return fmt.Errorf("store: inserir evento: %w", err)
 	}
-	return tx.Commit(ctx)
+	return nil
 }
 
 func (s *Store) ListEvents(ctx context.Context, deploymentID uuid.UUID) ([]domain.DeploymentEvent, error) {
