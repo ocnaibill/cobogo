@@ -242,3 +242,23 @@ func TestMigrationKeepsLegacyPortOverride(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// API e worker sobem ao mesmo tempo e migram o mesmo banco.
+func TestMigrateIsSafeUnderConcurrency(t *testing.T) {
+	pool := storetest.Pool(t)
+
+	const n = 8
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func() { errs <- store.Migrate(ctx, pool) }()
+	}
+	for i := 0; i < n; i++ {
+		if err := <-errs; err != nil {
+			t.Errorf("concurrent Migrate: %v", err)
+		}
+	}
+	var applied int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil || applied < 3 {
+		t.Errorf("applied migrations = %d (%v)", applied, err)
+	}
+}

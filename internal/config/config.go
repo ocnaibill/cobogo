@@ -6,11 +6,16 @@ package config
 import (
 	"fmt"
 	"os"
+
+	"github.com/ocnaibill/cobogo/internal/secrets"
 )
 
 type Config struct {
 	DatabaseURL string
 	APIAddr     string
+	// SecretKey é a chave AES-256 que cifra os valores das variáveis dos
+	// projetos (DEC-24). Fica fora do banco, no ambiente do processo.
+	SecretKey []byte
 }
 
 func Load() (Config, error) {
@@ -21,6 +26,15 @@ func Load() (Config, error) {
 	if c.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("config: variável DATABASE_URL é obrigatória")
 	}
+	rawKey := os.Getenv("COBOGO_SECRET_KEY")
+	if rawKey == "" {
+		return Config{}, fmt.Errorf("config: variável COBOGO_SECRET_KEY é obrigatória (32 bytes em base64; gere com `openssl rand -base64 32`)")
+	}
+	key, err := secrets.ParseKey(rawKey)
+	if err != nil {
+		return Config{}, fmt.Errorf("config: COBOGO_SECRET_KEY inválida: %w", err)
+	}
+	c.SecretKey = key
 	return c, nil
 }
 

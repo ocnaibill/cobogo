@@ -105,3 +105,23 @@ type Release struct {
 	HostPort         int       `json:"host_port"`
 	CreatedAt        time.Time `json:"created_at"`
 }
+
+// EnvSource diz de onde veio o valor de uma variável.
+type EnvSource string
+
+const (
+	EnvSourceUser      EnvSource = "user"
+	EnvSourceGenerated EnvSource = "generated"
+)
+
+// EnvVariable são os metadados de uma variável de ambiente do projeto. O
+// valor nunca faz parte deste tipo: a API não o devolve depois de salvo
+// (RF-10) e só o worker o decifra para entregá-lo ao contêiner.
+type EnvVariable struct {
+	Name       string    `json:"name"`
+	Version    int       `json:"version"`
+	Source     EnvSource `json:"source"`
+	KeyVersion int       `json:"key_version"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}

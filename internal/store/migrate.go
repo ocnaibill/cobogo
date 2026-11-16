@@ -10,6 +10,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// migrationLockKey identifica o lock consultivo das migrations do Cobogó.
+const migrationLockKey = 7305000001
+
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
@@ -17,6 +20,19 @@ var migrationsFS embed.FS
 // registradas em schema_migrations. Não há rollback automático: cada
 // arquivo é aditivo por design, conforme DEC-13.
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
+	// API e worker sobem juntos e migram o mesmo banco: um lock consultivo
+	// serializa as execuções entre processos. O segundo espera e encontra tudo
+	// já aplicado.
+	lock, err := pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("store: obter conexão para o lock de migrations: %w", err)
+	}
+	defer lock.Release()
+	if _, err := lock.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrationLockKey); err != nil {
+		return fmt.Errorf("store: obter lock de migrations: %w", err)
+	}
+	defer lock.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, migrationLockKey)
+
 	if _, err := pool.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version     TEXT PRIMARY KEY,

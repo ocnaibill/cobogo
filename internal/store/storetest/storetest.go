@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ocnaibill/cobogo/internal/secrets"
 	"github.com/ocnaibill/cobogo/internal/store"
 )
 
@@ -61,12 +62,20 @@ func Pool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// New devolve um Store sobre um schema novo com todas as migrations aplicadas.
+// Key é a chave fixa dos testes; nunca use fora deles.
+var Key = []byte("0123456789abcdef0123456789abcdef")
+
+// New devolve um Store sobre um schema novo com todas as migrations aplicadas
+// e a cifra de variáveis configurada com Key.
 func New(t *testing.T) *store.Store {
 	t.Helper()
 	pool := Pool(t)
 	if err := store.Migrate(context.Background(), pool); err != nil {
 		t.Fatalf("migrar schema de teste: %v", err)
 	}
-	return store.New(pool)
+	box, err := secrets.NewBox(Key, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store.New(pool).WithCipher(box)
 }

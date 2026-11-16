@@ -13,6 +13,7 @@ import (
 
 	"github.com/ocnaibill/cobogo/internal/config"
 	"github.com/ocnaibill/cobogo/internal/httpapi"
+	"github.com/ocnaibill/cobogo/internal/secrets"
 	"github.com/ocnaibill/cobogo/internal/store"
 )
 
@@ -40,7 +41,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	st := store.New(pool)
+	box, err := secrets.NewBox(cfg.SecretKey, 1)
+	if err != nil {
+		log.Error("preparar cifra de variáveis", "erro", err)
+		os.Exit(1)
+	}
+	st := store.New(pool).WithCipher(box)
 	router := httpapi.NewRouter(st, log)
 
 	srv := &http.Server{Addr: cfg.APIAddr, Handler: router}

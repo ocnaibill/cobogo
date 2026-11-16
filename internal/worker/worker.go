@@ -185,12 +185,26 @@ func (w *Worker) process(ctx context.Context, job *domain.Job, dep *domain.Deplo
 
 	// --- STARTING ---
 	w.store.UpdateDeploymentState(ctx, dep.ID, domain.DeploymentStarting, "")
-	runResult, err := w.runtime.Run(ctx, imageTag, containerName, plan.Port, map[string]string{"PORT": fmt.Sprint(plan.Port)})
+	// Variáveis do projeto (DEC-24): decifradas só aqui e entregues ao
+	// contêiner. Valores nunca entram em evento ou log; só nome e versão.
+	// PORT é da plataforma e vale sobre qualquer outro valor.
+	envValues, envMeta, err := w.store.RevealEnvValues(ctx, project.ID)
+	if err != nil {
+		w.fail(ctx, dep, "STARTING", fmt.Errorf("carregar variáveis do projeto: %w", err))
+		return
+	}
+	envValues["PORT"] = fmt.Sprint(plan.Port)
+	delivered := make([]map[string]any, 0, len(envMeta))
+	for _, v := range envMeta {
+		delivered = append(delivered, map[string]any{"name": v.Name, "version": v.Version})
+	}
+
+	runResult, err := w.runtime.Run(ctx, imageTag, containerName, plan.Port, envValues)
 	if err != nil {
 		w.fail(ctx, dep, "STARTING", err)
 		return
 	}
-	w.emit(ctx, dep.ID, "starting", "completed", map[string]any{"container_id": runResult.ContainerID, "host_port": runResult.HostPort})
+	w.emit(ctx, dep.ID, "starting", "completed", map[string]any{"container_id": runResult.ContainerID, "host_port": runResult.HostPort, "env": delivered})
 
 	// --- VERIFYING ---
 	w.store.UpdateDeploymentState(ctx, dep.ID, domain.DeploymentVerifying, "")

@@ -49,7 +49,15 @@ As migrations são aplicadas automaticamente pela API/worker na inicialização.
 
 ### **3. Rodando API e worker**
 
-Em dois terminais, na raiz do projeto:
+Antes de subir, defina a chave de cifra. Os valores das variáveis de ambiente dos projetos são cifrados em repouso com uma chave que fica fora do banco; API e worker precisam da mesma:
+
+```bash
+export COBOGO_SECRET_KEY="$(openssl rand -base64 32)"
+```
+
+Guarde essa chave: sem ela os valores já gravados não podem ser lidos.
+
+Em dois terminais, na raiz do projeto (com a chave exportada em ambos):
 
 ```bash
 # Terminal 1 — API
@@ -97,7 +105,25 @@ curl -X POST localhost:8080/deployments/<id>/answers -H 'content-type: applicati
 
 Os campos aceitos são `port`, `start_command` e `build_command` (RN-03). A resposta reenfileira o **mesmo deploy** no **mesmo commit** já analisado (RF-08, RN-04), mesmo que a branch tenha avançado. Valores inválidos são recusados na hora (`400`); um deploy que não está em `NEEDS_INPUT` responde `409`.
 
-### **4. Acompanhar o plano e os eventos**
+### **4. Variáveis de ambiente do projeto**
+
+```bash
+# definir (o valor nunca é devolvido)
+curl -X PUT localhost:8080/projects/<id>/env/DATABASE_URL -H 'content-type: application/json' -d '{"value": "postgres://..."}'
+
+# gerar um segredo que o próprio app inventa (JWT_SECRET, SESSION_SECRET, SECRET_KEY_BASE...)
+curl -X POST localhost:8080/projects/<id>/env/JWT_SECRET/generate
+
+# listar nomes e versões, ou remover
+curl localhost:8080/projects/<id>/env
+curl -X DELETE localhost:8080/projects/<id>/env/DATABASE_URL
+```
+
+O Cobogó só gera segredos da lista fechada acima; credenciais de terceiros (`STRIPE_KEY`, `SMTP_PASSWORD`...) você informa. Gerar de novo um segredo que já existe exige `{"replace": true}`, porque invalida o que foi assinado com o anterior. Trocar um valor não altera um deploy em execução: faça um novo deploy. `PORT` é da plataforma e não pode ser definida.
+
+A análise do deploy traz `config_variables` (classe, estado no `.env.example`, aviso e, para valores padrão não secretos, `default_value` para você confirmar) e `warnings` (por exemplo, credenciais reais encontradas no repositório).
+
+### **5. Acompanhar o plano e os eventos**
 
 ```bash
 curl localhost:8080/deployments/<id>

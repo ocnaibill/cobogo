@@ -22,6 +22,10 @@ var generableVars = map[string]bool{
 	"AUTH_SECRET": true, "NEXTAUTH_SECRET": true, "ENCRYPTION_KEY": true,
 }
 
+// ClassifyVariable diz quem fornece o valor da variável: a plataforma, o
+// Cobogó sob ação do usuário (segredos geráveis) ou o usuário.
+func ClassifyVariable(name string) domain.VarClass { return classifyVariable(name) }
+
 func classifyVariable(name string) domain.VarClass {
 	upper := strings.ToUpper(name)
 	switch {

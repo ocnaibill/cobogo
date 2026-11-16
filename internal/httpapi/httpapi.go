@@ -31,6 +31,10 @@ func NewRouter(st *store.Store, log *slog.Logger) http.Handler {
 	mux.HandleFunc("POST /projects", s.handleCreateProject)
 	mux.HandleFunc("GET /projects/{id}", s.handleGetProject)
 	mux.HandleFunc("POST /projects/{id}/deployments", s.handleCreateDeployment)
+	mux.HandleFunc("GET /projects/{id}/env", s.handleListEnv)
+	mux.HandleFunc("PUT /projects/{id}/env/{name}", s.handlePutEnv)
+	mux.HandleFunc("DELETE /projects/{id}/env/{name}", s.handleDeleteEnv)
+	mux.HandleFunc("POST /projects/{id}/env/{name}/generate", s.handleGenerateEnv)
 	mux.HandleFunc("GET /deployments/{id}", s.handleGetDeployment)
 	mux.HandleFunc("POST /deployments/{id}/answers", s.handleAnswerDeployment)
 	return mux

@@ -11,7 +11,7 @@
 O deploy só guarda `port_override`. Não há como responder a pendência de `start_command` (RF-08 incompleta) e não há onde guardar variáveis de ambiente. O HEU-09 já inventaria nomes (do `.env.example` e de `process.env.X` no código), mas só como lista; nada indica ao usuário o que provavelmente é obrigatório, o que o Cobogó pode gerar, ou o que o repositório já vazou. Três riscos orientam a decisão:
 
 - Um valor digitado ou sugerido sem critério ("exemplo", `changeme`) viraria configuração real.
-- Um valor vindo do repositório (inclusive um `.env` commitado) poderia ser usado em silêncio, e o `COPY . .` do Dockerfile gerado hoje o levaria para dentro da imagem.
+- Um valor vindo do repositório (inclusive um `.env` commitado) poderia ser usado em silêncio, por exemplo se o app o carregasse sozinho da imagem. O contexto de build já exclui `.env*` (item 7), mas essa barreira não tinha teste.
 - Gerar um segredo para uma credencial de terceiro entrega um app quebrado, sem erro claro.
 
 ## Decisão
@@ -36,7 +36,7 @@ O deploy só guarda `port_override`. Não há como responder a pendência de `st
 
 **Valores que vêm do repositório.**
 
-7. O Cobogó **nunca usa um valor que vem do repositório sem confirmação explícita**. A única exceção é o pré-preenchimento do item 6: somente de arquivos `.env.example`/`.env.sample`/`.env.template`, somente estado `default`, nome não secreto e valor que não casa com formato de credencial; o usuário revisa e confirma (RF-22). Nunca de `.env` real. O Dockerfile deixa de levar `.env` real para a imagem: o planner gera `.dockerignore` excluindo `.env` e `.env.*` (exceto os exemplos), para que o app não carregue por conta própria um valor que o Cobogó prometeu não usar.
+7. O Cobogó **nunca usa um valor que vem do repositório sem confirmação explícita**. A única exceção é o pré-preenchimento do item 6: somente de arquivos `.env.example`/`.env.sample`/`.env.template`, somente estado `default`, nome não secreto e valor que não casa com formato de credencial; o usuário revisa e confirma (RF-22). Nunca de `.env` real. O contexto de build enviado ao Docker exclui `.env` e `.env.*` em qualquer profundidade, exceto `.env.example` (barreira do adaptador Docker, coberta por teste), para que o app não carregue por conta própria um valor que o Cobogó prometeu não usar.
 8. **Detecção de exposição.** O analisador emite um aviso de segurança, não bloqueante, quando: (a) existe um arquivo de ambiente real (`.env`, `.env.local`, `.env.production`…) no clone — em um clone todo arquivo está versionado; ou (b) um valor em arquivo de ambiente casa com formato conhecido de credencial (AWS `AKIA`/`ASIA`, GitHub `ghp_`/`github_pat_`, Slack `xox`, Stripe `sk_live_`/`rk_live_`, Google `AIza`, cabeçalho de chave privada PEM, JWT de três segmentos) ou é valor de alta entropia em nome secreto. O aviso diz **o que fazer**: revogar/rotacionar a credencial (removê-la do histórico do Git não basta) e que o Cobogó não a usa. O achado guarda arquivo, linha, nome e tipo — **nunca o valor nem fragmento dele**. Isso exige ler valores em memória para classificar, exceção deliberada ao "só nomes" do HEU-09. O risco é de vazamento na saída, não de leitura (o worker já tem o clone inteiro em disco), e é contido **pela estrutura**: o detector é uma função própria que devolve só `{arquivo, linha, nome, tipo}`; o valor nunca é gravado em `Evidence`, que tem campo de valor. Testes com valores-canário verificam que ele não aparece em evidência, evento, log nem resposta da API (RN-15, RNF-08).
 
 **Geração de segredo.**
@@ -65,14 +65,17 @@ O deploy só guarda `port_override`. Não há como responder a pendência de `st
 ## Consequências e limites conhecidos
 
 - A detecção de exposição cobre arquivos de ambiente do SHA analisado; não varre credenciais embutidas no código-fonte nem o histórico do Git (chave removida de um commit antigo não é detectada).
-- `.dockerignore` quebra apps que dependem de um `.env` commitado; o diagnóstico (item 11) deve apontar variáveis sem valor, e o aviso do item 8 explica por quê.
-- A exclusão vale para o perfil P-NODE do D0 (servidor com `npm start`). Perfis de frontend leem `.env.production` no build para configuração pública (DEC-15); quando o perfil estático entrar, a exclusão ganha uma opção explícita, por projeto e por arquivo, de incluir configuração pública não secreta. Nunca por padrão.
+- A exclusão de `.env*` do contexto quebra apps que dependem de um `.env` commitado; o diagnóstico (item 11) deve apontar variáveis sem valor, e o aviso do item 8 explica por quê.
+- A exclusão de `.env*` vale para o perfil P-NODE do D0 (servidor com `npm start`). Perfis de frontend leem `.env.production` no build para configuração pública (DEC-15); quando o perfil estático entrar, a exclusão ganha uma opção explícita, por projeto e por arquivo, de incluir configuração pública não secreta. Nunca por padrão.
 - Escolher uma opção `development` hoje tende a falhar: o planner instala com `npm ci --omit=dev` (ferramentas como `nodemon` e `vite` não existem na imagem) e servidores de desenvolvimento costumam escutar só em `127.0.0.1`, onde a sonda não os alcança. Um campo de **modo de execução** (`production` por padrão; `development` instala dependências completas, não faz `prune` e usa `NODE_ENV=development`) é decisão da parte 2 (planner). Até lá, a interface avisa que a opção pode falhar.
 - A lista de geráveis, de placeholders e de formatos de credencial é curta e fechada; precisa crescer com o corpus.
 - Não se distingue variável de build de variável de runtime para fins de entrega; só runtime é entregue em M1 (RF-10 em configuração pública de frontend, DEC-15, fica para depois).
 - Heurísticas por padrão de log (item 11) dependem do formato das mensagens de cada runtime; são medidas no corpus antes de se confiar nelas.
 - O deploy continua sem `analysis_id` por variável; a lista de avisos faz parte do `AnalysisResult`.
+- Em M1 a API e o worker usam a mesma chave (`COBOGO_SECRET_KEY`), então a separação "só o worker decifra" depende dos roles do banco (DEC-21), ainda não aplicados. O alcance é o de RN-18: quem tem a chave decifra.
+- Cada variável guarda só a versão atual; o histórico de versões anteriores (RF-23) fica para depois. O evento `starting` registra nome e versão entregues a cada release.
+- Um link simbólico no repositório faz o contexto de build falhar (`write too long`) em vez de ser ignorado; tratar links é trabalho do adaptador Docker reforçado.
 
 ## Critérios de revisão
 
-Rever se, no corpus, a regra "vazia no exemplo = provavelmente opcional" errar com frequência relevante (apps que quebram sem a variável), se a lista de segredos geráveis gerar credenciais inválidas, ou se o `.dockerignore` quebrar uma fração significativa dos repositórios.
+Rever se, no corpus, a regra "vazia no exemplo = provavelmente opcional" errar com frequência relevante (apps que quebram sem a variável), se a lista de segredos geráveis gerar credenciais inválidas, ou se a exclusão de `.env*` quebrar uma fração significativa dos repositórios.

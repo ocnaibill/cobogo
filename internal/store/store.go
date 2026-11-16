@@ -27,7 +27,8 @@ var (
 )
 
 type Store struct {
-	pool *pgxpool.Pool
+	pool   *pgxpool.Pool
+	cipher Cipher
 }
 
 func New(pool *pgxpool.Pool) *Store {
