@@ -47,6 +47,7 @@ func analyzeWith(cat Catalog, fsys fs.FS, in Input) (domain.AnalysisResult, erro
 		Conflicts:       []domain.Finding{},
 		Unsupported:     []domain.Finding{},
 		ConfigVariables: []domain.ConfigVariable{},
+		Warnings:        []domain.Finding{},
 		Evidences:       evidence,
 		Coverage:        coverage,
 	}
@@ -81,6 +82,7 @@ func analyzeWith(cat Catalog, fsys fs.FS, in Input) (domain.AnalysisResult, erro
 		res.Conflicts = append(res.Conflicts, stamp(rule.Meta.ID, out.Conflicts)...)
 		res.Unsupported = append(res.Unsupported, stamp(rule.Meta.ID, out.Unsupported)...)
 		res.ConfigVariables = append(res.ConfigVariables, out.ConfigVariables...)
+		res.Warnings = append(res.Warnings, stamp(rule.Meta.ID, out.Warnings)...)
 		if len(out.Unsupported) > 0 {
 			blocked[rule.Meta.ID] = true
 		}

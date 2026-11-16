@@ -425,18 +425,36 @@ func TestPortPendingCitesOnlyRuntimeEvidence(t *testing.T) {
 	}
 }
 
-func TestParseEnvNames(t *testing.T) {
-	data := `# comment
-DATABASE_URL=postgres://user:secret@host/db
+func TestParseEnvLines(t *testing.T) {
+	data := `# comment in prose = not a variable
+DATABASE_URL=postgres://user:pw@host/db
 export JWT_SECRET="abc"
   PORT = 3000
 lower_case=1
 1BAD=2
 not an assignment
 DATABASE_URL=again
+API_URL=http://x # inline note
+QUOTED='a # b'
+# OPTIONAL_FLAG=on
+#ANOTHER=
+# lower_commented=1
 `
-	got := parseEnvNames([]byte(data))
-	assertStrings(t, "names", got, []string{"DATABASE_URL", "JWT_SECRET", "PORT", "lower_case"})
+	var got []string
+	for _, l := range parseEnvLines([]byte(data)) {
+		got = append(got, fmt.Sprintf("%d:%s=%s:%t", l.Line, l.Name, l.Value, l.Commented))
+	}
+	assertStrings(t, "lines", got, []string{
+		"2:DATABASE_URL=postgres://user:pw@host/db:false",
+		"3:JWT_SECRET=abc:false",
+		"4:PORT=3000:false",
+		"5:lower_case=1:false",
+		"8:DATABASE_URL=again:false",
+		"9:API_URL=http://x:false",
+		"10:QUOTED=a # b:false",
+		"11:OPTIONAL_FLAG=on:true",
+		"12:ANOTHER=:true",
+	})
 }
 
 func TestClassifyScope(t *testing.T) {
@@ -838,5 +856,291 @@ func TestStartPendingWithoutScriptsHasNoOptions(t *testing.T) {
 		if f.Field == domain.FieldStartCommand && (len(f.Options) != 0 || len(f.Omitted) != 0) {
 			t.Errorf("unexpected options %v / omitted %v", f.Options, f.Omitted)
 		}
+	}
+}
+
+const startIndexPkg = `{"scripts":{"start":"node index.js"}}`
+
+// Credenciais de teste são montadas em tempo de execução para não virarem
+// segredo reconhecível no código-fonte do próprio repositório.
+var (
+	canaryAWS    = "AKIA" + "IOSFODNN7EXAMPLE"
+	canaryGitHub = "ghp" + "_" + strings.Repeat("a1", 18)
+	canarySlack  = "xoxb" + "-123456789012-abcdefghijkl"
+	canaryStripe = "sk" + "_live_" + strings.Repeat("a1", 12)
+	canaryGoogle = "AIza" + strings.Repeat("Ab1", 11) + "Zz"
+	canaryPEM    = "-----BEGIN " + "RSA PRIVATE KEY-----"
+	canaryJWT    = "eyJhbGciOiJIUzI1NiJ9" + "." + "eyJzdWIiOiIxMjM0NTY3ODkwIn0" + "." + "abc_DEF-123"
+	canaryRandom = "q8Zr3Kp9Xv2Lm7Tn4Wd6Yb1Hc5Jf0Gs8"
+)
+
+func analyzeEnv(t *testing.T, extra map[string]string) domain.AnalysisResult {
+	t.Helper()
+	res, err := Analyze(toFS(nodeRepo(startIndexPkg, extra)), Input{Overrides: map[string]string{"port": "3000"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
+
+func configVar(t *testing.T, res domain.AnalysisResult, name string) domain.ConfigVariable {
+	t.Helper()
+	for _, v := range res.ConfigVariables {
+		if v.Name == name {
+			return v
+		}
+	}
+	t.Fatalf("variable %s not in the inventory: %+v", name, res.ConfigVariables)
+	return domain.ConfigVariable{}
+}
+
+func TestCredentialKind(t *testing.T) {
+	positives := map[string]string{
+		"aws_access_key":  canaryAWS,
+		"github_token":    canaryGitHub,
+		"slack_token":     canarySlack,
+		"stripe_live_key": canaryStripe,
+		"google_api_key":  canaryGoogle,
+		"private_key":     canaryPEM,
+		"jwt":             canaryJWT,
+	}
+	for kind, value := range positives {
+		if got := credentialKind("ANY_NAME", value); got != kind {
+			t.Errorf("credentialKind(%s) = %q, want %q", kind, got, kind)
+		}
+	}
+	// Entropia só vale para nome de aparência secreta.
+	if got := credentialKind("SESSION_SECRET", canaryRandom); got != kindHighEntropy {
+		t.Errorf("random value in a secret-like name = %q, want %q", got, kindHighEntropy)
+	}
+	for name, c := range map[string][2]string{
+		"random value in an ordinary name":   {"APP_NAME", canaryRandom},
+		"placeholder in a secret-like name":  {"API_TOKEN", "your-token-goes-here-please"},
+		"short value in a secret-like name":  {"DB_PASSWORD", "hunter2"},
+		"url in a secret-like name":          {"WEBHOOK_SECRET_URL", "https://hooks.example.com/services/abc/def"},
+		"empty value":                        {"API_TOKEN", ""},
+		"repeated characters (low entropy)":  {"API_TOKEN", strings.Repeat("a", 40)},
+		"stripe test key is not a live leak": {"STRIPE_KEY", "sk" + "_test_" + strings.Repeat("a1", 12)},
+	} {
+		if got := credentialKind(c[0], c[1]); got != "" {
+			t.Errorf("%s: credentialKind = %q, want none", name, got)
+		}
+	}
+}
+
+func TestClassifyVariable(t *testing.T) {
+	for name, want := range map[string]domain.VarClass{
+		"PORT": domain.ClassPlatform, "port": domain.ClassPlatform,
+		"JWT_SECRET": domain.ClassGenerable, "SESSION_SECRET": domain.ClassGenerable, "SECRET_KEY_BASE": domain.ClassGenerable,
+		"NEXTAUTH_SECRET": domain.ClassGenerable, "ENCRYPTION_KEY": domain.ClassGenerable,
+		// Credenciais de terceiros nunca são geráveis.
+		"STRIPE_SECRET_KEY": domain.ClassUser, "GITHUB_TOKEN": domain.ClassUser, "SMTP_PASSWORD": domain.ClassUser,
+		"DB_PASSWORD": domain.ClassUser, "AWS_SECRET_ACCESS_KEY": domain.ClassUser, "API_KEY": domain.ClassUser,
+		"DATABASE_URL": domain.ClassUser, "LOG_LEVEL": domain.ClassUser,
+	} {
+		if got := classifyVariable(name); got != want {
+			t.Errorf("classifyVariable(%s) = %s, want %s", name, got, want)
+		}
+	}
+}
+
+func TestExampleStatesAndHints(t *testing.T) {
+	res := analyzeEnv(t, map[string]string{
+		".env.example": strings.Join([]string{
+			"EMPTY_VAR=",
+			"PLACEHOLDER_VAR=changeme",
+			"ANGLE_VAR=<your token>",
+			"NODE_ENV=production",
+			"LOG_LEVEL='info'",
+			"# COMMENTED_VAR=abc",
+			"JWT_SECRET=dev-only-secret",
+			"STRIPE_KEY=" + canaryStripe,
+			"PORT=3000",
+		}, "\n"),
+		"src/server.js": "process.env.USED_NOT_DECLARED; process.env.PORT;",
+	})
+
+	type expect struct {
+		class   domain.VarClass
+		state   domain.ExampleState
+		hint    string
+		prefill string
+	}
+	for name, want := range map[string]expect{
+		"EMPTY_VAR":         {domain.ClassUser, domain.ExampleEmpty, domain.HintLikelyOptional, ""},
+		"PLACEHOLDER_VAR":   {domain.ClassUser, domain.ExamplePlaceholder, domain.HintLikelyRequired, ""},
+		"ANGLE_VAR":         {domain.ClassUser, domain.ExamplePlaceholder, domain.HintLikelyRequired, ""},
+		"NODE_ENV":          {domain.ClassUser, domain.ExampleDefault, domain.HintPrefilled, "production"},
+		"LOG_LEVEL":         {domain.ClassUser, domain.ExampleDefault, domain.HintPrefilled, "info"},
+		"COMMENTED_VAR":     {domain.ClassUser, domain.ExampleCommented, domain.HintCommented, ""},
+		"JWT_SECRET":        {domain.ClassGenerable, domain.ExamplePlaceholder, domain.HintLikelyRequired, ""},
+		"STRIPE_KEY":        {domain.ClassUser, domain.ExampleExposed, domain.HintLikelyRequired, ""},
+		"PORT":              {domain.ClassPlatform, domain.ExampleDefault, "", "3000"},
+		"USED_NOT_DECLARED": {domain.ClassUser, domain.ExampleAbsent, domain.HintUndeclared, ""},
+	} {
+		v := configVar(t, res, name)
+		gotHint := ""
+		if v.Hint != nil {
+			gotHint = v.Hint.Code
+		}
+		if v.Class != want.class || v.Example != want.state || gotHint != want.hint || v.DefaultValue != want.prefill {
+			t.Errorf("%s = {%s %s hint=%q default=%q}, want {%s %s hint=%q default=%q}",
+				name, v.Class, v.Example, gotHint, v.DefaultValue, want.class, want.state, want.hint, want.prefill)
+		}
+	}
+	if res.Outcome != domain.AnalysisReady {
+		t.Errorf("hints and warnings must never block, outcome = %s", res.Outcome)
+	}
+}
+
+func TestSecretLikeNamesAreNeverPrefilled(t *testing.T) {
+	res := analyzeEnv(t, map[string]string{".env.example": "SMTP_PASSWORD=smtp-pass\nAPI_TOKEN=abc123\n"})
+	for _, name := range []string{"SMTP_PASSWORD", "API_TOKEN"} {
+		if v := configVar(t, res, name); v.DefaultValue != "" || v.Example != domain.ExamplePlaceholder {
+			t.Errorf("%s = %+v, want a placeholder without a default value", name, v)
+		}
+	}
+}
+
+func TestHintsWithoutExampleFile(t *testing.T) {
+	files := map[string]string{
+		"src/server.js":  "process.env.RUNTIME_VAR;",
+		"test/a.test.js": "process.env.TEST_ONLY_VAR;",
+	}
+	res := analyzeEnv(t, files)
+	if h := configVar(t, res, "RUNTIME_VAR").Hint; h == nil || h.Code != domain.HintReferencedOnly {
+		t.Errorf("runtime reference with no example file: hint = %+v", h)
+	}
+	if h := configVar(t, res, "TEST_ONLY_VAR").Hint; h != nil {
+		t.Errorf("a reference only in tests deserves no hint, got %+v", h)
+	}
+}
+
+func TestActiveDeclarationBeatsCommentedOne(t *testing.T) {
+	res := analyzeEnv(t, map[string]string{".env.example": "# FEATURE=on\nFEATURE=\n", ".env.sample": "# OTHER=1\n"})
+	if v := configVar(t, res, "FEATURE"); v.Example != domain.ExampleEmpty || !v.DeclaredInExample {
+		t.Errorf("FEATURE = %+v, want the active (empty) declaration", v)
+	}
+	if v := configVar(t, res, "OTHER"); v.Example != domain.ExampleCommented || v.DeclaredInExample {
+		t.Errorf("OTHER = %+v, want commented and not declared", v)
+	}
+}
+
+func warningMessages(res domain.AnalysisResult) string {
+	var parts []string
+	for _, w := range res.Warnings {
+		parts = append(parts, w.Message)
+	}
+	return strings.Join(parts, "\n")
+}
+
+func TestExposureWarnings(t *testing.T) {
+	t.Run("a committed environment file warns even without credentials", func(t *testing.T) {
+		res := analyzeEnv(t, map[string]string{".env": "NORMAL=1\n"})
+		if got := warningMessages(res); !strings.Contains(got, ".env está versionado") || !strings.Contains(got, "Cobogó não usa") {
+			t.Errorf("warnings = %q", got)
+		}
+	})
+	t.Run("every real environment file name is covered", func(t *testing.T) {
+		res := analyzeEnv(t, map[string]string{".env.local": "A=1", ".env.production": "A=1"})
+		if len(res.Warnings) != 2 {
+			t.Errorf("warnings = %q", warningMessages(res))
+		}
+	})
+	t.Run("a credential in an example file warns with its location and kind", func(t *testing.T) {
+		res := analyzeEnv(t, map[string]string{".env.example": "A=1\nGITHUB_TOKEN=" + canaryGitHub + "\n"})
+		got := warningMessages(res)
+		for _, want := range []string{"GITHUB_TOKEN", ".env.example:2", "token do GitHub", "rotacione"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("warnings %q missing %q", got, want)
+			}
+		}
+		if len(res.Warnings) != 1 {
+			t.Errorf("want exactly one warning, got %q", got)
+		}
+	})
+	t.Run("a commented credential is still an exposure", func(t *testing.T) {
+		res := analyzeEnv(t, map[string]string{".env.example": "# AWS_ACCESS_KEY_ID=" + canaryAWS + "\n"})
+		if got := warningMessages(res); !strings.Contains(got, "chave de acesso da AWS") {
+			t.Errorf("warnings = %q", got)
+		}
+	})
+	t.Run("a credential in a real file adds a warning on top of the file warning", func(t *testing.T) {
+		res := analyzeEnv(t, map[string]string{".env": "SESSION_SECRET=" + canaryRandom + "\n"})
+		if len(res.Warnings) != 2 {
+			t.Errorf("warnings = %q", warningMessages(res))
+		}
+	})
+	t.Run("clean example files produce no warning", func(t *testing.T) {
+		res := analyzeEnv(t, map[string]string{".env.example": "A=\nSECRET=changeme\nURL=https://example.com\n"})
+		if len(res.Warnings) != 0 {
+			t.Errorf("warnings = %q", warningMessages(res))
+		}
+	})
+	t.Run("warnings never block the analysis", func(t *testing.T) {
+		res := analyzeEnv(t, map[string]string{".env": "X=1\n", ".env.example": "K=" + canaryAWS})
+		if res.Outcome != domain.AnalysisReady {
+			t.Errorf("outcome = %s", res.Outcome)
+		}
+	})
+}
+
+// O valor lido para classificar nunca sai da análise (DEC-24 item 8): nem em
+// evidência, nem em aviso, nem na serialização completa do resultado.
+func TestSecretValuesNeverLeaveTheAnalysis(t *testing.T) {
+	canaries := []string{canaryAWS, canaryGitHub, canarySlack, canaryStripe, canaryGoogle, canaryJWT, canaryRandom, "real-db-password-value", "plain-real-value"}
+	res := analyzeEnv(t, map[string]string{
+		".env":            "DB_PASSWORD=real-db-password-value\nNORMAL=plain-real-value\nAWS=" + canaryAWS + "\nSESSION_SECRET=" + canaryRandom + "\n",
+		".env.production": "TOKEN=" + canaryGitHub + "\n",
+		".env.example":    "SLACK_TOKEN=" + canarySlack + "\nSTRIPE_KEY=" + canaryStripe + "\nGOOGLE_API_KEY=" + canaryGoogle + "\nJWT=" + canaryJWT + "\n# OLD_KEY=" + canaryAWS + "\n",
+		"src/uses-env.js": "process.env.DB_PASSWORD; process.env.NORMAL;",
+	})
+	raw, err := json.Marshal(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range canaries {
+		if strings.Contains(string(raw), c) {
+			t.Errorf("a value read from an environment file leaked into the analysis result: %q", c[:6]+"…")
+		}
+	}
+	if len(res.Warnings) == 0 {
+		t.Fatal("the fixture must raise warnings, otherwise the check proves nothing")
+	}
+}
+
+func TestOnlyDefaultValuesFromExampleFilesAreKept(t *testing.T) {
+	res := analyzeEnv(t, map[string]string{
+		".env":         "NODE_ENV=from-the-real-file\n",
+		".env.example": "NODE_ENV=production\n",
+	})
+	if v := configVar(t, res, "NODE_ENV"); v.DefaultValue != "production" {
+		t.Errorf("default must come from the example file, got %q", v.DefaultValue)
+	}
+	for _, e := range res.Evidences {
+		if e.Kind == kindEnvDefault && e.Source != ".env.example" {
+			t.Errorf("a default value was taken from %s", e.Source)
+		}
+		if strings.Contains(e.Value, "from-the-real-file") {
+			t.Errorf("a value from the real environment file leaked: %+v", e)
+		}
+	}
+}
+
+func TestEnvFilesAreNotFollowedThroughSymlinks(t *testing.T) {
+	fsys := toFS(nodeRepo(startIndexPkg, nil))
+	fsys[".env"] = &fstest.MapFile{Data: []byte("A=1"), Mode: fs.ModeSymlink}
+	fsys[".env.example"] = &fstest.MapFile{Data: []byte("B=1"), Mode: fs.ModeSymlink}
+	res, err := Analyze(fsys, Input{Overrides: map[string]string{"port": "3000"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gaps []string
+	for _, g := range res.Coverage.Gaps {
+		gaps = append(gaps, g.Path+":"+g.Reason)
+	}
+	assertStrings(t, "gaps", gaps, []string{".env:symlink", ".env.example:symlink"})
+	if len(res.Warnings) != 0 || len(res.ConfigVariables) != 0 {
+		t.Errorf("a symlink must not be read: warnings=%v vars=%v", res.Warnings, res.ConfigVariables)
 	}
 }

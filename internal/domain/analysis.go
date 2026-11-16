@@ -124,11 +124,60 @@ type EnvReference struct {
 	Scope Scope  `json:"scope"`
 }
 
-// ConfigVariable é uma entrada do inventário de HEU-09. Não decide
-// obrigatoriedade, origem do valor nem exposição: isso pertence à
-// configuração guiada (§17.1 do mestre, TEL-05), ainda não implementada.
+// VarClass diz quem fornece o valor de uma variável de ambiente (DEC-24).
+type VarClass string
+
+const (
+	// ClassPlatform: fornecida pela plataforma (ex.: PORT); o usuário não a preenche.
+	ClassPlatform VarClass = "platform"
+	// ClassGenerable: segredo que o próprio app inventa; o Cobogó pode gerar
+	// um valor, mas só sob ação explícita do usuário.
+	ClassGenerable VarClass = "generable"
+	// ClassUser: o usuário informa.
+	ClassUser VarClass = "user"
+)
+
+// ExampleState descreve como a variável aparece nos arquivos de exemplo
+// (.env.example e similares).
+type ExampleState string
+
+const (
+	ExampleAbsent      ExampleState = "absent"      // não está no exemplo
+	ExampleEmpty       ExampleState = "empty"       // declarada sem valor
+	ExamplePlaceholder ExampleState = "placeholder" // valor de preenchimento (changeme, <token>)
+	ExampleDefault     ExampleState = "default"     // valor real não secreto
+	ExampleCommented   ExampleState = "commented"   // aparece só comentada
+	ExampleExposed     ExampleState = "exposed"     // parece uma credencial real
+)
+
+// Códigos de aviso de uma variável. A interface escolhe o texto; Message traz
+// uma redação padrão.
+const (
+	HintLikelyRequired = "likely_required"
+	HintLikelyOptional = "likely_optional"
+	HintCommented      = "commented"
+	HintPrefilled      = "prefilled"
+	HintUndeclared     = "undeclared"
+	HintReferencedOnly = "referenced_only"
+)
+
+// ConfigHint é um aviso não bloqueante sobre uma variável.
+type ConfigHint struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// ConfigVariable é uma entrada do inventário de HEU-09 (DEC-24). Os avisos
+// nunca bloqueiam o deploy. DefaultValue só existe para o estado `default`
+// (valor não secreto de um arquivo de exemplo) e serve para pré-preencher um
+// campo que o usuário precisa confirmar; nenhum outro valor do repositório
+// sai da análise.
 type ConfigVariable struct {
 	Name              string         `json:"name"`
+	Class             VarClass       `json:"class"`
+	Example           ExampleState   `json:"example"`
+	DefaultValue      string         `json:"default_value,omitempty"`
+	Hint              *ConfigHint    `json:"hint,omitempty"`
 	DeclaredInExample bool           `json:"declared_in_example"`
 	References        []EnvReference `json:"references,omitempty"`
 	EvidenceIDs       []string       `json:"evidence_ids,omitempty"`
@@ -155,6 +204,9 @@ type AnalysisResult struct {
 	Conflicts       []Finding        `json:"conflicts"`
 	Unsupported     []Finding        `json:"unsupported"`
 	ConfigVariables []ConfigVariable `json:"config_variables"`
-	Evidences       []Evidence       `json:"evidences"`
-	Coverage        Coverage         `json:"coverage"`
+	// Warnings são avisos de segurança e de configuração que nunca bloqueiam
+	// a análise (ex.: credencial exposta no repositório).
+	Warnings  []Finding  `json:"warnings"`
+	Evidences []Evidence `json:"evidences"`
+	Coverage  Coverage   `json:"coverage"`
 }

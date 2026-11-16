@@ -60,6 +60,7 @@ type RuleOutput struct {
 	Conflicts       []domain.Finding
 	Unsupported     []domain.Finding
 	ConfigVariables []domain.ConfigVariable
+	Warnings        []domain.Finding
 }
 
 type Rule struct {
@@ -95,7 +96,7 @@ func NodeCatalog() Catalog {
 		Version: nodeCatalogVersion,
 		Extractors: []Extractor{
 			{ID: extractorManifest, Extract: extractManifest},
-			{ID: extractorEnvExample, Extract: extractEnvExample},
+			{ID: extractorEnvFiles, Extract: extractEnvFiles},
 			{ID: extractorSource, Extract: extractSource},
 		},
 		Rules: []Rule{ruleHEU01(), ruleHEU02(), ruleHEU05(), ruleHEU09()},

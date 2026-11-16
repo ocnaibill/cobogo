@@ -11,8 +11,7 @@ import (
 )
 
 const (
-	extractorEnvExample = "env-example"
-	extractorSource     = "source"
+	extractorSource = "source"
 )
 
 var sourceExtensions = map[string]bool{
@@ -34,49 +33,6 @@ var (
 	envDynamic     = regexp.MustCompile(`process\.env\[`)
 	identifier     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
-
-// extractEnvExample lê só os nomes de .env.example; valores nunca saem do
-// arquivo (RN-15) e nada é executado ou expandido (RN-08).
-func extractEnvExample(fsys fs.FS, x *Extraction) error {
-	const name = ".env.example"
-	data, state, err := readSmallFile(fsys, name)
-	if err != nil {
-		return err
-	}
-	switch state {
-	case fileMissing:
-		return nil
-	case fileSymlink:
-		x.gap(name, "symlink")
-		return nil
-	case fileTooLarge:
-		x.gap(name, "too_large")
-		return nil
-	}
-	x.filesRead++
-	for _, varName := range parseEnvNames(data) {
-		x.emit(extractorEnvExample, domain.Evidence{Kind: kindEnvDeclared, Name: varName, Source: name, Scope: domain.ScopeUnknown})
-	}
-	return nil
-}
-
-func parseEnvNames(data []byte) []string {
-	var names []string
-	seen := map[string]bool{}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		m := envAssignment.FindStringSubmatch(line)
-		if m == nil || seen[m[1]] {
-			continue
-		}
-		seen[m[1]] = true
-		names = append(names, m[1])
-	}
-	return names
-}
 
 // extractSource procura referências a variáveis de ambiente no código. Acesso
 // dinâmico (`process.env[x]`) não pode ser resolvido sem executar o código e

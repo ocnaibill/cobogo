@@ -161,8 +161,9 @@ func ruleHEU05() Rule {
 	}
 }
 
-// HEU-09: inventário das variáveis de configuração (camada requires). Não
-// classifica obrigatoriedade nem bloqueia o plano (ficha em MOTOR §6.2).
+// HEU-09: inventário das variáveis de configuração, com classe, estado no
+// exemplo e aviso por variável, e avisos de exposição de credenciais (DEC-24).
+// Nada aqui bloqueia o plano.
 func ruleHEU09() Rule {
 	return Rule{
 		Meta: RuleMeta{
@@ -173,14 +174,30 @@ func ruleHEU09() Rule {
 			byName := map[string]*domain.ConfigVariable{}
 			variable := func(name string) *domain.ConfigVariable {
 				if byName[name] == nil {
-					byName[name] = &domain.ConfigVariable{Name: name}
+					byName[name] = &domain.ConfigVariable{Name: name, Class: classifyVariable(name), Example: domain.ExampleAbsent}
 				}
 				return byName[name]
 			}
+
+			// Estado no exemplo: uma declaração ativa vale mais que uma
+			// comentada; entre ativas, vale a primeira (ordem estável).
+			defaults := map[string]string{}
+			for _, e := range in.Of(kindEnvDefault) {
+				if _, ok := defaults[e.Name]; !ok {
+					defaults[e.Name] = e.Value
+				}
+			}
 			for _, e := range in.Of(kindEnvDeclared) {
 				v := variable(e.Name)
-				v.DeclaredInExample = true
+				state := domain.ExampleState(e.Value)
 				v.EvidenceIDs = append(v.EvidenceIDs, e.ID)
+				switch {
+				case v.Example == domain.ExampleAbsent:
+					v.Example = state
+				case v.Example == domain.ExampleCommented && state != domain.ExampleCommented:
+					v.Example = state
+				}
+				v.DeclaredInExample = v.Example != domain.ExampleAbsent && v.Example != domain.ExampleCommented
 			}
 			for _, e := range in.Of(kindEnvReference) {
 				v := variable(e.Name)
@@ -188,13 +205,68 @@ func ruleHEU09() Rule {
 				v.EvidenceIDs = append(v.EvidenceIDs, e.ID)
 			}
 
+			hasExampleFile := len(in.Of(kindEnvExampleFile)) > 0
 			var out RuleOutput
 			for _, v := range byName {
+				if v.Example == domain.ExampleDefault {
+					v.DefaultValue = defaults[v.Name]
+				}
+				v.Hint = configHint(*v, hasExampleFile)
 				out.ConfigVariables = append(out.ConfigVariables, *v)
+			}
+
+			for _, e := range in.Of(kindEnvExposure) {
+				out.Warnings = append(out.Warnings, exposureWarning(e))
 			}
 			return out
 		},
 	}
+}
+
+// configHint monta o aviso de uma variável, ou nil quando não há o que dizer.
+// Variáveis da plataforma nunca têm aviso: o usuário não as preenche.
+func configHint(v domain.ConfigVariable, hasExampleFile bool) *domain.ConfigHint {
+	if v.Class == domain.ClassPlatform {
+		return nil
+	}
+	hint := func(code, msg string) *domain.ConfigHint { return &domain.ConfigHint{Code: code, Message: msg} }
+	switch v.Example {
+	case domain.ExamplePlaceholder:
+		return hint(domain.HintLikelyRequired, "O exemplo traz só um valor de preenchimento; provavelmente a variável é obrigatória.")
+	case domain.ExampleExposed:
+		return hint(domain.HintLikelyRequired, "O exemplo traz o que parece ser uma credencial real, que o Cobogó não usa; provavelmente a variável é obrigatória.")
+	case domain.ExampleEmpty:
+		return hint(domain.HintLikelyOptional, "O exemplo declara a variável sem valor, então provavelmente é opcional. Preencha agora se achar que o programa quebra sem ela.")
+	case domain.ExampleCommented:
+		return hint(domain.HintCommented, "A variável está comentada no exemplo; provavelmente é opcional ou alternativa a outra.")
+	case domain.ExampleDefault:
+		return hint(domain.HintPrefilled, "O exemplo traz um valor padrão; confirme para usá-lo.")
+	}
+	for _, r := range v.References {
+		if r.Scope != domain.ScopeRuntime {
+			continue
+		}
+		if hasExampleFile {
+			return hint(domain.HintUndeclared, "O código usa esta variável, mas ela não está no arquivo de exemplo.")
+		}
+		return hint(domain.HintReferencedOnly, "O código usa esta variável e o projeto não traz arquivo de exemplo; informe um valor se o programa precisar dela.")
+	}
+	return nil
+}
+
+const rotateAdvice = "Revogue ou rotacione a credencial; removê-la do histórico do Git não basta. O Cobogó não usa valores que vêm do repositório."
+
+// exposureWarning descreve uma exposição sem repetir nem citar o valor.
+func exposureWarning(e domain.Evidence) domain.Finding {
+	where := e.Source
+	if e.Line > 0 {
+		where = fmt.Sprintf("%s:%d", e.Source, e.Line)
+	}
+	msg := fmt.Sprintf("HEU-09: %s em %s parece ser uma credencial real (%s). %s", e.Name, where, exposureLabels[e.Value], rotateAdvice)
+	if e.Value == exposureCommittedFile {
+		msg = fmt.Sprintf("HEU-09: o arquivo de ambiente %s está versionado no repositório e pode conter credenciais reais. %s", e.Name, rotateAdvice)
+	}
+	return domain.Finding{Message: msg, EvidenceIDs: []string{e.ID}}
 }
 
 // scriptNamePattern limita as opções a nomes seguros para entrar sem aspas em
