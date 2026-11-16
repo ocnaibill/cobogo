@@ -7,13 +7,16 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/ocnaibill/cobogo/internal/analyzer"
 	"github.com/ocnaibill/cobogo/internal/dockerrt"
 	"github.com/ocnaibill/cobogo/internal/domain"
 	"github.com/ocnaibill/cobogo/internal/gitsource"
+	"github.com/ocnaibill/cobogo/internal/planner"
 	"github.com/ocnaibill/cobogo/internal/store"
 
 	"github.com/google/uuid"
@@ -113,7 +116,11 @@ func (w *Worker) process(ctx context.Context, job *domain.Job, dep *domain.Deplo
 	w.store.UpdateDeploymentState(ctx, dep.ID, domain.DeploymentAnalyzing, "")
 	rootDir := filepath.Join(ws.Dir, project.RootDirectory)
 
-	result, err := analyzer.Analyze(rootDir, dep.PortOverride)
+	overrides := map[string]string{}
+	if dep.PortOverride != nil {
+		overrides[domain.FieldPort] = strconv.Itoa(*dep.PortOverride)
+	}
+	result, err := analyzer.Analyze(os.DirFS(rootDir), analyzer.Input{Overrides: overrides})
 	if err != nil {
 		w.fail(ctx, dep, "ANALYZING", err)
 		return
@@ -123,11 +130,8 @@ func (w *Worker) process(ctx context.Context, job *domain.Job, dep *domain.Deplo
 		return
 	}
 	w.emit(ctx, dep.ID, "analyzing", "completed", map[string]any{
-		"outcome":          result.Outcome,
-		"evidences":        result.Evidences,
-		"pending":          result.Pending,
-		"conflicts":        result.Conflicts,
-		"config_variables": result.ConfigVariables,
+		"outcome":  result.Outcome,
+		"analysis": result,
 	})
 
 	switch result.Outcome {
@@ -142,14 +146,13 @@ func (w *Worker) process(ctx context.Context, job *domain.Job, dep *domain.Deplo
 		return
 	}
 
-	plan := result.Plan
-	if plan == nil {
-		w.fail(ctx, dep, "GENERATING", fmt.Errorf("análise pronta sem plano, estado inconsistente"))
-		return
-	}
-
 	// --- GENERATING ---
 	w.store.UpdateDeploymentState(ctx, dep.ID, domain.DeploymentGenerating, "")
+	plan, err := planner.FromAnalysis(result)
+	if err != nil {
+		w.fail(ctx, dep, "GENERATING", err)
+		return
+	}
 	w.emit(ctx, dep.ID, "generating", "completed", map[string]any{
 		"profile":         plan.Profile,
 		"runtime":         plan.Runtime,
@@ -158,6 +161,7 @@ func (w *Worker) process(ctx context.Context, job *domain.Job, dep *domain.Deplo
 		"start_command":   plan.StartCommand,
 		"port":            plan.Port,
 		"port_origin":     plan.PortOrigin,
+		"dockerfile":      plan.Dockerfile,
 	})
 
 	shortSHA := ws.CommitSHA

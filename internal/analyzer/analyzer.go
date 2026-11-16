@@ -1,215 +1,258 @@
-// Package analyzer implementa o catálogo inicial de heurísticas (§11.2) do
-// perfil P-NODE: HEU-01 (package.json + lockfile npm), HEU-02
-// (scripts.start), HEU-05 (contrato de porta) e HEU-09 (descoberta de
-// variáveis de configuração, só a camada `requires`: ver ficha em
-// docs/MOTOR-DE-HEURISTICAS.md §6.2). Não executa nenhum código do
-// repositório (RN-08) — apenas lê arquivos e grifos textuais.
+// Package analyzer é o motor de heurísticas (DEC-23): extratores leem o
+// repositório e produzem evidências com escopo; regras versionadas propõem
+// valores, pendências e conflitos; um resolvedor aplica a precedência da
+// RN-03. Nada do repositório é executado (RN-08).
 package analyzer
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"io/fs"
-	"os"
-	"path/filepath"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/ocnaibill/cobogo/internal/domain"
-	"github.com/ocnaibill/cobogo/internal/planner"
 )
 
-// RulesVersion identifica a versão do catálogo usado nesta análise (RF-02,
-// RNF-01: mesmas regras e arquivos produzem o mesmo plano normalizado).
-const RulesVersion = "heuristics-m1-2026.10"
-
-const maxSourceFileSize = 1 << 20 // 1 MiB; arquivos maiores não são lidos.
-
-var sourceExtensions = map[string]bool{
-	".js": true, ".mjs": true, ".cjs": true, ".ts": true,
+// Input é o que, além dos arquivos, influencia a análise. Overrides mapeia
+// campo do plano para o valor informado pelo usuário (RN-03, RF-08).
+type Input struct {
+	Overrides map[string]string
 }
 
-var skippedDirs = map[string]bool{
-	"node_modules": true, ".git": true,
+// Analyze aplica o catálogo do perfil P-NODE sobre o diretório do projeto.
+func Analyze(fsys fs.FS, in Input) (domain.AnalysisResult, error) {
+	return analyzeWith(NodeCatalog(), fsys, in)
 }
 
-type packageJSON struct {
-	Scripts    map[string]string `json:"scripts"`
-	Workspaces json.RawMessage   `json:"workspaces"`
-}
-
-// Analyze aplica o catálogo P-NODE sobre o diretório raiz do projeto.
-// portOverride é o valor explícito do solicitante (RN-03), quando houver.
-func Analyze(rootDir string, portOverride *int) (domain.AnalysisResult, error) {
-	result := domain.AnalysisResult{RulesVersion: RulesVersion}
-
-	pkgPath := filepath.Join(rootDir, "package.json")
-	raw, err := os.ReadFile(pkgPath)
+func analyzeWith(cat Catalog, fsys fs.FS, in Input) (domain.AnalysisResult, error) {
+	overrides, invalid, err := checkOverrides(cat, in.Overrides)
 	if err != nil {
-		if os.IsNotExist(err) {
-			result.Outcome = domain.AnalysisUnsupported
-			result.Conflicts = append(result.Conflicts, "package.json ausente no diretório raiz; perfil P-NODE não se aplica")
-			return result, nil
+		return domain.AnalysisResult{}, err
+	}
+
+	x := newExtraction()
+	for _, e := range cat.Extractors {
+		if err := e.Extract(fsys, x); err != nil {
+			return domain.AnalysisResult{}, fmt.Errorf("analyzer: extrator %s: %w", e.ID, err)
 		}
-		return result, fmt.Errorf("analyzer: ler package.json: %w", err)
+	}
+	evidence, coverage := x.finish()
+	ruleInput := RuleInput{Evidence: evidence, Coverage: coverage}
+
+	res := domain.AnalysisResult{
+		CatalogVersion:  cat.Version,
+		Rules:           []domain.AppliedRule{},
+		Pending:         []domain.Finding{},
+		Conflicts:       []domain.Finding{},
+		Unsupported:     []domain.Finding{},
+		ConfigVariables: []domain.ConfigVariable{},
+		Evidences:       evidence,
+		Coverage:        coverage,
 	}
 
-	var pkg packageJSON
-	if err := json.Unmarshal(raw, &pkg); err != nil {
-		result.Outcome = domain.AnalysisUnsupported
-		result.Conflicts = append(result.Conflicts, fmt.Sprintf("package.json inválido: %v", err))
-		return result, nil
-	}
+	blocked := map[string]bool{}
+	var proposals []domain.Proposal
+	for _, rule := range cat.Rules {
+		applied := domain.AppliedRule{ID: rule.Meta.ID, Version: rule.Meta.Version, State: string(rule.Meta.State), Status: "applied"}
+		blockedBy := firstBlocked(rule.Meta.Requires, blocked)
+		switch {
+		case rule.Meta.State == RuleRetired:
+			applied.Status = "retired"
+		case blockedBy != "":
+			applied.Status = "skipped"
+			applied.Reason = "pré-condição não satisfeita: " + blockedBy
+			blocked[rule.Meta.ID] = true
+		}
+		res.Rules = append(res.Rules, applied)
+		if applied.Status != "applied" {
+			continue
+		}
 
-	hasNpmLock := fileExists(filepath.Join(rootDir, "package-lock.json"))
-	hasYarnLock := fileExists(filepath.Join(rootDir, "yarn.lock"))
-	hasPnpmLock := fileExists(filepath.Join(rootDir, "pnpm-lock.yaml"))
+		out := rule.Apply(ruleInput)
+		if err := checkOwnership(rule.Meta, out); err != nil {
+			return domain.AnalysisResult{}, err
+		}
+		for _, p := range out.Proposals {
+			p.Rule = rule.Meta.ID
+			proposals = append(proposals, p)
+		}
+		res.Pending = append(res.Pending, stamp(rule.Meta.ID, out.Pending)...)
+		res.Conflicts = append(res.Conflicts, stamp(rule.Meta.ID, out.Conflicts)...)
+		res.Unsupported = append(res.Unsupported, stamp(rule.Meta.ID, out.Unsupported)...)
+		res.ConfigVariables = append(res.ConfigVariables, out.ConfigVariables...)
+		if len(out.Unsupported) > 0 {
+			blocked[rule.Meta.ID] = true
+		}
+	}
+	slices.SortFunc(res.ConfigVariables, func(a, b domain.ConfigVariable) int { return strings.Compare(a.Name, b.Name) })
+
+	supported := len(res.Unsupported) == 0
+	res.Fields, res.Pending, res.Conflicts = resolve(cat, proposals, res.Pending, res.Conflicts, overrides, invalid, supported)
 
 	switch {
-	case !hasNpmLock:
-		result.Outcome = domain.AnalysisUnsupported
-		result.Conflicts = append(result.Conflicts, "HEU-01: package-lock.json ausente; sem lockfile npm coerente não é possível fixar dependências")
-	case hasYarnLock || hasPnpmLock:
-		result.Outcome = domain.AnalysisUnsupported
-		result.Conflicts = append(result.Conflicts, "HEU-01: múltiplos lockfiles detectados (npm + yarn/pnpm); perfil P-NODE exige gerenciador único")
+	case !supported:
+		res.Outcome = domain.AnalysisUnsupported
+	case len(res.Pending) > 0 || len(res.Conflicts) > 0:
+		res.Outcome = domain.AnalysisNeedsInput
 	default:
-		result.Evidences = append(result.Evidences, domain.Evidence{
-			Rule:        "HEU-01",
-			Description: "package.json e package-lock.json coerentes com npm",
-			Source:      "package.json, package-lock.json",
-		})
+		res.Outcome = domain.AnalysisReady
 	}
-
-	if len(pkg.Workspaces) > 0 {
-		result.Outcome = domain.AnalysisUnsupported
-		result.Conflicts = append(result.Conflicts, "HEU-01: workspaces declarado; monorepos ficam fora do perfil P-NODE do D0")
-	}
-
-	if result.Outcome == domain.AnalysisUnsupported {
-		return result, nil
-	}
-
-	startCommand, hasStart := pkg.Scripts["start"]
-	startCommand = strings.TrimSpace(startCommand)
-	if !hasStart || startCommand == "" {
-		result.Pending = append(result.Pending, domain.PendingField{
-			Field:  "start_command",
-			Reason: "HEU-02: scripts.start ausente; não é permitido assumir um entrypoint arbitrário",
-		})
-	} else {
-		result.Evidences = append(result.Evidences, domain.Evidence{
-			Rule:        "HEU-02",
-			Description: fmt.Sprintf("scripts.start declara o comando de execução: %q", startCommand),
-			Source:      "package.json#scripts.start",
-		})
-	}
-
-	buildCommand := strings.TrimSpace(pkg.Scripts["build"])
-
-	portEvidenceFound, portSource, err := scanPortContract(rootDir)
-	if err != nil {
-		return result, err
-	}
-	if portEvidenceFound {
-		result.Evidences = append(result.Evidences, domain.Evidence{
-			Rule:        "HEU-05",
-			Description: "process.env.PORT referenciado no código-fonte",
-			Source:      portSource,
-		})
-	}
-
-	var port int
-	var portOrigin string
-	switch {
-	case portOverride != nil:
-		port = *portOverride
-		portOrigin = "override explícito do solicitante (RN-03)"
-	case portEvidenceFound:
-		result.Pending = append(result.Pending, domain.PendingField{
-			Field:  "port",
-			Reason: "HEU-05: contrato de PORT detectado, mas o valor numérico não é inferido automaticamente (RN-02); informe a porta",
-		})
-	default:
-		result.Pending = append(result.Pending, domain.PendingField{
-			Field:  "port",
-			Reason: "nenhum contrato de porta identificado nas evidências suportadas; informe a porta",
-		})
-	}
-
-	configVars, err := discoverConfigVariables(rootDir)
-	if err != nil {
-		return result, err
-	}
-	if len(configVars) > 0 {
-		result.ConfigVariables = configVars
-		result.Evidences = append(result.Evidences, domain.Evidence{
-			Rule:        "HEU-09",
-			Description: fmt.Sprintf("%d variável(is) de configuração descoberta(s); obrigatoriedade e exposição ainda não classificadas", len(configVars)),
-			Source:      ".env.example, process.env.*",
-		})
-	}
-
-	if len(result.Pending) > 0 {
-		result.Outcome = domain.AnalysisNeedsInput
-		return result, nil
-	}
-
-	result.Outcome = domain.AnalysisReady
-	plan := planner.BuildNodePlan(planner.NodePlanInput{
-		StartCommand: startCommand,
-		BuildCommand: buildCommand,
-		Port:         port,
-		PortOrigin:   portOrigin,
-	})
-	result.Plan = &plan
-	return result, nil
+	return res, nil
 }
 
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
+func firstBlocked(requires []string, blocked map[string]bool) string {
+	for _, id := range requires {
+		if blocked[id] {
+			return id
+		}
+	}
+	return ""
 }
 
-// scanPortContract procura por `process.env.PORT` nos arquivos-fonte do
-// projeto, sem executar nenhum deles (RN-08). Primeira ocorrência encontrada
-// é suficiente como evidência; a leitura é limitada por tamanho e diretório.
-func scanPortContract(rootDir string) (found bool, source string, err error) {
-	walkErr := filepath.WalkDir(rootDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			if skippedDirs[d.Name()] {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if found {
-			return nil
-		}
-		if !sourceExtensions[filepath.Ext(d.Name())] {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil || info.Size() > maxSourceFileSize {
-			return nil
-		}
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return nil
-		}
-		if bytes.Contains(content, []byte("process.env.PORT")) {
-			found = true
-			rel, relErr := filepath.Rel(rootDir, path)
-			if relErr != nil {
-				rel = path
-			}
-			source = rel
-		}
-		return nil
-	})
-	if walkErr != nil {
-		return false, "", fmt.Errorf("analyzer: varrer contrato de porta: %w", walkErr)
+func stamp(ruleID string, findings []domain.Finding) []domain.Finding {
+	out := make([]domain.Finding, len(findings))
+	for i, f := range findings {
+		f.Rule = ruleID
+		out[i] = f
 	}
-	return found, source, nil
+	return out
+}
+
+// checkOverrides separa os overrides em válidos e inválidos. Pedir override
+// de um campo que não o aceita é erro de quem chama; um valor inválido vira
+// pendência e o override é ignorado.
+func checkOverrides(cat Catalog, in map[string]string) (valid map[string]string, invalid map[string]error, err error) {
+	specs := map[string]FieldSpec{}
+	for _, s := range cat.Fields {
+		specs[s.Name] = s
+	}
+	valid, invalid = map[string]string{}, map[string]error{}
+	for _, name := range slices.Sorted(maps.Keys(in)) {
+		spec, ok := specs[name]
+		if !ok || !spec.Overridable {
+			return nil, nil, fmt.Errorf("analyzer: o campo %q não aceita override", name)
+		}
+		value := strings.TrimSpace(in[name])
+		if spec.Validate != nil {
+			if verr := spec.Validate(value); verr != nil {
+				invalid[name] = verr
+				continue
+			}
+		}
+		valid[name] = value
+	}
+	return valid, invalid, nil
+}
+
+// checkOwnership garante que uma regra só escreve nos campos que lhe
+// pertencem (§6 do motor).
+func checkOwnership(meta RuleMeta, out RuleOutput) error {
+	trespass := func(field string) error {
+		return fmt.Errorf("analyzer: a regra %s escreveu o campo %q, que não lhe pertence", meta.ID, field)
+	}
+	for _, p := range out.Proposals {
+		if !slices.Contains(meta.Fields, p.Field) {
+			return trespass(p.Field)
+		}
+	}
+	for _, f := range slices.Concat(out.Pending, out.Conflicts, out.Unsupported) {
+		if f.Field != "" && !slices.Contains(meta.Fields, f.Field) {
+			return trespass(f.Field)
+		}
+	}
+	return nil
+}
+
+var originRank = map[domain.Origin]int{
+	domain.OriginDeclaration: 3,
+	domain.OriginInference:   2,
+	domain.OriginDefault:     1,
+}
+
+// resolve junta as propostas por campo: override > declaração > inferência >
+// default. Valores diferentes no mesmo nível são conflito, nunca "o último
+// vence". Com fillRequired, campo obrigatório sem valor e sem pendência vira
+// pendência genérica.
+func resolve(cat Catalog, proposals []domain.Proposal, pending, conflicts []domain.Finding,
+	overrides map[string]string, invalid map[string]error, fillRequired bool,
+) (map[string]domain.Field, []domain.Finding, []domain.Finding) {
+	byField := map[string][]domain.Proposal{}
+	for _, p := range proposals {
+		byField[p.Field] = append(byField[p.Field], p)
+	}
+
+	fields := map[string]domain.Field{}
+	answered := map[string]bool{}
+	for _, spec := range cat.Fields {
+		candidates := byField[spec.Name]
+		if value, ok := overrides[spec.Name]; ok {
+			fields[spec.Name] = domain.Field{Value: value, Origin: domain.OriginOverride, Overrode: candidates}
+			answered[spec.Name] = true
+			continue
+		}
+		if len(candidates) == 0 {
+			continue
+		}
+		field, conflict := pickProposal(spec.Name, candidates)
+		if conflict != nil {
+			conflicts = append(conflicts, *conflict)
+			continue
+		}
+		fields[spec.Name] = field
+	}
+
+	kept := []domain.Finding{}
+	for _, p := range pending {
+		if p.Field == "" || !answered[p.Field] {
+			kept = append(kept, p)
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(invalid)) {
+		kept = append(kept, domain.Finding{Field: name, Message: fmt.Sprintf("override inválido para %s: %v", name, invalid[name])})
+	}
+
+	if fillRequired {
+		open := map[string]bool{}
+		for _, f := range slices.Concat(kept, conflicts) {
+			open[f.Field] = true
+		}
+		for _, spec := range cat.Fields {
+			if _, ok := fields[spec.Name]; !ok && spec.Required && !open[spec.Name] {
+				kept = append(kept, domain.Finding{Field: spec.Name, Message: "nenhuma regra resolveu o campo obrigatório " + spec.Name})
+			}
+		}
+	}
+	return fields, kept, conflicts
+}
+
+func pickProposal(field string, candidates []domain.Proposal) (domain.Field, *domain.Finding) {
+	top := 0
+	for _, p := range candidates {
+		top = max(top, originRank[p.Origin])
+	}
+	values := map[string]bool{}
+	var ids, rules []string
+	var winner domain.Proposal
+	for _, p := range candidates {
+		if originRank[p.Origin] != top {
+			continue
+		}
+		winner = p
+		values[p.Value] = true
+		ids = append(ids, p.EvidenceIDs...)
+		rules = append(rules, p.Rule)
+	}
+	if len(values) > 1 {
+		return domain.Field{}, &domain.Finding{
+			Field:       field,
+			Message:     fmt.Sprintf("valores incompatíveis para %s: %s", field, strings.Join(slices.Sorted(maps.Keys(values)), " | ")),
+			EvidenceIDs: sortedUnique(ids),
+		}
+	}
+	return domain.Field{Value: winner.Value, Origin: winner.Origin, Rules: sortedUnique(rules), EvidenceIDs: sortedUnique(ids)}, nil
+}
+
+func sortedUnique(ss []string) []string {
+	return slices.Compact(slices.Sorted(slices.Values(ss)))
 }

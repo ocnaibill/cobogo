@@ -239,7 +239,7 @@ func (s *Store) SaveAnalysis(ctx context.Context, deploymentID, projectID uuid.U
 	_, err = tx.Exec(ctx, `
 		INSERT INTO analyses (id, project_id, commit_sha, rules_version, outcome, result, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		analysisID, projectID, commitSHA, result.RulesVersion, result.Outcome, string(resultJSON), now,
+		analysisID, projectID, commitSHA, result.CatalogVersion, result.Outcome, string(resultJSON), now,
 	)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("store: inserir análise: %w", err)

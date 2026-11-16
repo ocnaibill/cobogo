@@ -4,6 +4,7 @@ package planner
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/ocnaibill/cobogo/internal/domain"
@@ -20,6 +21,28 @@ type NodePlanInput struct {
 	BuildCommand string
 	Port         int
 	PortOrigin   string
+}
+
+// FromAnalysis converte uma análise pronta no plano executável (DEC-23: o
+// analisador termina nos campos resolvidos; gerar o plano é daqui).
+func FromAnalysis(res domain.AnalysisResult) (domain.Plan, error) {
+	if res.Outcome != domain.AnalysisReady {
+		return domain.Plan{}, fmt.Errorf("planner: análise %s não pode gerar plano", res.Outcome)
+	}
+	if profile := res.Fields[domain.FieldProfile].Value; profile != "P-NODE" {
+		return domain.Plan{}, fmt.Errorf("planner: perfil %q sem template", profile)
+	}
+	portField := res.Fields[domain.FieldPort]
+	port, err := strconv.Atoi(portField.Value)
+	if err != nil {
+		return domain.Plan{}, fmt.Errorf("planner: porta inválida %q: %w", portField.Value, err)
+	}
+	return BuildNodePlan(NodePlanInput{
+		StartCommand: res.Fields[domain.FieldStartCommand].Value,
+		BuildCommand: res.Fields[domain.FieldBuildCommand].Value,
+		Port:         port,
+		PortOrigin:   string(portField.Origin),
+	}), nil
 }
 
 // BuildNodePlan monta o plano executável e o Dockerfile do perfil P-NODE.

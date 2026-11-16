@@ -1,151 +1,190 @@
 package analyzer
 
 import (
-	"bufio"
-	"fmt"
+	"bytes"
 	"io/fs"
-	"os"
-	"path/filepath"
+	"path"
 	"regexp"
-	"sort"
 	"strings"
 
 	"github.com/ocnaibill/cobogo/internal/domain"
 )
 
-// HEU-09: descoberta de variáveis de configuração. Só o `requires` é
-// implementado aqui — encontrar nomes e suas origens. Classificar
-// obrigatoriedade, origem do valor e exposição (o `provides`) pertence ao
-// fluxo de configuração guiada do §17.1/TEL-05, que ainda não existe; por
-// isso o resultado vira evidência, nunca um PendingField que bloqueie o
-// plano (ver ficha HEU-09 em docs/MOTOR-DE-HEURISTICAS.md §6.2).
+const (
+	extractorEnvExample = "env-example"
+	extractorSource     = "source"
+)
 
-var envAssignmentPattern = regexp.MustCompile(`^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=`)
-
-var processEnvPattern = regexp.MustCompile(`process\.env\.([A-Za-z_][A-Za-z0-9_]*)`)
-
-// discoverConfigVariables aplica HEU-09: cruza nomes declarados em
-// `.env.example` com referências literais `process.env.NOME` no código.
-// Nunca executa ou expande o arquivo (RN-08); linhas com sintaxe não
-// reconhecida são simplesmente ignoradas, não um erro de análise.
-func discoverConfigVariables(rootDir string) ([]domain.ConfigVariable, error) {
-	declared, err := parseEnvExample(rootDir)
-	if err != nil {
-		return nil, err
-	}
-	referenced, err := scanEnvReferences(rootDir)
-	if err != nil {
-		return nil, err
-	}
-
-	names := make(map[string]struct{}, len(declared)+len(referenced))
-	for name := range declared {
-		names[name] = struct{}{}
-	}
-	for name := range referenced {
-		names[name] = struct{}{}
-	}
-
-	variables := make([]domain.ConfigVariable, 0, len(names))
-	for name := range names {
-		sources := referenced[name]
-		sort.Strings(sources)
-		variables = append(variables, domain.ConfigVariable{
-			Name:               name,
-			DeclaredInExample:  declared[name],
-			ReferencedInSource: sources,
-		})
-	}
-	sort.Slice(variables, func(i, j int) bool { return variables[i].Name < variables[j].Name })
-	return variables, nil
+var sourceExtensions = map[string]bool{
+	".js": true, ".mjs": true, ".cjs": true, ".jsx": true,
+	".ts": true, ".mts": true, ".cts": true, ".tsx": true,
 }
 
-// parseEnvExample lê `.env.example` linha a linha: nome antes do `=`,
-// ignorando comentários, linhas vazias e qualquer sintaxe que não seja uma
-// atribuição simples (sem expandir `$VAR`, sem interpretar multiline).
-func parseEnvExample(rootDir string) (map[string]bool, error) {
-	path := filepath.Join(rootDir, ".env.example")
-	f, err := os.Open(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return map[string]bool{}, nil
-		}
-		return nil, fmt.Errorf("analyzer: ler .env.example: %w", err)
-	}
-	defer f.Close()
+var skippedDirs = map[string]bool{"node_modules": true, ".git": true}
 
-	names := map[string]bool{}
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+var testDirs = map[string]bool{
+	"test": true, "tests": true, "__tests__": true, "spec": true, "specs": true,
+	"__mocks__": true, "e2e": true, "cypress": true,
+}
+
+var (
+	envAssignment  = regexp.MustCompile(`^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=`)
+	envDotAccess   = regexp.MustCompile(`process\.env\.([A-Za-z_][A-Za-z0-9_]*)`)
+	envDestructure = regexp.MustCompile(`\{([^{}]*)\}\s*=\s*process\.env\b`)
+	envDynamic     = regexp.MustCompile(`process\.env\[`)
+	identifier     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+)
+
+// extractEnvExample lê só os nomes de .env.example; valores nunca saem do
+// arquivo (RN-15) e nada é executado ou expandido (RN-08).
+func extractEnvExample(fsys fs.FS, x *Extraction) error {
+	const name = ".env.example"
+	data, state, err := readSmallFile(fsys, name)
+	if err != nil {
+		return err
+	}
+	switch state {
+	case fileMissing:
+		return nil
+	case fileSymlink:
+		x.gap(name, "symlink")
+		return nil
+	case fileTooLarge:
+		x.gap(name, "too_large")
+		return nil
+	}
+	x.filesRead++
+	for _, varName := range parseEnvNames(data) {
+		x.emit(extractorEnvExample, domain.Evidence{Kind: kindEnvDeclared, Name: varName, Source: name, Scope: domain.ScopeUnknown})
+	}
+	return nil
+}
+
+func parseEnvNames(data []byte) []string {
+	var names []string
+	seen := map[string]bool{}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		if m := envAssignmentPattern.FindStringSubmatch(line); m != nil {
-			names[m[1]] = true
+		m := envAssignment.FindStringSubmatch(line)
+		if m == nil || seen[m[1]] {
+			continue
 		}
+		seen[m[1]] = true
+		names = append(names, m[1])
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("analyzer: ler .env.example: %w", err)
-	}
-	return names, nil
+	return names
 }
 
-// scanEnvReferences varre os mesmos arquivos-fonte de scanPortContract
-// procurando toda referência literal `process.env.NOME`. Acesso dinâmico
-// (`process.env[x]`) não é reconhecido — não é possível resolvê-lo sem
-// executar o código (RN-08).
-func scanEnvReferences(rootDir string) (map[string][]string, error) {
-	refs := map[string][]string{}
-
-	walkErr := filepath.WalkDir(rootDir, func(path string, d fs.DirEntry, err error) error {
+// extractSource procura referências a variáveis de ambiente no código. Acesso
+// dinâmico (`process.env[x]`) não pode ser resolvido sem executar o código e
+// vira lacuna de cobertura.
+func extractSource(fsys fs.FS, x *Extraction) error {
+	return fs.WalkDir(fsys, ".", func(name string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return err
+			x.gap(name, "unreadable")
+			if d != nil && d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
 		}
 		if d.IsDir() {
 			if skippedDirs[d.Name()] {
-				return filepath.SkipDir
+				return fs.SkipDir
 			}
 			return nil
 		}
-		if !sourceExtensions[filepath.Ext(d.Name())] {
+		if !sourceExtensions[strings.ToLower(path.Ext(name))] {
 			return nil
 		}
-		info, err := d.Info()
-		if err != nil || info.Size() > maxSourceFileSize {
+		if d.Type()&fs.ModeSymlink != 0 {
+			x.gap(name, "symlink")
 			return nil
 		}
-		content, err := os.ReadFile(path)
-		if err != nil {
+		if !d.Type().IsRegular() {
 			return nil
 		}
-		matches := processEnvPattern.FindAllSubmatch(content, -1)
-		if len(matches) == 0 {
+		data, state, err := readSmallFile(fsys, name)
+		switch {
+		case err != nil:
+			x.gap(name, "unreadable")
+			return nil
+		case state == fileTooLarge:
+			x.gap(name, "too_large")
+			return nil
+		case state != fileOK:
 			return nil
 		}
-		rel, relErr := filepath.Rel(rootDir, path)
-		if relErr != nil {
-			rel = path
+		x.filesRead++
+
+		if envDynamic.Match(data) {
+			x.gap(name, "dynamic_env_access")
 		}
-		for _, m := range matches {
-			name := string(m[1])
-			if !containsString(refs[name], rel) {
-				refs[name] = append(refs[name], rel)
-			}
+		scope := classifyScope(name)
+		for varName, line := range envReferences(data) {
+			x.emit(extractorSource, domain.Evidence{Kind: kindEnvReference, Name: varName, Source: name, Line: line, Scope: scope})
 		}
 		return nil
 	})
-	if walkErr != nil {
-		return nil, fmt.Errorf("analyzer: varrer referências de configuração: %w", walkErr)
-	}
-	return refs, nil
 }
 
-func containsString(list []string, value string) bool {
-	for _, v := range list {
-		if v == value {
-			return true
+// envReferences devolve cada variável referenciada no arquivo e a primeira
+// linha em que aparece, por acesso direto ou desestruturação.
+func envReferences(data []byte) map[string]int {
+	refs := map[string]int{}
+	add := func(name string, offset int) {
+		line := 1 + bytes.Count(data[:offset], []byte{'\n'})
+		if current, ok := refs[name]; !ok || line < current {
+			refs[name] = line
 		}
 	}
-	return false
+	for _, m := range envDotAccess.FindAllSubmatchIndex(data, -1) {
+		add(string(data[m[2]:m[3]]), m[0])
+	}
+	for _, m := range envDestructure.FindAllSubmatchIndex(data, -1) {
+		for _, name := range destructuredNames(string(data[m[2]:m[3]])) {
+			add(name, m[0])
+		}
+	}
+	return refs
+}
+
+// destructuredNames extrai os nomes de `{ A, B: alias, C = 1, ...rest }`.
+func destructuredNames(inner string) []string {
+	var names []string
+	for _, part := range strings.Split(inner, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" || strings.HasPrefix(part, "...") {
+			continue
+		}
+		part, _, _ = strings.Cut(part, "=")
+		part, _, _ = strings.Cut(part, ":")
+		if part = strings.TrimSpace(part); identifier.MatchString(part) {
+			names = append(names, part)
+		}
+	}
+	return names
+}
+
+// classifyScope classifica um arquivo de código pelo caminho. Código não
+// reconhecido como teste ou ferramenta de build é runtime por convenção do
+// perfil P-NODE, o que é uma inferência (DEC-23).
+func classifyScope(name string) domain.Scope {
+	segments := strings.Split(strings.ToLower(name), "/")
+	base := segments[len(segments)-1]
+	for _, dir := range segments[:len(segments)-1] {
+		if testDirs[dir] {
+			return domain.ScopeTest
+		}
+	}
+	stem := strings.TrimSuffix(base, path.Ext(base))
+	switch {
+	case stem == "test" || stem == "tests" || stem == "spec" || strings.HasSuffix(stem, ".test") || strings.HasSuffix(stem, ".spec"):
+		return domain.ScopeTest
+	case strings.HasSuffix(stem, ".config"):
+		return domain.ScopeBuild
+	}
+	return domain.ScopeRuntime
 }
