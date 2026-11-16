@@ -53,6 +53,7 @@ func main() {
 	}
 	st := store.New(pool).WithCipher(box)
 	w := worker.New(st, rt, log)
+	w.SetGitHosts(cfg.ExtraGitHosts)
 
 	log.Info("worker Cobogó no ar")
 	if err := w.Run(ctx); err != nil && err != context.Canceled {

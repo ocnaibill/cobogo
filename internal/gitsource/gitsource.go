@@ -4,6 +4,7 @@ package gitsource
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -112,7 +113,30 @@ func runGit(ctx context.Context, dir string, args ...string) error {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	if out, err := cmd.CombinedOutput(); err != nil {
+		if unavailable := classifyGitFailure(string(out)); unavailable != nil {
+			return unavailable
+		}
 		return fmt.Errorf("gitsource: git %s falhou: %w: %s", args[0], err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// ErrRepositoryUnavailable indica repositório inexistente ou privado. O
+// Cobogó só clona repositórios públicos e nunca pede credenciais (DEC-27).
+var ErrRepositoryUnavailable = errors.New("repositório inexistente ou privado: o Cobogó só clona repositórios públicos")
+
+// classifyGitFailure reconhece a saída do git quando o repositório não é
+// acessível sem credenciais (a clonagem roda sem terminal, então pedir
+// usuário e senha falha).
+func classifyGitFailure(output string) error {
+	lower := strings.ToLower(output)
+	for _, marker := range []string{
+		"terminal prompts disabled", "could not read username", "authentication failed",
+		"repository not found", "does not appear to be a git repository", "invalid username or password",
+	} {
+		if strings.Contains(lower, marker) {
+			return ErrRepositoryUnavailable
+		}
 	}
 	return nil
 }

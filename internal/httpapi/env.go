@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"regexp"
@@ -37,13 +36,13 @@ func newEnvResponse(v domain.EnvVariable) envResponse {
 
 // envTarget valida projeto e nome da variável da rota. Devolve ok=false depois
 // de já ter respondido o erro.
-func (s *Server) envTarget(w http.ResponseWriter, r *http.Request) (projectID uuid.UUID, name string, ok bool) {
+func (s *Server) envTarget(w http.ResponseWriter, r *http.Request, user domain.User) (projectID uuid.UUID, name string, ok bool) {
 	projectID, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "id de projeto inválido")
 		return uuid.Nil, "", false
 	}
-	if _, err := s.store.GetProject(r.Context(), projectID); errors.Is(err, store.ErrNotFound) {
+	if _, err := s.store.GetProjectFor(r.Context(), projectID, user.ID); errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "projeto não encontrado")
 		return uuid.Nil, "", false
 	} else if err != nil {
@@ -67,8 +66,8 @@ func (s *Server) envTarget(w http.ResponseWriter, r *http.Request) (projectID uu
 	return projectID, name, true
 }
 
-func (s *Server) handleListEnv(w http.ResponseWriter, r *http.Request) {
-	projectID, _, ok := s.envTarget(w, r)
+func (s *Server) handleListEnv(w http.ResponseWriter, r *http.Request, user domain.User) {
+	projectID, _, ok := s.envTarget(w, r, user)
 	if !ok {
 		return
 	}
@@ -87,14 +86,13 @@ type putEnvRequest struct {
 
 // handlePutEnv grava (ou substitui) o valor de uma variável. Não registra o
 // corpo da requisição em lugar nenhum.
-func (s *Server) handlePutEnv(w http.ResponseWriter, r *http.Request) {
-	projectID, name, ok := s.envTarget(w, r)
+func (s *Server) handlePutEnv(w http.ResponseWriter, r *http.Request, user domain.User) {
+	projectID, name, ok := s.envTarget(w, r, user)
 	if !ok {
 		return
 	}
 	var req putEnvRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxEnvBodyBytes)).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "corpo inválido")
+	if !readJSON(w, r, &req, maxEnvBodyBytes) {
 		return
 	}
 	switch {
@@ -115,11 +113,12 @@ func (s *Server) handlePutEnv(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
+	s.audit(r, &user, "env.set", projectID.String()+"/"+name, "ok")
 	writeJSON(w, http.StatusOK, newEnvResponse(v))
 }
 
-func (s *Server) handleDeleteEnv(w http.ResponseWriter, r *http.Request) {
-	projectID, name, ok := s.envTarget(w, r)
+func (s *Server) handleDeleteEnv(w http.ResponseWriter, r *http.Request, user domain.User) {
+	projectID, name, ok := s.envTarget(w, r, user)
 	if !ok {
 		return
 	}
@@ -130,6 +129,7 @@ func (s *Server) handleDeleteEnv(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("remover variável", "variavel", name, "erro", err)
 		writeError(w, http.StatusInternalServerError, "erro interno")
 	default:
+		s.audit(r, &user, "env.delete", projectID.String()+"/"+name, "ok")
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -142,8 +142,8 @@ type generateEnvRequest struct {
 // inventa (DEC-24 item 9). É ação explícita do usuário; o valor é guardado e
 // reutilizado, e nunca é devolvido. Substituir um valor existente exige
 // `replace`, porque invalidaria sessões e dados assinados com o anterior.
-func (s *Server) handleGenerateEnv(w http.ResponseWriter, r *http.Request) {
-	projectID, name, ok := s.envTarget(w, r)
+func (s *Server) handleGenerateEnv(w http.ResponseWriter, r *http.Request, user domain.User) {
+	projectID, name, ok := s.envTarget(w, r, user)
 	if !ok {
 		return
 	}
@@ -152,11 +152,8 @@ func (s *Server) handleGenerateEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req generateEnvRequest
-	if r.ContentLength != 0 {
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "corpo inválido")
-			return
-		}
+	if r.ContentLength != 0 && !readJSON(w, r, &req, 1<<10) {
+		return
 	}
 
 	if _, err := s.store.GetEnvVariable(r.Context(), projectID, name); err == nil && !req.Replace {
@@ -180,5 +177,6 @@ func (s *Server) handleGenerateEnv(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
+	s.audit(r, &user, "env.generate", projectID.String()+"/"+name, "ok")
 	writeJSON(w, http.StatusOK, newEnvResponse(v))
 }

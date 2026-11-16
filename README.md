@@ -49,13 +49,18 @@ As migrations são aplicadas automaticamente pela API/worker na inicialização.
 
 ### **3. Rodando API e worker**
 
-Antes de subir, defina a chave de cifra. Os valores das variáveis de ambiente dos projetos são cifrados em repouso com uma chave que fica fora do banco; API e worker precisam da mesma:
+Antes de subir, defina a configuração obrigatória. Os valores das variáveis de ambiente dos projetos são cifrados em repouso com uma chave que fica fora do banco; API e worker precisam da mesma:
 
 ```bash
 export COBOGO_SECRET_KEY="$(openssl rand -base64 32)"
+export COBOGO_PUBLIC_URL="http://localhost:8080"   # a origem do painel; em produção, https://seu-dominio
+export COBOGO_COOKIE_INSECURE=1                    # SÓ em desenvolvimento por HTTP; em produção o cookie é Secure
 ```
 
-Guarde essa chave: sem ela os valores já gravados não podem ser lidos.
+Guarde a chave: sem ela os valores já gravados não podem ser lidos. Outras variáveis opcionais:
+
+- `COBOGO_TRUSTED_PROXIES`: redes de que a API aceita `CF-Connecting-IP` e `X-Forwarded-For`, por exemplo a rede do Traefik (`172.18.0.0/16`). Sem isso, atrás de um proxy ou túnel todos os clientes parecem ter o mesmo IP, e o limite de tentativas de login passa a valer para todos de uma vez; a API avisa no log quando vê esses cabeçalhos de uma origem não confiável.
+- `COBOGO_EXTRA_GIT_HOSTS`: hosts de repositório além de `github.com`, `gitlab.com`, `codeberg.org`, `bitbucket.org` e `git.sr.ht`.
 
 Em dois terminais, na raiz do projeto (com a chave exportada em ambos):
 
@@ -73,22 +78,39 @@ A API sobe em `http://localhost:8080` por padrão (`API_ADDR` para trocar).
 
 ## **🧪 Como testar (fluxo de deploy)**
 
-Ainda sem frontend (chega em M2); use `curl` ou um cliente HTTP.
+Ainda sem frontend (chega em M2); use `curl` ou um cliente HTTP. Toda a API fica em `/api/v1` e exige sessão, menos a configuração inicial e o login. Requisições de alteração (`POST`, `PUT`, `DELETE`) precisam do cabeçalho `Origin` igual a `COBOGO_PUBLIC_URL` (o navegador envia sozinho; no `curl`, passe `-H "Origin: $COBOGO_PUBLIC_URL"`) e corpo `application/json`.
+
+```bash
+API=http://localhost:8080
+H=(-H "Origin: $COBOGO_PUBLIC_URL" -H 'content-type: application/json' -b /tmp/cobogo.cookies -c /tmp/cobogo.cookies)
+```
+
+### **0. Criar o administrador (só na primeira vez)**
+
+Sem administrador cadastrado, a API imprime no log, **uma vez**, um token de configuração de uso único. Use-o para criar o administrador (a senha tem de 12 a 128 caracteres); depois disso a rota fecha:
+
+```bash
+curl "${H[@]}" -X POST $API/api/v1/setup -d '{"token": "<token do log>", "login": "admin", "password": "<uma senha longa>"}'
+```
+
+Nas próximas vezes, entre com `POST /api/v1/auth/login` (`{"login": "...", "password": "..."}`). A sessão dura 2 h sem atividade e 12 h no máximo; `POST /api/v1/auth/logout` a encerra e `POST /api/v1/auth/password` troca a senha (encerrando as outras sessões). Cinco falhas de senha do mesmo IP e login bloqueiam esse par por 15 min. Se esquecer a senha, quem tem acesso ao host a redefine com `go run ./cmd/api admin reset-password --login admin`.
 
 ### **1. Registrar um projeto**
 
 ```bash
-curl -X POST localhost:8080/projects -H 'content-type: application/json' -d '{
+curl "${H[@]}" -X POST $API/api/v1/projects -d '{
   "slug": "meu-app-teste",
   "repository_url": "https://github.com/exemplo/repositorio",
   "root_directory": ""
 }'
 ```
 
+O repositório precisa ser público e estar num host permitido. `root_directory` é o diretório do projeto dentro do repositório (`apps/web`, por exemplo); `..` e caminhos que escapam do repositório são recusados.
+
 ### **2. Disparar o deploy**
 
 ```bash
-curl -X POST localhost:8080/projects/<id>/deployments -H 'content-type: application/json' -d '{
+curl "${H[@]}" -X POST $API/api/v1/projects/<id>/deployments -d '{
   "idempotency_key": "tentativa-1"
 }'
 ```
@@ -98,7 +120,7 @@ Se a análise não encontrar um valor que não pode inferir, como a porta (RN-02
 ### **3. Responder pendências**
 
 ```bash
-curl -X POST localhost:8080/deployments/<id>/answers -H 'content-type: application/json' -d '{
+curl "${H[@]}" -X POST $API/api/v1/deployments/<id>/answers -d '{
   "overrides": {"port": "3000"}
 }'
 ```
@@ -109,14 +131,14 @@ Os campos aceitos são `port`, `start_command` e `build_command` (RN-03). A resp
 
 ```bash
 # definir (o valor nunca é devolvido)
-curl -X PUT localhost:8080/projects/<id>/env/DATABASE_URL -H 'content-type: application/json' -d '{"value": "postgres://..."}'
+curl "${H[@]}" -X PUT $API/api/v1/projects/<id>/env/DATABASE_URL -d '{"value": "postgres://..."}'
 
 # gerar um segredo que o próprio app inventa (JWT_SECRET, SESSION_SECRET, SECRET_KEY_BASE...)
-curl -X POST localhost:8080/projects/<id>/env/JWT_SECRET/generate
+curl "${H[@]}" -X POST $API/api/v1/projects/<id>/env/JWT_SECRET/generate
 
 # listar nomes e versões, ou remover
-curl localhost:8080/projects/<id>/env
-curl -X DELETE localhost:8080/projects/<id>/env/DATABASE_URL
+curl "${H[@]}" $API/api/v1/projects/<id>/env
+curl "${H[@]}" -X DELETE $API/api/v1/projects/<id>/env/DATABASE_URL
 ```
 
 O Cobogó só gera segredos da lista fechada acima; credenciais de terceiros (`STRIPE_KEY`, `SMTP_PASSWORD`...) você informa. Gerar de novo um segredo que já existe exige `{"replace": true}`, porque invalida o que foi assinado com o anterior. Trocar um valor não altera um deploy em execução: faça um novo deploy. `PORT` é da plataforma e não pode ser definida.
@@ -126,7 +148,7 @@ A análise do deploy traz `config_variables` (classe, estado no `.env.example`, 
 ### **5. Acompanhar o plano e os eventos**
 
 ```bash
-curl localhost:8080/deployments/<id>
+curl "${H[@]}" $API/api/v1/deployments/<id>
 ```
 
 Ao suceder, a resposta inclui a `release` com a porta publicada no host para acesso direto ao contêiner.

@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/ocnaibill/cobogo/internal/analyzer"
@@ -25,6 +24,7 @@ import (
 	"github.com/ocnaibill/cobogo/internal/planner"
 	"github.com/ocnaibill/cobogo/internal/redact"
 	"github.com/ocnaibill/cobogo/internal/store"
+	"github.com/ocnaibill/cobogo/internal/validate"
 
 	"github.com/google/uuid"
 )
@@ -43,14 +43,20 @@ const (
 )
 
 type Worker struct {
-	store   *store.Store
-	runtime *dockerrt.Runtime
-	log     *slog.Logger
+	store    *store.Store
+	runtime  *dockerrt.Runtime
+	log      *slog.Logger
+	gitHosts []string
 }
 
 func New(st *store.Store, rt *dockerrt.Runtime, log *slog.Logger) *Worker {
-	return &Worker{store: st, runtime: rt, log: log}
+	return &Worker{store: st, runtime: rt, log: log, gitHosts: validate.GitHosts(nil)}
 }
+
+// SetGitHosts define os hosts de repositório aceitos além dos padrão. O worker
+// valida de novo a URL antes de clonar, mesmo que a API já tenha validado
+// (defesa em profundidade, DEC-27 item 13).
+func (w *Worker) SetGitHosts(extra []string) { w.gitHosts = validate.GitHosts(extra) }
 
 // Run bloqueia reivindicando e processando um job por vez (RNF-05: um build
 // simultâneo em M1), até ctx ser cancelado.
@@ -322,7 +328,15 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 	// Um deploy já com SHA fixado (resposta a uma pendência, RF-08, ou
 	// retomada) reutiliza o mesmo commit, mesmo que a branch tenha avançado
 	// (RN-04).
-	ws, err := gitsource.Fetch(ctx, project.RepositoryURL, gitsource.Options{Ref: dep.CommitSHA})
+	repositoryURL, err := validate.RepositoryURL(project.RepositoryURL, w.gitHosts)
+	if err != nil {
+		return at("FETCHING", fmt.Errorf("repositório não permitido: %w", err))
+	}
+	root, err := validate.RootDirectory(project.RootDirectory)
+	if err != nil {
+		return at("FETCHING", fmt.Errorf("diretório do projeto inválido: %w", err))
+	}
+	ws, err := gitsource.Fetch(ctx, repositoryURL, gitsource.Options{Ref: dep.CommitSHA})
 	if err != nil {
 		return at("FETCHING", err)
 	}
@@ -340,7 +354,13 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 	if err := o.Transition(ctx, dep.ID, domain.DeploymentAnalyzing, ""); err != nil {
 		return at("ANALYZING", err)
 	}
-	rootDir := filepath.Join(ws.Dir, project.RootDirectory)
+	// O diretório do projeto precisa continuar dentro do clone depois de
+	// resolver links simbólicos: o repositório não escolhe o que o analisador
+	// lê nem o que o build empacota (DEC-27 item 12).
+	rootDir, err := gitsource.ResolveRoot(ws.Dir, root)
+	if err != nil {
+		return at("ANALYZING", err)
+	}
 
 	result, err := analyzer.Analyze(os.DirFS(rootDir), analyzer.Input{Overrides: dep.Overrides})
 	if err != nil {

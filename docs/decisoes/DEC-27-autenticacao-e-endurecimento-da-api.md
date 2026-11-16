@@ -1,6 +1,6 @@
 # DEC-27 — Autenticação do administrador e endurecimento da API
 
-> **Estado:** proposta de 16/11/2026, aguardando revisão do autor.
+> **Estado:** proposta de 16/11/2026, aguardando revisão do autor. **4a implementado** (itens 1 a 14); o 4b (item 15) segue só como princípios.
 >
 > **Escopo:** parte 4 do backend. **4a:** autenticação, sessão, proteção de requisições de alteração, limite de tentativas, validação de entrada (`root_directory`, `repository_url`) e limites do servidor. **4b:** princípios do contrato da API para o React; o OpenAPI e os endpoints novos são implementados depois, sob estas regras.
 >
@@ -85,6 +85,10 @@ Hoje toda rota da API é pública: qualquer pessoa que a alcance cria projetos, 
 - Um redirecionamento do próprio host permitido (por exemplo, repositório renomeado) é seguido pelo `git`; um host permitido que redirecionasse para a rede interna seria um risco, mas os hosts da lista são serviços públicos conhecidos.
 - Repositórios privados não são suportados (sem credenciais de clonagem).
 - O limite de 12 h de sessão obriga a entrar de novo todo dia; é intencional para um painel de operador.
+
+- **Verificado em execução (4a):** o token de configuração aparece no log uma vez; `setup` com token errado dá `403`, com o certo `201` (e o administrador já entra) e um segundo `setup` dá `409`; `POST` sem `Origin` dá `403`; raiz `../..`, host por IP e `ssh://` dão `400`; um deploy autenticado do repositório da Heroku chega a `SUCCEEDED`; um projeto com raiz `../../..` gravado direto no banco (sem passar pela validação da API) falha no worker com "diretório do projeto inválido"; depois do logout o token deixa de valer; `api admin reset-password` encerra as sessões e troca a senha.
+- **Achado na implementação:** o login e a auditoria registravam o texto digitado no campo do login. Quem digita a **senha** nesse campo a deixaria gravada, e uma senha com cara de login passava no filtro de formato. A auditoria agora só guarda o login se ele **existe**; senão grava `(desconhecido)`. Um corpo `null` também passava como objeto vazio e passou a ser recusado.
+- **Não coberto por teste automatizado:** o `X-Forwarded-For` de vários proxies em cadeia além do que a tabela de testes do `ClientIP` cobre, e o comportamento do cookie `__Host-` num navegador real (só os atributos são verificados). Valem uma conferência manual atrás do túnel.
 
 ## Critérios de revisão
 

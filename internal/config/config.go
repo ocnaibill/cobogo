@@ -5,7 +5,10 @@ package config
 
 import (
 	"fmt"
+	"net/netip"
+	"net/url"
 	"os"
+	"strings"
 
 	"github.com/ocnaibill/cobogo/internal/secrets"
 )
@@ -16,12 +19,27 @@ type Config struct {
 	// SecretKey é a chave AES-256 que cifra os valores das variáveis dos
 	// projetos (DEC-24). Fica fora do banco, no ambiente do processo.
 	SecretKey []byte
+
+	// PublicURL é a origem pública do painel (esquema e host), usada para
+	// conferir o Origin das requisições de alteração (DEC-27 item 7).
+	PublicURL string
+	// TrustedProxies são as redes de que a API aceita cabeçalhos de proxy
+	// (CF-Connecting-IP, X-Forwarded-For). Vazio: nenhum (DEC-27 item 11).
+	TrustedProxies []netip.Prefix
+	// ExtraGitHosts acrescenta hosts à lista de repositórios permitidos.
+	ExtraGitHosts []string
+	// CookieInsecure troca o cookie de sessão por um sem Secure nem prefixo
+	// __Host-, só para desenvolvimento por HTTP.
+	CookieInsecure bool
 }
 
 func Load() (Config, error) {
 	c := Config{
-		DatabaseURL: os.Getenv("DATABASE_URL"),
-		APIAddr:     envOr("API_ADDR", ":8080"),
+		DatabaseURL:    os.Getenv("DATABASE_URL"),
+		APIAddr:        envOr("API_ADDR", ":8080"),
+		PublicURL:      strings.TrimRight(strings.TrimSpace(os.Getenv("COBOGO_PUBLIC_URL")), "/"),
+		ExtraGitHosts:  splitList(os.Getenv("COBOGO_EXTRA_GIT_HOSTS")),
+		CookieInsecure: os.Getenv("COBOGO_COOKIE_INSECURE") == "1",
 	}
 	if c.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("config: variável DATABASE_URL é obrigatória")
@@ -35,7 +53,56 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("config: COBOGO_SECRET_KEY inválida: %w", err)
 	}
 	c.SecretKey = key
+
+	for _, item := range splitList(os.Getenv("COBOGO_TRUSTED_PROXIES")) {
+		prefix, err := parsePrefix(item)
+		if err != nil {
+			return Config{}, fmt.Errorf("config: COBOGO_TRUSTED_PROXIES: %w", err)
+		}
+		c.TrustedProxies = append(c.TrustedProxies, prefix)
+	}
 	return c, nil
+}
+
+// ValidateForAPI confere o que só a API exige: a URL pública do painel.
+func (c Config) ValidateForAPI() error {
+	if c.PublicURL == "" {
+		return fmt.Errorf("config: variável COBOGO_PUBLIC_URL é obrigatória (por exemplo https://cobogo.exemplo.com, ou http://localhost:8080 em desenvolvimento)")
+	}
+	u, err := url.Parse(c.PublicURL)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.Path != "" || u.User != nil {
+		return fmt.Errorf("config: COBOGO_PUBLIC_URL deve ser só esquema e host (https://host), recebi %q", c.PublicURL)
+	}
+	if u.Scheme == "http" && !c.CookieInsecure {
+		return fmt.Errorf("config: COBOGO_PUBLIC_URL usa http, mas o cookie de sessão exige HTTPS; use https ou, só em desenvolvimento, COBOGO_COOKIE_INSECURE=1")
+	}
+	return nil
+}
+
+// parsePrefix aceita "10.0.0.0/8" ou um endereço único ("172.18.0.2").
+func parsePrefix(item string) (netip.Prefix, error) {
+	if strings.Contains(item, "/") {
+		p, err := netip.ParsePrefix(item)
+		if err != nil {
+			return netip.Prefix{}, fmt.Errorf("%q não é um CIDR válido", item)
+		}
+		return p.Masked(), nil
+	}
+	addr, err := netip.ParseAddr(item)
+	if err != nil {
+		return netip.Prefix{}, fmt.Errorf("%q não é um endereço nem um CIDR válido", item)
+	}
+	return netip.PrefixFrom(addr, addr.BitLen()), nil
+}
+
+func splitList(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func envOr(key, fallback string) string {

@@ -18,9 +18,23 @@ import (
 
 var ctx = context.Background()
 
+// owner devolve o dono usado pelos testes que só precisam de um projeto: o
+// primeiro (e único) administrador.
+func owner(t *testing.T, st *store.Store) domain.User {
+	t.Helper()
+	if u, _, err := st.GetUserByLogin(ctx, "dono-dos-testes"); err == nil {
+		return u
+	}
+	u, err := st.CreateAdmin(ctx, "dono-dos-testes", "hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
+}
+
 func newProject(t *testing.T, st *store.Store) domain.Project {
 	t.Helper()
-	p, err := st.CreateProject(ctx, "app-"+uuid.NewString()[:8], "https://example.com/r.git", "")
+	p, err := st.CreateProject(ctx, owner(t, st).ID, "app-"+uuid.NewString()[:8], "https://github.com/exemplo/repositorio", "")
 	if err != nil {
 		t.Fatal(err)
 	}

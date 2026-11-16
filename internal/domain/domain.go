@@ -8,11 +8,14 @@ import (
 
 // Project é um repositório registrado para deploy (RF-01).
 type Project struct {
-	ID            uuid.UUID `json:"id"`
-	Slug          string    `json:"slug"`
-	RepositoryURL string    `json:"repository_url"`
-	RootDirectory string    `json:"root_directory"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID uuid.UUID `json:"id"`
+	// OwnerID é o administrador dono do projeto (DEC-20, DEC-27); toda consulta
+	// da API é filtrada por ele.
+	OwnerID       *uuid.UUID `json:"-"`
+	Slug          string     `json:"slug"`
+	RepositoryURL string     `json:"repository_url"`
+	RootDirectory string     `json:"root_directory"`
+	CreatedAt     time.Time  `json:"created_at"`
 }
 
 // Analysis é o snapshot imutável da análise de um commit (RF-02, RF-03).
@@ -124,4 +127,30 @@ type EnvVariable struct {
 	KeyVersion int       `json:"key_version"`
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+// User é a conta do administrador. O hash da senha nunca sai do store.
+type User struct {
+	ID        uuid.UUID `json:"id"`
+	Login     string    `json:"login"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// Session é uma sessão autenticada. O token em si nunca é guardado.
+type Session struct {
+	ID         uuid.UUID `json:"id"`
+	UserID     uuid.UUID `json:"-"`
+	CreatedAt  time.Time `json:"created_at"`
+	LastSeenAt time.Time `json:"last_seen_at"`
+	ExpiresAt  time.Time `json:"expires_at"`
+}
+
+// AuditEvent registra uma ação com ator, alvo e resultado. Nunca carrega
+// senha, token nem valor de variável.
+type AuditEvent struct {
+	ActorID *uuid.UUID
+	Action  string
+	Target  string
+	IP      string
+	Outcome string
 }

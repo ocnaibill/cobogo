@@ -35,19 +35,20 @@ func New(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool}
 }
 
-// CreateProject registra um repositório para deploy (RF-01).
-func (s *Store) CreateProject(ctx context.Context, slug, repositoryURL, rootDirectory string) (domain.Project, error) {
+// CreateProject registra um repositório para deploy (RF-01) em nome do dono.
+func (s *Store) CreateProject(ctx context.Context, ownerID uuid.UUID, slug, repositoryURL, rootDirectory string) (domain.Project, error) {
 	p := domain.Project{
 		ID:            uuid.New(),
+		OwnerID:       &ownerID,
 		Slug:          slug,
 		RepositoryURL: repositoryURL,
 		RootDirectory: rootDirectory,
 		CreatedAt:     time.Now().UTC(),
 	}
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO projects (id, slug, repository_url, root_directory, created_at)
-		VALUES ($1, $2, $3, $4, $5)`,
-		p.ID, p.Slug, p.RepositoryURL, p.RootDirectory, p.CreatedAt,
+		INSERT INTO projects (id, owner_id, slug, repository_url, root_directory, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+		p.ID, p.OwnerID, p.Slug, p.RepositoryURL, p.RootDirectory, p.CreatedAt,
 	)
 	if err != nil {
 		return domain.Project{}, fmt.Errorf("store: criar projeto: %w", err)
@@ -55,12 +56,14 @@ func (s *Store) CreateProject(ctx context.Context, slug, repositoryURL, rootDire
 	return p, nil
 }
 
+// GetProject lê um projeto sem filtrar por dono. É para o worker, que age em
+// nome de um deploy já autorizado; a API usa GetProjectFor.
 func (s *Store) GetProject(ctx context.Context, id uuid.UUID) (domain.Project, error) {
 	var p domain.Project
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, slug, repository_url, root_directory, created_at
+		SELECT id, owner_id, slug, repository_url, root_directory, created_at
 		FROM projects WHERE id = $1`, id,
-	).Scan(&p.ID, &p.Slug, &p.RepositoryURL, &p.RootDirectory, &p.CreatedAt)
+	).Scan(&p.ID, &p.OwnerID, &p.Slug, &p.RepositoryURL, &p.RootDirectory, &p.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Project{}, ErrNotFound
 	}
@@ -68,6 +71,31 @@ func (s *Store) GetProject(ctx context.Context, id uuid.UUID) (domain.Project, e
 		return domain.Project{}, fmt.Errorf("store: buscar projeto: %w", err)
 	}
 	return p, nil
+}
+
+// GetProjectFor lê um projeto do dono. Um projeto de outro dono é tratado como
+// inexistente: a API não revela que ele existe (DEC-20, DEC-27).
+func (s *Store) GetProjectFor(ctx context.Context, id, ownerID uuid.UUID) (domain.Project, error) {
+	p, err := s.GetProject(ctx, id)
+	if err != nil {
+		return domain.Project{}, err
+	}
+	if p.OwnerID == nil || *p.OwnerID != ownerID {
+		return domain.Project{}, ErrNotFound
+	}
+	return p, nil
+}
+
+// GetDeploymentFor lê um deploy cujo projeto pertence ao dono.
+func (s *Store) GetDeploymentFor(ctx context.Context, id, ownerID uuid.UUID) (domain.Deployment, error) {
+	dep, err := s.GetDeployment(ctx, id)
+	if err != nil {
+		return domain.Deployment{}, err
+	}
+	if _, err := s.GetProjectFor(ctx, dep.ProjectID, ownerID); err != nil {
+		return domain.Deployment{}, err
+	}
+	return dep, nil
 }
 
 // CreateDeploymentWithJob cria o deploy e o job na mesma transação (§12.3),

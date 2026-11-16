@@ -2,10 +2,7 @@ package httpapi_test
 
 import (
 	"encoding/json"
-	"io"
-	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -13,55 +10,12 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ocnaibill/cobogo/internal/domain"
-	"github.com/ocnaibill/cobogo/internal/httpapi"
 	"github.com/ocnaibill/cobogo/internal/store"
-	"github.com/ocnaibill/cobogo/internal/store/storetest"
 )
-
-type harness struct {
-	t      *testing.T
-	st     *store.Store
-	router http.Handler
-}
-
-func newHarness(t *testing.T) *harness {
-	st := storetest.New(t)
-	return &harness{t: t, st: st, router: httpapi.NewRouter(st, slog.New(slog.NewTextHandler(io.Discard, nil)))}
-}
-
-func (h *harness) do(method, path, body string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(method, path, strings.NewReader(body))
-	rec := httptest.NewRecorder()
-	h.router.ServeHTTP(rec, req)
-	return rec
-}
-
-func (h *harness) project() string {
-	rec := h.do("POST", "/projects", `{"slug":"app-teste","repository_url":"https://example.com/r.git"}`)
-	if rec.Code != http.StatusCreated {
-		h.t.Fatalf("create project: %d %s", rec.Code, rec.Body)
-	}
-	var p domain.Project
-	if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil {
-		h.t.Fatal(err)
-	}
-	return p.ID.String()
-}
-
-func (h *harness) deployment(projectID, body string) domain.Deployment {
-	rec := h.do("POST", "/projects/"+projectID+"/deployments", body)
-	if rec.Code != http.StatusAccepted {
-		h.t.Fatalf("create deployment: %d %s", rec.Code, rec.Body)
-	}
-	var d domain.Deployment
-	if err := json.Unmarshal(rec.Body.Bytes(), &d); err != nil {
-		h.t.Fatal(err)
-	}
-	return d
-}
 
 func TestCreateDeploymentValidatesOverrides(t *testing.T) {
 	h := newHarness(t)
+	h.login()
 	project := h.project()
 
 	for name, overrides := range map[string]string{
@@ -72,7 +26,7 @@ func TestCreateDeploymentValidatesOverrides(t *testing.T) {
 		"command ends in \\": `{"build_command":"npm run build \\"}`,
 	} {
 		body := `{"idempotency_key":"k-` + name + `","overrides":` + overrides + `}`
-		if rec := h.do("POST", "/projects/"+project+"/deployments", body); rec.Code != http.StatusBadRequest {
+		if rec := h.do("POST", "/api/v1/projects/"+project+"/deployments", body); rec.Code != http.StatusBadRequest {
 			t.Errorf("%s: status %d, want 400 (%s)", name, rec.Code, rec.Body)
 		}
 	}
@@ -85,9 +39,10 @@ func TestCreateDeploymentValidatesOverrides(t *testing.T) {
 
 func TestAnswerDeployment(t *testing.T) {
 	h := newHarness(t)
+	h.login()
 	project := h.project()
 	dep := h.deployment(project, `{"idempotency_key":"k1"}`)
-	path := "/deployments/" + dep.ID.String() + "/answers"
+	path := "/api/v1/deployments/" + dep.ID.String() + "/answers"
 
 	// Ainda em QUEUED: nada a responder.
 	if rec := h.do("POST", path, `{"overrides":{"port":"3000"}}`); rec.Code != http.StatusConflict {
@@ -138,20 +93,21 @@ func TestAnswerDeployment(t *testing.T) {
 	if rec := h.do("POST", path, `{"overrides":{"port":"3001"}}`); rec.Code != http.StatusConflict {
 		t.Errorf("second answer: %d, want 409", rec.Code)
 	}
-	if rec := h.do("POST", "/deployments/00000000-0000-0000-0000-000000000000/answers", `{"overrides":{"port":"3000"}}`); rec.Code != http.StatusNotFound {
+	if rec := h.do("POST", "/api/v1/deployments/00000000-0000-0000-0000-000000000000/answers", `{"overrides":{"port":"3000"}}`); rec.Code != http.StatusNotFound {
 		t.Errorf("unknown deployment: %d, want 404", rec.Code)
 	}
-	if rec := h.do("POST", "/deployments/nao-e-uuid/answers", `{"overrides":{"port":"3000"}}`); rec.Code != http.StatusBadRequest {
+	if rec := h.do("POST", "/api/v1/deployments/nao-e-uuid/answers", `{"overrides":{"port":"3000"}}`); rec.Code != http.StatusBadRequest {
 		t.Errorf("bad id: %d, want 400", rec.Code)
 	}
 }
 
 func (h *harness) envPath(project, name string) string {
-	return "/projects/" + project + "/env/" + name
+	return "/api/v1/projects/" + project + "/env/" + name
 }
 
 func TestEnvVariablesNeverReturnTheirValue(t *testing.T) {
 	h := newHarness(t)
+	h.login()
 	project := h.project()
 	const canary = "valor-canario-via-api-77c1"
 
@@ -181,7 +137,7 @@ func TestEnvVariablesNeverReturnTheirValue(t *testing.T) {
 		t.Errorf("a replaced value must ask for a new deploy: %+v", put)
 	}
 
-	list := h.do("GET", "/projects/"+project+"/env", "")
+	list := h.do("GET", "/api/v1/projects/"+project+"/env", "")
 	if list.Code != http.StatusOK || strings.Contains(list.Body.String(), canary) || strings.Contains(list.Body.String(), "outro-valor") ||
 		!strings.Contains(list.Body.String(), "DB_PASSWORD") {
 		t.Errorf("list: %d %s", list.Code, list.Body)
@@ -197,6 +153,7 @@ func TestEnvVariablesNeverReturnTheirValue(t *testing.T) {
 
 func TestPutEnvValidation(t *testing.T) {
 	h := newHarness(t)
+	h.login()
 	project := h.project()
 	tooBig := strings.Repeat("a", 32<<10+1)
 
@@ -228,6 +185,7 @@ func TestPutEnvValidation(t *testing.T) {
 
 func TestGenerateEnvSecret(t *testing.T) {
 	h := newHarness(t)
+	h.login()
 	project := h.project()
 	projectID, _ := uuid.Parse(project)
 
