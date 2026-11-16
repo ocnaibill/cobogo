@@ -23,7 +23,7 @@ O deploy só guarda `port_override`. Não há como responder a pendência de `st
 
 **Entrada do usuário.**
 
-3. Validação estrutural antes de aceitar (porta numérica, comando de uma linha). Para `start_command`, as pendências oferecem como opções os scripts do `package.json`, com texto livre como alternativa. Placeholder nunca vira valor: aparece como dica e o campo começa vazio. A validação semântica é o build, a execução e a sonda; a falha diz que o valor foi informado pelo usuário e mostra a saída.
+3. Validação estrutural antes de aceitar (porta numérica, comando de uma linha). Para `start_command`, as pendências oferecem como opções os scripts do `package.json` (`npm run <nome>`), com texto livre como alternativa. Cada opção é classificada como `production` ou `development` **pelo comando** (ferramenta de desenvolvimento conhecida, `--watch`); o nome `dev`/`watch` só reforça e, quando é o único motivo, a nota diz isso ("nome não basta", HEU-02). Opções de desenvolvimento são oferecidas, não escondidas: quem quer testar nesse modo pode escolhê-lo. Ficam fora da lista, **mas voltam em `omitted` com o nome do script** para a interface mostrar tudo: scripts que não executam o projeto em modo nenhum (`test`, `lint`, `format`, `typecheck`, `clean`), `build` (até haver suporte a build como forma de execução), ganchos `pre`/`post` de outro script e nomes que não são seguros num `sh -c`. Placeholder nunca vira valor: aparece como dica e o campo começa vazio. A validação semântica é o build, a execução e a sonda; a falha diz que o valor foi informado pelo usuário e mostra a saída.
 
 **Classificação das variáveis (extensão do HEU-09).**
 
@@ -67,6 +67,7 @@ O deploy só guarda `port_override`. Não há como responder a pendência de `st
 - A detecção de exposição cobre arquivos de ambiente do SHA analisado; não varre credenciais embutidas no código-fonte nem o histórico do Git (chave removida de um commit antigo não é detectada).
 - `.dockerignore` quebra apps que dependem de um `.env` commitado; o diagnóstico (item 11) deve apontar variáveis sem valor, e o aviso do item 8 explica por quê.
 - A exclusão vale para o perfil P-NODE do D0 (servidor com `npm start`). Perfis de frontend leem `.env.production` no build para configuração pública (DEC-15); quando o perfil estático entrar, a exclusão ganha uma opção explícita, por projeto e por arquivo, de incluir configuração pública não secreta. Nunca por padrão.
+- Escolher uma opção `development` hoje tende a falhar: o planner instala com `npm ci --omit=dev` (ferramentas como `nodemon` e `vite` não existem na imagem) e servidores de desenvolvimento costumam escutar só em `127.0.0.1`, onde a sonda não os alcança. Um campo de **modo de execução** (`production` por padrão; `development` instala dependências completas, não faz `prune` e usa `NODE_ENV=development`) é decisão da parte 2 (planner). Até lá, a interface avisa que a opção pode falhar.
 - A lista de geráveis, de placeholders e de formatos de credencial é curta e fechada; precisa crescer com o corpus.
 - Não se distingue variável de build de variável de runtime para fins de entrega; só runtime é entregue em M1 (RF-10 em configuração pública de frontend, DEC-15, fica para depois).
 - Heurísticas por padrão de log (item 11) dependem do formato das mensagens de cada runtime; são medidas no corpus antes de se confiar nelas.

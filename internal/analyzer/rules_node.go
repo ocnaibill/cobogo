@@ -2,6 +2,7 @@ package analyzer
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -94,14 +95,19 @@ func ruleHEU02() Rule {
 		Apply: func(in RuleInput) RuleOutput {
 			var out RuleOutput
 			start := in.Named(kindScript, "start")
+			options, omitted := startOptions(in.Of(kindScript))
 			switch {
 			case len(start) == 0:
-				out.Pending = append(out.Pending, finding(domain.FieldStartCommand,
-					"HEU-02: scripts.start ausente; não é permitido assumir um entrypoint arbitrário"))
+				f := finding(domain.FieldStartCommand,
+					"HEU-02: scripts.start ausente; não é permitido assumir um entrypoint arbitrário")
+				f.Options, f.Omitted = options, omitted
+				out.Pending = append(out.Pending, f)
 			case devServerTool(start[0].Value) != "":
-				out.Pending = append(out.Pending, finding(domain.FieldStartCommand,
+				f := finding(domain.FieldStartCommand,
 					fmt.Sprintf("HEU-02: scripts.start invoca %q, ferramenta de desenvolvimento; informe o comando de produção", devServerTool(start[0].Value)),
-					start[0]))
+					start[0])
+				f.Options, f.Omitted = options, omitted
+				out.Pending = append(out.Pending, f)
 			default:
 				out.Proposals = append(out.Proposals, domain.Proposal{
 					Field: domain.FieldStartCommand, Value: start[0].Value, Origin: domain.OriginDeclaration, EvidenceIDs: evidenceIDs(start),
@@ -189,6 +195,88 @@ func ruleHEU09() Rule {
 			return out
 		},
 	}
+}
+
+// scriptNamePattern limita as opções a nomes seguros para entrar sem aspas em
+// `npm run <nome>`; o nome acaba dentro de um `sh -c`.
+var scriptNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9:_.-]*$`)
+
+// notRunScript são palavras iniciais de scripts que não são um jeito de
+// executar o projeto em nenhum modo. `build` entra aqui até haver suporte a
+// build como forma de execução (estáticos, HEU-03). Lista curta e por
+// convenção: o usuário ainda pode digitar qualquer comando e a interface pode
+// mostrar o que foi omitido.
+var notRunScript = []string{"build", "test", "lint", "format", "typecheck", "clean"}
+
+// developmentName são nomes que só reforçam uma classificação de
+// desenvolvimento; sozinhos não bastam para afirmá-la (HEU-02 no motor).
+var developmentName = []string{"dev", "watch"}
+
+// startOptions oferece scripts do package.json como candidatos a comando de
+// execução, no formato `npm run <nome>`, classificados em produção ou
+// desenvolvimento. É uma lista de escolha, não uma inferência: nada é aplicado
+// sem o usuário escolher. O que não é oferecido volta em omitted, com o nome do
+// script: scripts de teste/lint/build, ganchos pre/post de outro script e
+// nomes que não são seguros para um `sh -c`.
+func startOptions(scripts []domain.Evidence) (options []domain.Option, omitted []string) {
+	names := map[string]bool{}
+	for _, e := range scripts {
+		names[e.Name] = true
+	}
+	for _, e := range scripts {
+		name := e.Name
+		switch {
+		case !scriptNamePattern.MatchString(name),
+			slices.ContainsFunc(notRunScript, func(word string) bool { return hasWord(name, word) }),
+			isHookOf(name, names):
+			omitted = append(omitted, name)
+			continue
+		}
+		opt := domain.Option{Value: "npm run " + name, Kind: domain.OptionProduction}
+		switch tool := devServerTool(e.Value); {
+		case tool != "":
+			opt.Kind = domain.OptionDevelopment
+			opt.Note = fmt.Sprintf("invoca %q, ferramenta de desenvolvimento", tool)
+		case slices.ContainsFunc(developmentName, func(word string) bool { return hasWord(name, word) }):
+			opt.Kind = domain.OptionDevelopment
+			opt.Note = "o nome sugere desenvolvimento; o comando não foi reconhecido como ferramenta de desenvolvimento"
+		}
+		if name == "start" {
+			opt.Note = strings.TrimSpace("é o scripts.start declarado, que gerou esta pendência. " + opt.Note)
+		}
+		options = append(options, opt)
+	}
+	// Produção antes de desenvolvimento; alfabético dentro de cada grupo.
+	slices.SortFunc(options, func(a, b domain.Option) int {
+		if a.Kind != b.Kind {
+			if a.Kind == domain.OptionProduction {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(a.Value, b.Value)
+	})
+	slices.Sort(omitted)
+	return options, omitted
+}
+
+// isHookOf diz se name é o gancho pre/post de outro script existente, que o
+// npm já executa sozinho junto dele.
+func isHookOf(name string, names map[string]bool) bool {
+	for _, prefix := range []string{"pre", "post"} {
+		if target, ok := strings.CutPrefix(name, prefix); ok && names[target] {
+			return true
+		}
+	}
+	return false
+}
+
+// hasWord diz se name é word ou começa com word seguido de separador
+// (`test:unit`, `build-css`), sem pegar nomes que só compartilham o prefixo
+// (`devices`).
+func hasWord(name, word string) bool {
+	rest, ok := strings.CutPrefix(name, word)
+	return ok && (rest == "" || strings.ContainsRune(":-_.", rune(rest[0])))
 }
 
 // devServerTool devolve o nome da ferramenta de desenvolvimento invocada por

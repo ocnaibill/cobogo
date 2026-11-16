@@ -17,8 +17,9 @@ var lockfiles = []struct{ file, manager string }{
 	{"pnpm-lock.yaml", "pnpm"},
 }
 
-// extractManifest lê package.json e detecta os lockfiles. Só emite os
-// scripts start e build, os únicos que as regras consomem.
+// extractManifest lê package.json e detecta os lockfiles. Emite todos os
+// scripts: start e build alimentam as regras; os demais só servem de opções
+// quando o comando de execução precisa ser informado (DEC-24).
 func extractManifest(fsys fs.FS, x *Extraction) error {
 	for _, lf := range lockfiles {
 		if _, err := fs.Lstat(fsys, lf.file); err == nil {
@@ -58,11 +59,19 @@ func extractManifest(fsys fs.FS, x *Extraction) error {
 	if hasWorkspaces(pkg.Workspaces) {
 		x.emit(extractorManifest, domain.Evidence{Kind: kindWorkspaces, Source: "package.json#workspaces", Scope: domain.ScopeUnknown})
 	}
-	scopes := map[string]domain.Scope{"start": domain.ScopeRuntime, "build": domain.ScopeBuild}
-	for name, scope := range scopes {
-		if cmd := strings.TrimSpace(pkg.Scripts[name]); cmd != "" {
-			x.emit(extractorManifest, domain.Evidence{Kind: kindScript, Name: name, Value: cmd, Source: "package.json#scripts." + name, Scope: scope})
+	for name, raw := range pkg.Scripts {
+		cmd := strings.TrimSpace(raw)
+		if cmd == "" {
+			continue
 		}
+		scope := domain.ScopeUnknown
+		switch name {
+		case "start":
+			scope = domain.ScopeRuntime
+		case "build":
+			scope = domain.ScopeBuild
+		}
+		x.emit(extractorManifest, domain.Evidence{Kind: kindScript, Name: name, Value: cmd, Source: "package.json#scripts." + name, Scope: scope})
 	}
 	return nil
 }

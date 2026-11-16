@@ -146,7 +146,7 @@ Cada regra terá: ID estável, versão, estado proposto/validado/retirado, objet
 | Família do mestre | Aprofundamento para a primeira versão | Exemplo que obriga limitar a conclusão |
 | --- | --- | --- |
 | HEU-01 — Node/npm | Validar manifesto, lock coerente, alvo e versão suportada | Dependência Node em uma pasta não escolhe a aplicação de outra pasta |
-| HEU-02 — Execução | Extrair `scripts.start`, distinguir produção e desenvolvimento por contrato do perfil | `start` pode invocar ferramenta de desenvolvimento; nome do script não basta |
+| HEU-02 — Execução | Extrair `scripts.start`, distinguir produção e desenvolvimento por contrato do perfil; quando o comando fica pendente, oferecer os scripts como opções classificadas (DEC-24) | `start` pode invocar ferramenta de desenvolvimento; nome do script não basta, só reforça. Scripts de teste, lint e build não são oferecidos, mas voltam como omitidos |
 | HEU-03 — Estático | Verificar contrato de build, saída e modo de renderização | React também pode integrar SSR; dependência não determina hospedagem estática |
 | HEU-04 — Python | Reconhecer dependências e alvos ASGI/WSGI dentro de formatos delimitados | Importar módulo para descobrir `app` pode executar código e não é permitido na análise |
 | HEU-05 — Rede | Usar configuração reconhecida para porta/bind e validar intervalo | Porta encontrada em teste não define porta pública nem porta de produção |

@@ -697,3 +697,146 @@ func TestCheckOverrides(t *testing.T) {
 		}
 	}
 }
+
+func scriptEvidence(pairs ...string) []domain.Evidence {
+	var out []domain.Evidence
+	for i := 0; i < len(pairs); i += 2 {
+		out = append(out, domain.Evidence{Kind: kindScript, Name: pairs[i], Value: pairs[i+1]})
+	}
+	return out
+}
+
+func optionValues(options []domain.Option) []string {
+	var out []string
+	for _, o := range options {
+		out = append(out, o.Value)
+	}
+	return out
+}
+
+func TestStartOptions(t *testing.T) {
+	tests := []struct {
+		name        string
+		scripts     []domain.Evidence
+		wantOptions []string
+		wantOmitted []string
+	}{
+		{"production scripts, sorted", scriptEvidence("serve", "node server.js", "prod", "node dist/index.js"),
+			[]string{"npm run prod", "npm run serve"}, nil},
+		{"production is listed before development", scriptEvidence("dev", "nodemon a.js", "serve", "node s.js", "a", "node a.js"),
+			[]string{"npm run a", "npm run serve", "npm run dev"}, nil},
+		{"test, lint, format, typecheck, clean and build are omitted by name, and reported",
+			scriptEvidence("test", "jest", "test:unit", "jest unit", "lint", "eslint .", "format", "prettier .", "typecheck", "tsc", "clean", "rm -rf dist", "build", "tsc", "build:css", "sass a b", "serve", "node s.js"),
+			[]string{"npm run serve"}, []string{"build", "build:css", "clean", "format", "lint", "test", "test:unit", "typecheck"}},
+		{"a name that only shares the prefix is offered", scriptEvidence("devices", "node devices.js", "testimonials", "node t.js", "builder", "node b.js"),
+			[]string{"npm run builder", "npm run devices", "npm run testimonials"}, nil},
+		{"hooks of another script are omitted, a lone pre-name is offered",
+			scriptEvidence("prestart", "node migrate.js", "poststart", "x", "start", "node a.js", "preserve", "node p.js", "serve", "node s.js", "prepare-db", "node p.js"),
+			[]string{"npm run prepare-db", "npm run serve", "npm run start"}, []string{"poststart", "preserve", "prestart"}},
+		{"names that are not shell-safe are omitted, not offered", scriptEvidence("a b", "node x.js", "x;rm", "node y.js", "$(id)", "node z.js", "ok:1", "node w.js"),
+			[]string{"npm run ok:1"}, []string{"$(id)", "a b", "x;rm"}},
+		{"no scripts", nil, nil, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			options, omitted := startOptions(tt.scripts)
+			assertStrings(t, "options", optionValues(options), tt.wantOptions)
+			assertStrings(t, "omitted", omitted, tt.wantOmitted)
+		})
+	}
+}
+
+func TestStartOptionKinds(t *testing.T) {
+	options, _ := startOptions(scriptEvidence(
+		"serve", "node server.js",
+		"dev", "nodemon index.js", // ferramenta reconhecida no comando
+		"watch", "node --watch index.js", // idem, por --watch
+		"devish", "node index.js", // sem nome nem ferramenta: produção
+		"develop", "node index.js", // o nome sozinho só sugere
+		"start", "vite",
+	))
+	byValue := map[string]domain.Option{}
+	for _, o := range options {
+		byValue[o.Value] = o
+	}
+
+	for value, kind := range map[string]domain.OptionKind{
+		"npm run serve":   domain.OptionProduction,
+		"npm run dev":     domain.OptionDevelopment,
+		"npm run watch":   domain.OptionDevelopment,
+		"npm run devish":  domain.OptionProduction,
+		"npm run develop": domain.OptionProduction,
+		"npm run start":   domain.OptionDevelopment,
+	} {
+		if byValue[value].Kind != kind {
+			t.Errorf("%s: kind %q, want %q", value, byValue[value].Kind, kind)
+		}
+	}
+	if note := byValue["npm run dev"].Note; !strings.Contains(note, "nodemon") {
+		t.Errorf("a classification from the command must name the tool, got %q", note)
+	}
+	if note := byValue["npm run start"].Note; !strings.Contains(note, "scripts.start") || !strings.Contains(note, "vite") {
+		t.Errorf("start must say it caused the pending and why it is development, got %q", note)
+	}
+	if note := byValue["npm run serve"].Note; note != "" {
+		t.Errorf("a production option carries no warning, got %q", note)
+	}
+
+	// Só o nome "dev", sem ferramenta reconhecida: desenvolvimento, mas o
+	// motivo diz que é só o nome.
+	options, _ = startOptions(scriptEvidence("dev", "node index.js"))
+	if len(options) != 1 || options[0].Kind != domain.OptionDevelopment || !strings.Contains(options[0].Note, "nome") {
+		t.Errorf("name-only classification must be flagged as such, got %+v", options)
+	}
+}
+
+func TestStartPendingOffersScriptOptions(t *testing.T) {
+	cases := map[string]struct {
+		pkg  string
+		want []string
+	}{
+		"missing start":    {`{"scripts":{"serve":"node server.js","dev":"nodemon a.js","test":"jest"}}`, []string{"npm run serve", "npm run dev"}},
+		"dev-server start": {`{"scripts":{"start":"nodemon index.js","serve":"node server.js","test":"jest"}}`, []string{"npm run serve", "npm run start"}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			res, err := Analyze(toFS(nodeRepo(tc.pkg, nil)), Input{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got *domain.Finding
+			for i, f := range res.Pending {
+				if f.Field == domain.FieldStartCommand {
+					got = &res.Pending[i]
+				}
+			}
+			if got == nil {
+				t.Fatalf("no pending start_command: %+v", res.Pending)
+			}
+			assertStrings(t, "options", optionValues(got.Options), tc.want)
+			assertStrings(t, "omitted", got.Omitted, []string{"test"})
+		})
+	}
+
+	// Escolher uma opção é só informar o valor: passa pelo mesmo override.
+	res, err := Analyze(toFS(nodeRepo(`{"scripts":{"serve":"node server.js"}}`, nil)),
+		Input{Overrides: map[string]string{"start_command": "npm run serve", "port": "3000"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != domain.AnalysisReady || res.Fields[domain.FieldStartCommand].Value != "npm run serve" {
+		t.Errorf("outcome %s, start_command %+v", res.Outcome, res.Fields[domain.FieldStartCommand])
+	}
+}
+
+func TestStartPendingWithoutScriptsHasNoOptions(t *testing.T) {
+	res, err := Analyze(toFS(nodeRepo(`{"name":"x"}`, nil)), Input{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range res.Pending {
+		if f.Field == domain.FieldStartCommand && (len(f.Options) != 0 || len(f.Omitted) != 0) {
+			t.Errorf("unexpected options %v / omitted %v", f.Options, f.Omitted)
+		}
+	}
+}

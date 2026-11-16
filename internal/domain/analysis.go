@@ -74,6 +74,29 @@ type Finding struct {
 	Field       string   `json:"field,omitempty"`
 	Message     string   `json:"message"`
 	EvidenceIDs []string `json:"evidence_ids,omitempty"`
+	// Options são valores que o usuário pode escolher para responder a
+	// pendência; são sugestões, nunca aplicadas sem escolha explícita.
+	Options []Option `json:"options,omitempty"`
+	// Omitted lista o que a regra deixou de oferecer como opção, para a
+	// interface poder mostrar tudo: nada é escondido em silêncio.
+	Omitted []string `json:"omitted,omitempty"`
+}
+
+// OptionKind classifica uma opção de execução. É uma inferência a partir do
+// comando (e, só como reforço, do nome); a interface a apresenta como tal.
+type OptionKind string
+
+const (
+	OptionProduction  OptionKind = "production"
+	OptionDevelopment OptionKind = "development"
+)
+
+// Option é um valor candidato para um campo pendente.
+type Option struct {
+	Value string     `json:"value"`
+	Kind  OptionKind `json:"kind,omitempty"`
+	// Note explica o motivo da classificação.
+	Note string `json:"note,omitempty"`
 }
 
 // Proposal é o valor que uma regra sugere para um campo.
