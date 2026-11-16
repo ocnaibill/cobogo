@@ -67,6 +67,8 @@ func TestCreateDeploymentValidatesOverrides(t *testing.T) {
 		"unknown field":      `{"dockerfile":"FROM scratch"}`,
 		"port not a number":  `{"port":"exemplo"}`,
 		"field not editable": `{"profile":"P-NODE"}`,
+		"unknown mode":       `{"execution_mode":"staging"}`,
+		"command ends in \\": `{"build_command":"npm run build \\"}`,
 	} {
 		body := `{"idempotency_key":"k-` + name + `","overrides":` + overrides + `}`
 		if rec := h.do("POST", "/projects/"+project+"/deployments", body); rec.Code != http.StatusBadRequest {

@@ -17,7 +17,15 @@ const (
 	FieldPackageManager = "package_manager"
 	FieldStartCommand   = "start_command"
 	FieldBuildCommand   = "build_command"
+	FieldExecutionMode  = "execution_mode"
 	FieldPort           = "port"
+)
+
+// Modos de execução (DEC-25). production é o padrão; development só por
+// escolha explícita do usuário.
+const (
+	ModeProduction  = "production"
+	ModeDevelopment = "development"
 )
 
 // Scope diz onde uma evidência se aplica (§4.1 do motor).

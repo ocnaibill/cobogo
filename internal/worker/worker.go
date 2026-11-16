@@ -156,6 +156,7 @@ func (w *Worker) process(ctx context.Context, job *domain.Job, dep *domain.Deplo
 		"install_command": plan.InstallCommand,
 		"build_command":   plan.BuildCommand,
 		"start_command":   plan.StartCommand,
+		"execution_mode":  plan.ExecutionMode,
 		"port":            plan.Port,
 		"port_origin":     plan.PortOrigin,
 		"dockerfile":      plan.Dockerfile,

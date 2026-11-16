@@ -105,6 +105,7 @@ func NodeCatalog() Catalog {
 			{Name: domain.FieldPackageManager, Required: true},
 			{Name: domain.FieldStartCommand, Required: true, Overridable: true, Validate: validateCommand},
 			{Name: domain.FieldBuildCommand, Overridable: true, Validate: validateCommand},
+			{Name: domain.FieldExecutionMode, Overridable: true, Validate: validateExecutionMode},
 			{Name: domain.FieldPort, Required: true, Overridable: true, Validate: validatePort},
 		},
 	}
@@ -122,8 +123,19 @@ func validateCommand(v string) error {
 	if v == "" {
 		return errors.New("comando vazio")
 	}
-	if strings.ContainsAny(v, "\r\n") {
+	if strings.ContainsAny(v, "\r\n\x00") {
 		return errors.New("o comando deve ter uma única linha")
+	}
+	if strings.HasSuffix(v, "\\") {
+		// Num Dockerfile, a barra no fim continuaria na instrução seguinte.
+		return errors.New("o comando não pode terminar em barra invertida")
+	}
+	return nil
+}
+
+func validateExecutionMode(v string) error {
+	if v != domain.ModeProduction && v != domain.ModeDevelopment {
+		return fmt.Errorf("%q não é um modo de execução; use %q ou %q", v, domain.ModeProduction, domain.ModeDevelopment)
 	}
 	return nil
 }

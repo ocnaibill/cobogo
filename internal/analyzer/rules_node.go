@@ -90,10 +90,14 @@ func ruleHEU02() Rule {
 		Meta: RuleMeta{
 			ID: "HEU-02", Version: ruleVersion, State: RuleProposed,
 			Requires: []string{"HEU-01"},
-			Fields:   []string{domain.FieldStartCommand, domain.FieldBuildCommand},
+			Fields:   []string{domain.FieldStartCommand, domain.FieldBuildCommand, domain.FieldExecutionMode},
 		},
 		Apply: func(in RuleInput) RuleOutput {
-			var out RuleOutput
+			// O modo de execução nunca é inferido: o padrão é produção e só um
+			// override do usuário o muda (DEC-25).
+			out := RuleOutput{Proposals: []domain.Proposal{
+				{Field: domain.FieldExecutionMode, Value: domain.ModeProduction, Origin: domain.OriginDefault},
+			}}
 			start := in.Named(kindScript, "start")
 			options, omitted := startOptions(in.Of(kindScript))
 			switch {

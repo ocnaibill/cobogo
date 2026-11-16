@@ -56,6 +56,7 @@ func nodeFields(start string, extra map[string]wantField) map[string]wantField {
 	fields := map[string]wantField{
 		domain.FieldProfile:        {value: "P-NODE", origin: domain.OriginInference},
 		domain.FieldPackageManager: {value: "npm", origin: domain.OriginInference},
+		domain.FieldExecutionMode:  {value: "production", origin: domain.OriginDefault},
 	}
 	if start != "" {
 		fields[domain.FieldStartCommand] = wantField{value: start, origin: domain.OriginDeclaration}
@@ -158,6 +159,31 @@ func fixtures() []fixture {
 			},
 		},
 		{
+			name:      "execution mode defaults to production and only an override changes it",
+			files:     nodeRepo(`{"scripts":{"dev":"nodemon index.js"}}`, nil),
+			overrides: map[string]string{"start_command": "npm run dev", "execution_mode": "development", "port": "3000"},
+			want: want{
+				outcome: domain.AnalysisReady,
+				fields: nodeFields("", map[string]wantField{
+					domain.FieldExecutionMode: {value: "development", origin: domain.OriginOverride, overrode: 1},
+					domain.FieldStartCommand:  {value: "npm run dev", origin: domain.OriginOverride},
+					domain.FieldPort:          {value: "3000", origin: domain.OriginOverride},
+				}),
+			},
+		},
+		{
+			name:      "an unknown execution mode is ignored and stays pending",
+			files:     nodeRepo(startIndex, nil),
+			overrides: map[string]string{"execution_mode": "staging", "port": "3000"},
+			want: want{
+				outcome: domain.AnalysisNeedsInput,
+				pending: []string{"execution_mode"},
+				fields: nodeFields("node index.js", map[string]wantField{
+					domain.FieldPort: {value: "3000", origin: domain.OriginOverride},
+				}),
+			},
+		},
+		{
 			name:      "start command override replaces a development server",
 			files:     nodeRepo(`{"scripts":{"start":"nodemon index.js"}}`, nil),
 			overrides: map[string]string{"start_command": "node index.js", "port": "3000"},
@@ -166,6 +192,7 @@ func fixtures() []fixture {
 				fields: map[string]wantField{
 					domain.FieldProfile:        {value: "P-NODE", origin: domain.OriginInference},
 					domain.FieldPackageManager: {value: "npm", origin: domain.OriginInference},
+					domain.FieldExecutionMode:  {value: "production", origin: domain.OriginDefault},
 					domain.FieldStartCommand:   {value: "node index.js", origin: domain.OriginOverride},
 					domain.FieldPort:           {value: "3000", origin: domain.OriginOverride},
 				},
@@ -180,6 +207,7 @@ func fixtures() []fixture {
 				fields: map[string]wantField{
 					domain.FieldProfile:        {value: "P-NODE", origin: domain.OriginInference},
 					domain.FieldPackageManager: {value: "npm", origin: domain.OriginInference},
+					domain.FieldExecutionMode:  {value: "production", origin: domain.OriginDefault},
 					domain.FieldStartCommand:   {value: "node server.js", origin: domain.OriginOverride, overrode: 1},
 					domain.FieldPort:           {value: "3000", origin: domain.OriginOverride},
 				},
@@ -694,6 +722,8 @@ func TestCheckOverrides(t *testing.T) {
 		{},
 		{"port": "3000"},
 		{"port": " 3000 ", "start_command": "node server.js", "build_command": "npm run build"},
+		{"execution_mode": "development"},
+		{"execution_mode": "production"},
 	}
 	for _, in := range valid {
 		if err := CheckOverrides(in); err != nil {
@@ -708,6 +738,9 @@ func TestCheckOverrides(t *testing.T) {
 		"port not a number":      {"port": "exemplo"},
 		"empty command":          {"start_command": "   "},
 		"multi-line command":     {"start_command": "node a.js\nrm -rf /"},
+		"trailing backslash would swallow the next Dockerfile line": {"build_command": "npm run build \\"},
+		"nul in command":         {"start_command": "node a.js\x00"},
+		"unknown execution mode": {"execution_mode": "staging"},
 	}
 	for name, in := range invalid {
 		if err := CheckOverrides(in); err == nil {
