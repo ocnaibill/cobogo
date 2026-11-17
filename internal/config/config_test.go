@@ -93,3 +93,49 @@ func TestValidateForAPI(t *testing.T) {
 		t.Errorf("the error must say how to opt in for development: %v", err)
 	}
 }
+
+func TestLoadLimits(t *testing.T) {
+	limitVars := []string{"COBOGO_APP_MEMORY_MB", "COBOGO_APP_CPUS", "COBOGO_APP_PIDS", "COBOGO_BUILD_MEMORY_MB", "COBOGO_BUILD_CPUS"}
+	base := map[string]string{"DATABASE_URL": "postgres://x", "COBOGO_SECRET_KEY": goodKey}
+	load := func(extra map[string]string) (Config, error) {
+		setEnv(t, base)
+		for _, k := range limitVars {
+			t.Setenv(k, "")
+		}
+		for k, v := range extra {
+			t.Setenv(k, v)
+		}
+		return Load()
+	}
+
+	c, err := load(nil)
+	if err != nil || c.Limits != (Limits{}) {
+		t.Fatalf("no variables must leave the zero value (the adapter's default applies): %+v, %v", c.Limits, err)
+	}
+
+	c, err = load(map[string]string{
+		"COBOGO_APP_MEMORY_MB": "1024", "COBOGO_APP_CPUS": "0.5", "COBOGO_APP_PIDS": "512",
+		"COBOGO_BUILD_MEMORY_MB": "4096", "COBOGO_BUILD_CPUS": "4",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (Limits{AppMemoryMB: 1024, AppCPUs: 0.5, AppPids: 512, BuildMemoryMB: 4096, BuildCPUs: 4}); c.Limits != want {
+		t.Errorf("Limits = %+v, want %+v", c.Limits, want)
+	}
+
+	for name, extra := range map[string]map[string]string{
+		"memory too low":      {"COBOGO_APP_MEMORY_MB": "8"},
+		"memory not a number": {"COBOGO_APP_MEMORY_MB": "muita"},
+		"negative pids":       {"COBOGO_APP_PIDS": "-1"},
+		"pids too low":        {"COBOGO_APP_PIDS": "2"},
+		"cpus zero":           {"COBOGO_APP_CPUS": "0"},
+		"cpus NaN":            {"COBOGO_APP_CPUS": "NaN"},
+		"build memory low":    {"COBOGO_BUILD_MEMORY_MB": "100"},
+		"build cpus text":     {"COBOGO_BUILD_CPUS": "dois"},
+	} {
+		if _, err := load(extra); err == nil || !strings.Contains(err.Error(), "COBOGO_") {
+			t.Errorf("%s: err = %v, want an error naming the variable", name, err)
+		}
+	}
+}

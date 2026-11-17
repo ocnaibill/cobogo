@@ -61,6 +61,7 @@ Guarde a chave: sem ela os valores já gravados não podem ser lidos. Outras var
 
 - `COBOGO_TRUSTED_PROXIES`: redes de que a API aceita `CF-Connecting-IP` e `X-Forwarded-For`, por exemplo a rede do Traefik (`172.18.0.0/16`). Sem isso, atrás de um proxy ou túnel todos os clientes parecem ter o mesmo IP, e o limite de tentativas de login passa a valer para todos de uma vez; a API avisa no log quando vê esses cabeçalhos de uma origem não confiável.
 - `COBOGO_EXTRA_GIT_HOSTS`: hosts de repositório além de `github.com`, `gitlab.com`, `codeberg.org`, `bitbucket.org` e `git.sr.ht`.
+- Limites de recursos (worker; DEC-29), todos opcionais: `COBOGO_APP_MEMORY_MB` (padrão 512), `COBOGO_APP_CPUS` (1), `COBOGO_APP_PIDS` (256) para cada aplicação publicada, e `COBOGO_BUILD_MEMORY_MB` (2048) e `COBOGO_BUILD_CPUS` (2) para cada build. Passar do limite de memória mata a aplicação com o código de saída 137. Todo contêiner de aplicação também roda sem capacidades do Linux e sem poder ganhar privilégio, com log limitado a 30 MiB.
 
 Em dois terminais, na raiz do projeto (com a chave exportada em ambos):
 

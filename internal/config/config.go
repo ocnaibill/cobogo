@@ -5,9 +5,11 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"net/netip"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/ocnaibill/cobogo/internal/secrets"
@@ -31,6 +33,19 @@ type Config struct {
 	// CookieInsecure troca o cookie de sessão por um sem Secure nem prefixo
 	// __Host-, só para desenvolvimento por HTTP.
 	CookieInsecure bool
+
+	// Limits são os tetos de recursos dos contêineres de aplicação e dos builds
+	// (DEC-29); valem para o worker. Zero usa o padrão.
+	Limits Limits
+}
+
+// Limits são os limites de recursos configuráveis por instalação.
+type Limits struct {
+	AppMemoryMB   int
+	AppCPUs       float64
+	AppPids       int
+	BuildMemoryMB int
+	BuildCPUs     float64
 }
 
 func Load() (Config, error) {
@@ -61,7 +76,59 @@ func Load() (Config, error) {
 		}
 		c.TrustedProxies = append(c.TrustedProxies, prefix)
 	}
+	limits, err := loadLimits()
+	if err != nil {
+		return Config{}, err
+	}
+	c.Limits = limits
 	return c, nil
+}
+
+// loadLimits lê os limites de recursos. Ausente vale zero (padrão da DEC-29);
+// presente, tem de estar numa faixa que não derrube o que ele limita.
+func loadLimits() (Limits, error) {
+	var l Limits
+	var err error
+	if l.AppMemoryMB, err = intEnv("COBOGO_APP_MEMORY_MB", 64, 1<<20); err != nil {
+		return Limits{}, err
+	}
+	if l.AppPids, err = intEnv("COBOGO_APP_PIDS", 16, 1<<20); err != nil {
+		return Limits{}, err
+	}
+	if l.BuildMemoryMB, err = intEnv("COBOGO_BUILD_MEMORY_MB", 256, 1<<20); err != nil {
+		return Limits{}, err
+	}
+	if l.AppCPUs, err = floatEnv("COBOGO_APP_CPUS", 0.1, 256); err != nil {
+		return Limits{}, err
+	}
+	if l.BuildCPUs, err = floatEnv("COBOGO_BUILD_CPUS", 0.1, 256); err != nil {
+		return Limits{}, err
+	}
+	return l, nil
+}
+
+func intEnv(name string, min, max int) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < min || n > max {
+		return 0, fmt.Errorf("config: %s inválida: use um inteiro de %d a %d", name, min, max)
+	}
+	return n, nil
+}
+
+func floatEnv(name string, min, max float64) (float64, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return 0, nil
+	}
+	n, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(n) || n < min || n > max {
+		return 0, fmt.Errorf("config: %s inválida: use um número de %g a %g", name, min, max)
+	}
+	return n, nil
 }
 
 // ValidateForAPI confere o que só a API exige: a URL pública do painel.

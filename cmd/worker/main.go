@@ -46,6 +46,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	rt.SetLimits(dockerrt.Limits{
+		AppMemoryMB: cfg.Limits.AppMemoryMB, AppCPUs: cfg.Limits.AppCPUs, AppPids: cfg.Limits.AppPids,
+		BuildMemoryMB: cfg.Limits.BuildMemoryMB, BuildCPUs: cfg.Limits.BuildCPUs,
+	})
+
 	box, err := secrets.NewBox(cfg.SecretKey, 1)
 	if err != nil {
 		log.Error("preparar cifra de variáveis", "erro", err)

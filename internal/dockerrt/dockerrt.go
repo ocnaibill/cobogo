@@ -33,10 +33,52 @@ const (
 	LabelDeployment = "cobogo.deployment"
 )
 
+// Limits são os tetos de recursos de um contêiner de aplicação e de um build
+// (DEC-29). Zero em qualquer campo usa o padrão.
+type Limits struct {
+	AppMemoryMB   int
+	AppCPUs       float64
+	AppPids       int
+	BuildMemoryMB int
+	BuildCPUs     float64
+}
+
+// DefaultLimits são os padrões aprovados na DEC-29.
+func DefaultLimits() Limits {
+	return Limits{AppMemoryMB: 512, AppCPUs: 1, AppPids: 256, BuildMemoryMB: 2048, BuildCPUs: 2}
+}
+
+// withDefaults completa os campos zerados.
+func (l Limits) withDefaults() Limits {
+	d := DefaultLimits()
+	if l.AppMemoryMB <= 0 {
+		l.AppMemoryMB = d.AppMemoryMB
+	}
+	if l.AppCPUs <= 0 {
+		l.AppCPUs = d.AppCPUs
+	}
+	if l.AppPids <= 0 {
+		l.AppPids = d.AppPids
+	}
+	if l.BuildMemoryMB <= 0 {
+		l.BuildMemoryMB = d.BuildMemoryMB
+	}
+	if l.BuildCPUs <= 0 {
+		l.BuildCPUs = d.BuildCPUs
+	}
+	return l
+}
+
+const mib = 1 << 20
+
 // Runtime encapsula o ciclo de vida de build e execução de uma release.
 type Runtime struct {
-	cli *client.Client
+	cli    *client.Client
+	limits Limits
 }
+
+// SetLimits troca os limites; campos zerados voltam ao padrão.
+func (r *Runtime) SetLimits(l Limits) { r.limits = l.withDefaults() }
 
 // New conecta ao daemon indicado por DOCKER_HOST, ou ao socket padrão do
 // host quando a variável não está definida.
@@ -45,7 +87,7 @@ func New() (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dockerrt: conectar ao daemon: %w", err)
 	}
-	return &Runtime{cli: cli}, nil
+	return &Runtime{cli: cli, limits: DefaultLimits()}, nil
 }
 
 // excludedFromContext nunca entra no contexto de build (RN-11, §11.3).
@@ -67,6 +109,16 @@ func isExcluded(relPath string) bool {
 // no repositório (RN-14: o Dockerfile do usuário não é sobrescrito no Git,
 // apenas um Dockerfile equivalente é usado no contexto de build local).
 func buildContextTar(rootDir, dockerfile string) (io.Reader, error) {
+	return buildContext(rootDir, dockerfile, nil)
+}
+
+// buildContext é buildContextTar com um canal para avisos (DEC-29): links que
+// apontam para fora do repositório não entram, e quem constrói precisa saber.
+//
+// O conteúdo nunca é lido por um link simbólico. Links que ficam dentro do
+// repositório entram como links; os que escapam e os arquivos que não são
+// regulares (FIFO, soquete, dispositivo) são deixados de fora.
+func buildContext(rootDir, dockerfile string, warn func(string)) (io.Reader, error) {
 	buf := &bytes.Buffer{}
 	tw := tar.NewWriter(buf)
 	defer tw.Close()
@@ -88,10 +140,15 @@ func buildContextTar(rootDir, dockerfile string) (io.Reader, error) {
 			}
 			return nil
 		}
-		if info.IsDir() {
+		switch mode := info.Mode(); {
+		case mode.IsDir():
 			return nil
+		case mode&os.ModeSymlink != 0:
+			return addLinkToTar(tw, path, rel, info, warn)
+		case mode.IsRegular():
+			return addFileToTar(tw, path, rel, info)
 		}
-		return addFileToTar(tw, path, rel, info)
+		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("dockerrt: montar contexto de build: %w", err)
@@ -131,6 +188,40 @@ func addFileToTar(tw *tar.Writer, fullPath, relPath string, info os.FileInfo) er
 	return err
 }
 
+// addLinkToTar grava um link simbólico como link, sem abrir o alvo. Um alvo que
+// sai do repositório (absoluto, ou relativo que passa da raiz) é omitido com um
+// aviso (DEC-29 itens 8 e 9).
+func addLinkToTar(tw *tar.Writer, fullPath, relPath string, info os.FileInfo, warn func(string)) error {
+	target, err := os.Readlink(fullPath)
+	if err != nil {
+		return err
+	}
+	if !linkStaysInside(relPath, target) {
+		if warn != nil {
+			warn(fmt.Sprintf("aviso: o link simbólico %q aponta para fora do repositório e não foi incluído no build", filepath.ToSlash(relPath)))
+		}
+		return nil
+	}
+	hdr, err := tar.FileInfoHeader(info, target)
+	if err != nil {
+		return err
+	}
+	hdr.Name = filepath.ToSlash(relPath)
+	hdr.Size = 0
+	return tw.WriteHeader(hdr)
+}
+
+// linkStaysInside diz se o alvo de um link, resolvido a partir do diretório do
+// link, continua dentro da raiz do repositório. A conferência é léxica; o
+// daemon confina a resolução à raiz do contexto.
+func linkStaysInside(linkRel, target string) bool {
+	if target == "" || filepath.IsAbs(target) {
+		return false
+	}
+	resolved := filepath.Join(filepath.Dir(linkRel), target)
+	return resolved != ".." && !strings.HasPrefix(resolved, ".."+string(filepath.Separator))
+}
+
 // BuildResult descreve a imagem produzida.
 type BuildResult struct {
 	ImageID   string
@@ -141,20 +232,12 @@ type BuildResult struct {
 // Build constrói a imagem a partir do workspace e do Dockerfile gerado,
 // registrando logs do stream em logSink (RF-04, RF-07).
 func (r *Runtime) Build(ctx context.Context, workspaceDir, dockerfile, imageTag, baseImage string, logSink func(line string)) (BuildResult, error) {
-	buildCtx, err := buildContextTar(workspaceDir, dockerfile)
+	buildCtx, err := buildContext(workspaceDir, dockerfile, logSink)
 	if err != nil {
 		return BuildResult{}, err
 	}
 
-	resp, err := r.cli.ImageBuild(ctx, buildCtx, types.ImageBuildOptions{
-		Tags:       []string{imageTag},
-		Dockerfile: "Dockerfile.cobogo",
-		Remove:     true,
-		// Não consulta o registry a cada build: um Docker Hub fora do ar não
-		// pode derrubar um build cujas imagens já estão no cache. As imagens
-		// são garantidas antes (EnsureImage) e atualizadas pelo worker (PullImage).
-		PullParent: false,
-	})
+	resp, err := r.cli.ImageBuild(ctx, buildCtx, buildOptions(imageTag, r.limits.withDefaults()))
 	if err != nil {
 		return BuildResult{}, fmt.Errorf("dockerrt: iniciar build: %w", err)
 	}
@@ -170,6 +253,26 @@ func (r *Runtime) Build(ctx context.Context, workspaceDir, dockerfile, imageTag,
 	}
 
 	return BuildResult{ImageID: inspect.ID, ImageTag: imageTag, BaseImage: baseImage}, nil
+}
+
+// buildOptions monta as opções do build, com os limites de memória e CPU
+// (DEC-29 item 6).
+func buildOptions(imageTag string, l Limits) types.ImageBuildOptions {
+	memory := int64(l.BuildMemoryMB) * mib
+	const period = 100000
+	return types.ImageBuildOptions{
+		Tags:       []string{imageTag},
+		Dockerfile: "Dockerfile.cobogo",
+		Remove:     true,
+		// Não consulta o registry a cada build: um Docker Hub fora do ar não
+		// pode derrubar um build cujas imagens já estão no cache. As imagens
+		// são garantidas antes (EnsureImage) e atualizadas pelo worker (PullImage).
+		PullParent: false,
+		Memory:     memory,
+		MemorySwap: memory, // igual à memória: sem swap
+		CPUPeriod:  period,
+		CPUQuota:   int64(l.BuildCPUs * period),
+	}
 }
 
 type buildStreamMessage struct {
@@ -204,6 +307,33 @@ type RunResult struct {
 	HostPort    int
 }
 
+// appHostConfig é a configuração de host de todo contêiner de aplicação:
+// porta só no loopback, limites de recursos, sem capacidades e sem ganho de
+// privilégio, e log com tamanho máximo (DEC-29).
+func appHostConfig(portSpec nat.Port, l Limits) *container.HostConfig {
+	memory := int64(l.AppMemoryMB) * mib
+	pids := int64(l.AppPids)
+	return &container.HostConfig{
+		PortBindings: nat.PortMap{
+			portSpec: []nat.PortBinding{{HostIP: "127.0.0.1", HostPort: "0"}},
+		},
+		NetworkMode: "bridge",
+		AutoRemove:  false,
+		CapDrop:     []string{"ALL"},
+		SecurityOpt: []string{"no-new-privileges"},
+		LogConfig: container.LogConfig{
+			Type:   "json-file",
+			Config: map[string]string{"max-size": "10m", "max-file": "3"},
+		},
+		Resources: container.Resources{
+			Memory:     memory,
+			MemorySwap: memory, // igual à memória: sem swap
+			NanoCPUs:   int64(l.AppCPUs * 1e9),
+			PidsLimit:  &pids,
+		},
+	}
+}
+
 // Run cria e inicia a candidata com a porta do contêiner publicada em uma
 // porta efêmera do host (RF-06). Nenhum bind mount do host é aceito aqui:
 // o repositório analisado nunca determina HostConfig (§17.2, invariante 4).
@@ -228,13 +358,7 @@ func (r *Runtime) Run(ctx context.Context, imageTag, containerName string, conta
 			LabelDeployment: deploymentID,
 		},
 	}
-	hostCfg := &container.HostConfig{
-		PortBindings: nat.PortMap{
-			portSpec: []nat.PortBinding{{HostIP: "127.0.0.1", HostPort: "0"}},
-		},
-		NetworkMode: "bridge",
-		AutoRemove:  false,
-	}
+	hostCfg := appHostConfig(portSpec, r.limits.withDefaults())
 
 	created, err := r.cli.ContainerCreate(ctx, cfg, hostCfg, nil, nil, containerName)
 	if err != nil {
