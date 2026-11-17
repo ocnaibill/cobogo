@@ -18,6 +18,19 @@ type Project struct {
 	CreatedAt     time.Time  `json:"created_at"`
 }
 
+// DeploymentBrief resume um deploy para listas (DEC-28 item 5).
+type DeploymentBrief struct {
+	ID        uuid.UUID       `json:"id"`
+	State     DeploymentState `json:"state"`
+	CreatedAt time.Time       `json:"created_at"`
+}
+
+// ProjectSummary é um projeto de uma lista, com o último deploy, se houver.
+type ProjectSummary struct {
+	Project
+	LastDeployment *DeploymentBrief `json:"last_deployment"`
+}
+
 // Analysis é o snapshot imutável da análise de um commit (RF-02, RF-03).
 type Analysis struct {
 	ID           uuid.UUID       `json:"id"`

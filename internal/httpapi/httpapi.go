@@ -90,31 +90,63 @@ func NewRouter(o Options) (http.Handler, error) {
 	}
 
 	mux := http.NewServeMux()
-	// Rotas públicas: as únicas que não exigem sessão (DEC-27 item 8).
-	mux.HandleFunc("GET /healthz", s.handleHealthz)
-	mux.HandleFunc("GET /api/v1/setup/status", s.handleSetupStatus)
-	mux.HandleFunc("POST /api/v1/setup", s.handleSetup)
-	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
-
-	// Rotas autenticadas.
-	mux.HandleFunc("POST /api/v1/auth/logout", s.authed(s.handleLogout))
-	mux.HandleFunc("GET /api/v1/auth/me", s.authed(s.handleMe))
-	mux.HandleFunc("POST /api/v1/auth/password", s.authed(s.handleChangePassword))
-	mux.HandleFunc("POST /api/v1/projects", s.authed(s.handleCreateProject))
-	mux.HandleFunc("GET /api/v1/projects/{id}", s.authed(s.handleGetProject))
-	mux.HandleFunc("POST /api/v1/projects/{id}/deployments", s.authed(s.handleCreateDeployment))
-	mux.HandleFunc("GET /api/v1/deployments/{id}", s.authed(s.handleGetDeployment))
-	mux.HandleFunc("POST /api/v1/deployments/{id}/answers", s.authed(s.handleAnswerDeployment))
-	mux.HandleFunc("GET /api/v1/projects/{id}/env", s.authed(s.handleListEnv))
-	mux.HandleFunc("PUT /api/v1/projects/{id}/env/{name}", s.authed(s.handlePutEnv))
-	mux.HandleFunc("DELETE /api/v1/projects/{id}/env/{name}", s.authed(s.handleDeleteEnv))
-	mux.HandleFunc("POST /api/v1/projects/{id}/env/{name}/generate", s.authed(s.handleGenerateEnv))
+	for _, rt := range s.routes() {
+		mux.HandleFunc(rt.pattern, rt.handler)
+	}
 
 	// O que não existe responde no mesmo formato de erro, em JSON.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "rota não encontrada")
 	})
 	return s.wrap(mux), nil
+}
+
+type route struct {
+	pattern string
+	handler http.HandlerFunc
+}
+
+// routes é a única lista de rotas da API; o teste de paridade com
+// docs/api/openapi.yaml parte dela (DEC-28 item 9).
+func (s *Server) routes() []route {
+	return []route{
+		// Rotas públicas: as únicas que não exigem sessão (DEC-27 item 8).
+		{"GET /healthz", s.handleHealthz},
+		{"GET /api/v1/setup/status", s.handleSetupStatus},
+		{"POST /api/v1/setup", s.handleSetup},
+		{"POST /api/v1/auth/login", s.handleLogin},
+
+		// Rotas autenticadas.
+		{"POST /api/v1/auth/logout", s.authed(s.handleLogout)},
+		{"GET /api/v1/auth/me", s.authed(s.handleMe)},
+		{"POST /api/v1/auth/password", s.authed(s.handleChangePassword)},
+		{"GET /api/v1/projects", s.authed(s.handleListProjects)},
+		{"POST /api/v1/projects", s.authed(s.handleCreateProject)},
+		{"GET /api/v1/projects/{id}", s.authed(s.handleGetProject)},
+		{"GET /api/v1/projects/{id}/deployments", s.authed(s.handleListDeployments)},
+		{"POST /api/v1/projects/{id}/deployments", s.authed(s.handleCreateDeployment)},
+		{"GET /api/v1/deployments/{id}", s.authed(s.handleGetDeployment)},
+		{"GET /api/v1/deployments/{id}/events", s.authed(s.handleListEvents)},
+		{"GET /api/v1/deployments/{id}/analysis", s.authed(s.handleGetAnalysis)},
+		{"GET /api/v1/deployments/{id}/plan", s.authed(s.handleGetPlan)},
+		{"POST /api/v1/deployments/{id}/answers", s.authed(s.handleAnswerDeployment)},
+		{"POST /api/v1/deployments/{id}/cancel", s.authed(s.handleCancelDeployment)},
+		{"GET /api/v1/projects/{id}/env", s.authed(s.handleListEnv)},
+		{"PUT /api/v1/projects/{id}/env/{name}", s.authed(s.handlePutEnv)},
+		{"DELETE /api/v1/projects/{id}/env/{name}", s.authed(s.handleDeleteEnv)},
+		{"POST /api/v1/projects/{id}/env/{name}/generate", s.authed(s.handleGenerateEnv)},
+	}
+}
+
+// RoutePatterns lista as rotas registradas ("MÉTODO /caminho"), para conferir o
+// contrato OpenAPI contra o código.
+func RoutePatterns() []string {
+	var s *Server // só os padrões importam; nenhum handler é chamado
+	var out []string
+	for _, rt := range s.routes() {
+		out = append(out, rt.pattern)
+	}
+	return out
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -297,7 +329,7 @@ func (s *Server) handleAnswerDeployment(w http.ResponseWriter, r *http.Request, 
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, "deploy não encontrado")
 	case errors.Is(err, store.ErrNotAwaitingInput):
-		writeError(w, http.StatusConflict, "o deploy não está aguardando informações")
+		writeCode(w, http.StatusConflict, codeNotAwaitingInput, "o deploy não está aguardando informações")
 	case err != nil:
 		s.log.Error("responder deployment", "erro", err)
 		writeError(w, http.StatusInternalServerError, "erro interno")
@@ -308,13 +340,16 @@ func (s *Server) handleAnswerDeployment(w http.ResponseWriter, r *http.Request, 
 }
 
 type deploymentView struct {
-	Deployment any `json:"deployment"`
-	Events     any `json:"events"`
-	Release    any `json:"release,omitempty"`
+	Deployment domain.Deployment `json:"deployment"`
+	Release    *domain.Release   `json:"release,omitempty"`
+	// LastEventSequence é a sequência do último evento (0 sem eventos): o
+	// painel pode buscar os eventos a partir de after=0 e acompanhar por
+	// ListEvents (DEC-28 item 1).
+	LastEventSequence int `json:"last_event_sequence"`
 }
 
-// handleGetDeployment implementa RF-03/RF-07: expõe plano, evidências e
-// eventos sem exigir acesso ao terminal do worker.
+// handleGetDeployment devolve o resumo do deploy (RF-03/RF-07). Os eventos
+// vêm de /events, em páginas, para a resposta não crescer com o build.
 func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request, user domain.User) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
@@ -332,16 +367,19 @@ func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request, use
 		return
 	}
 
-	events, err := s.store.ListEvents(r.Context(), id)
+	last, err := s.store.LastEventSequence(r.Context(), id)
 	if err != nil {
-		s.log.Error("listar eventos", "erro", err)
+		s.log.Error("ler eventos", "erro", err)
 		writeError(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
-
-	view := deploymentView{Deployment: dep, Events: events}
+	view := deploymentView{Deployment: dep, LastEventSequence: last}
 	if release, err := s.store.GetReleaseByDeployment(r.Context(), id); err == nil {
-		view.Release = release
+		view.Release = &release
+	} else if !errors.Is(err, store.ErrNotFound) {
+		s.log.Error("buscar release", "erro", err)
+		writeError(w, http.StatusInternalServerError, "erro interno")
+		return
 	}
 	writeJSON(w, http.StatusOK, view)
 }

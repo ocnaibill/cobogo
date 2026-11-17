@@ -145,13 +145,35 @@ O Cobogó só gera segredos da lista fechada acima; credenciais de terceiros (`S
 
 A análise do deploy traz `config_variables` (classe, estado no `.env.example`, aviso e, para valores padrão não secretos, `default_value` para você confirmar) e `warnings` (por exemplo, credenciais reais encontradas no repositório).
 
-### **5. Acompanhar o plano e os eventos**
+### **5. Acompanhar o progresso**
+
+O contrato completo está em [`docs/api/openapi.yaml`](docs/api/openapi.yaml) (OpenAPI 3; cole-o no Swagger Editor ou gere um cliente a partir dele). Para acompanhar um deploy:
 
 ```bash
+# resumo: estado, commit, motivo da falha e, ao suceder, a release (sem eventos)
 curl "${H[@]}" $API/api/v1/deployments/<id>
+
+# eventos novos desde a sequência N (comece em 0; use next_after na próxima consulta)
+curl "${H[@]}" "$API/api/v1/deployments/<id>/events?after=0&limit=200"
+
+# o que a análise encontrou, e o plano com o Dockerfile (só com a análise pronta)
+curl "${H[@]}" $API/api/v1/deployments/<id>/analysis
+curl "${H[@]}" $API/api/v1/deployments/<id>/plan
+
+# listas, do mais novo ao mais antigo (limit até 100; before = next_before da página anterior)
+curl "${H[@]}" "$API/api/v1/projects?limit=20"
+curl "${H[@]}" "$API/api/v1/projects/<id>/deployments"
 ```
 
-Ao suceder, a resposta inclui a `release` com a porta publicada no host para acesso direto ao contêiner.
+Consulte `/events` a cada 2 a 3 segundos e **pare quando `settled` for `true` e `has_more` for `false`**: o estado final do deploy é gravado antes do último evento, então olhar só o estado perde a mensagem de falha. Um deploy em `NEEDS_INPUT` fica `settled` até ser respondido.
+
+Um deploy que ainda não executou (`QUEUED` ou `NEEDS_INPUT`) pode ser cancelado; depois que o worker o pegou, não:
+
+```bash
+curl "${H[@]}" -X POST $API/api/v1/deployments/<id>/cancel
+```
+
+Ao suceder, a `release` traz a porta publicada no host para acesso direto ao contêiner (a URL pública vem com o roteamento, ainda não implementado).
 
 **Verificação (readiness):** a aplicação passa quando responde três vezes seguidas, em até 120 s, com qualquer status HTTP abaixo de 500 (redirecionamentos não são seguidos). O evento `verifying/probe` registra caminho e status e avisa se não foi 2xx. Para sondar outra rota, informe `health_path` (por exemplo `{"overrides": {"health_path": "/healthz"}}`).
 

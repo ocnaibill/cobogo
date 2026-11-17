@@ -1,0 +1,1322 @@
+openapi: 3.0.3
+info:
+  title: API do Cobogó
+  version: 0.1.0
+  description: |
+    Contrato da API do painel do Cobogó (DEC-27 e DEC-28). Este arquivo é
+    mantido à mão; um teste (`TestOpenAPIMatchesRoutes`) falha se as rotas dele
+    divergirem das registradas no código.
+
+    **Sessão.** `POST /auth/login` (ou `/setup`, na primeira vez) devolve um
+    cookie `HttpOnly`, `Secure` e `SameSite=Strict`; o navegador o envia sozinho.
+    A sessão expira após 2 h sem uso e 12 h no máximo.
+
+    **Proteção contra CSRF.** Em `POST`, `PUT` e `DELETE` o cabeçalho `Origin` (ou
+    `Sec-Fetch-Site: same-origin`) tem de ser o do painel e o corpo, quando
+    existe, tem de ser `application/json`. Navegadores já fazem isso; ao usar
+    `curl`, envie `Origin` explicitamente. Não há CORS: o painel e a API
+    compartilham a origem.
+
+    **Erros.** Toda falha usa o mesmo formato (`Error`). O painel decide pelo
+    `code`, que é estável; a `message` é para leitura humana e pode mudar.
+
+    **Datas** estão em RFC 3339, UTC.
+servers:
+  - url: /api/v1
+    description: Mesma origem do painel
+tags:
+  - name: setup
+    description: Primeira execução
+  - name: auth
+    description: Sessão do administrador
+  - name: projects
+    description: Projetos
+  - name: deployments
+    description: Deploys, progresso, análise e plano
+  - name: env
+    description: Variáveis de ambiente do projeto (os valores nunca são devolvidos)
+  - name: health
+    description: Disponibilidade
+security:
+  - cookieAuth: []
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      summary: Disponibilidade da API
+      description: Fora do prefixo `/api/v1`; não exige sessão.
+      operationId: healthz
+      security: []
+      servers:
+        - url: /
+      responses:
+        '200':
+          description: A API está no ar.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    example: ok
+  /setup/status:
+    get:
+      tags: [setup]
+      summary: Diz se o administrador ainda precisa ser criado
+      operationId: setupStatus
+      security: []
+      responses:
+        '200':
+          description: Estado da configuração inicial.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [needs_setup]
+                properties:
+                  needs_setup:
+                    type: boolean
+  /setup:
+    post:
+      tags: [setup]
+      summary: Cria o administrador (uma única vez)
+      description: |
+        Exige o token de configuração impresso uma vez no log da API. Já deixa o
+        administrador autenticado. Com o administrador criado, responde
+        `setup_closed`.
+      operationId: setup
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, login, password]
+              properties:
+                token:
+                  type: string
+                login:
+                  type: string
+                  description: De 3 a 64 caracteres entre letras minúsculas, números, ponto, hífen e sublinhado.
+                password:
+                  type: string
+                  description: De 12 a 128 caracteres.
+      responses:
+        '201':
+          description: Administrador criado e sessão aberta (cookie definido).
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/SessionCookie'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          description: Token inválido (`invalid_setup_token`) ou origem não permitida (`csrf`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: O administrador já foi configurado (`setup_closed`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Entra
+      description: |
+        Login inexistente e senha errada têm a mesma resposta e o mesmo tempo.
+        Cinco falhas por (IP, login) bloqueiam novas tentativas por 15 minutos.
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [login, password]
+              properties:
+                login:
+                  type: string
+                password:
+                  type: string
+      responses:
+        '200':
+          description: Sessão aberta (cookie definido).
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/SessionCookie'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Login ou senha incorretos (`invalid_credentials`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: Encerra a sessão
+      operationId: logout
+      responses:
+        '204':
+          description: Sessão encerrada e cookie removido.
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+  /auth/me:
+    get:
+      tags: [auth]
+      summary: Quem está autenticado
+      operationId: me
+      responses:
+        '200':
+          description: O administrador da sessão.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+  /auth/password:
+    post:
+      tags: [auth]
+      summary: Troca a senha
+      description: Encerra as outras sessões do administrador; a atual continua.
+      operationId: changePassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password:
+                  type: string
+                new_password:
+                  type: string
+      responses:
+        '204':
+          description: Senha trocada.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Sessão ausente (`unauthenticated`) ou senha atual incorreta (`invalid_credentials`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /projects:
+    get:
+      tags: [projects]
+      summary: Lista os projetos
+      description: Do mais novo ao mais antigo, cada um com o último deploy.
+      operationId: listProjects
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Before'
+      responses:
+        '200':
+          description: Uma página de projetos.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [projects, next_before]
+                properties:
+                  projects:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProjectSummary'
+                  next_before:
+                    $ref: '#/components/schemas/NextBefore'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+    post:
+      tags: [projects]
+      summary: Cria um projeto
+      description: |
+        Só repositórios públicos de hosts permitidos (github.com, gitlab.com,
+        codeberg.org, bitbucket.org, git.sr.ht e os extras configurados), por
+        `https://`, sem credenciais, IP ou porta. `root_directory` é normalizado
+        e não pode sair do repositório.
+      operationId: createProject
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [slug, repository_url]
+              properties:
+                slug:
+                  type: string
+                  pattern: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'
+                repository_url:
+                  type: string
+                  format: uri
+                root_directory:
+                  type: string
+                  description: Subdiretório do repositório; vazio é a raiz.
+      responses:
+        '201':
+          description: Projeto criado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '409':
+          description: O slug já existe (`conflict`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /projects/{id}:
+    get:
+      tags: [projects]
+      summary: Um projeto
+      operationId: getProject
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: O projeto.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/deployments:
+    get:
+      tags: [deployments]
+      summary: Histórico de deploys do projeto
+      description: Do mais novo ao mais antigo.
+      operationId: listDeployments
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Before'
+      responses:
+        '200':
+          description: Uma página de deploys.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deployments, next_before]
+                properties:
+                  deployments:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Deployment'
+                  next_before:
+                    $ref: '#/components/schemas/NextBefore'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [deployments]
+      summary: Cria um deploy
+      description: |
+        Responde sem esperar o build. `idempotency_key` é única por projeto; a
+        mesma chave de novo responde `conflict`. `overrides` costuma vir só ao
+        responder uma pendência, mas pode ser antecipado.
+      operationId: createDeployment
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [idempotency_key]
+              properties:
+                idempotency_key:
+                  type: string
+                  maxLength: 128
+                overrides:
+                  $ref: '#/components/schemas/Overrides'
+      responses:
+        '202':
+          description: Deploy criado e na fila.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Deployment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: A `idempotency_key` já existe neste projeto (`conflict`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /deployments/{id}:
+    get:
+      tags: [deployments]
+      summary: Resumo de um deploy
+      description: |
+        Não traz os eventos; use `/deployments/{id}/events`. `release` só existe
+        depois do sucesso.
+      operationId: getDeployment
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: O deploy.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deployment, last_event_sequence]
+                properties:
+                  deployment:
+                    $ref: '#/components/schemas/Deployment'
+                  release:
+                    $ref: '#/components/schemas/Release'
+                  last_event_sequence:
+                    type: integer
+                    minimum: 0
+                    description: Sequência do último evento; 0 se ainda não há eventos.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /deployments/{id}/events:
+    get:
+      tags: [deployments]
+      summary: Eventos novos de um deploy
+      description: |
+        Para acompanhar o progresso, consulte a cada 2 a 3 segundos com
+        `after = next_after` da resposta anterior (começando em 0). Pare quando
+        receber `settled = true` e `has_more = false`: o estado final do deploy
+        é gravado antes do último evento, então o estado sozinho não basta.
+        Um deploy em `NEEDS_INPUT` fica `settled` até ser respondido.
+      operationId: listEvents
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - name: after
+          in: query
+          description: Devolve só eventos com `sequence` maior que este valor.
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 200
+      responses:
+        '200':
+          description: Eventos em ordem de sequência.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events, next_after, has_more, state, settled]
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DeploymentEvent'
+                  next_after:
+                    type: integer
+                    description: Use como `after` na próxima consulta.
+                  has_more:
+                    type: boolean
+                    description: Há mais eventos já gravados além desta página.
+                  state:
+                    $ref: '#/components/schemas/DeploymentState'
+                  settled:
+                    type: boolean
+                    description: |
+                      O job está encerrado: nenhum evento novo aparece sem uma
+                      ação do usuário. Com `has_more = false`, esta página já
+                      contém tudo.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /deployments/{id}/analysis:
+    get:
+      tags: [deployments]
+      summary: Análise do deploy
+      description: O snapshot da análise do commit (campos resolvidos, pendências, variáveis, avisos, evidências).
+      operationId: getAnalysis
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: A análise.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Analysis'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          description: Deploy inexistente (`not_found`) ou ainda sem análise (`analysis_unavailable`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /deployments/{id}/plan:
+    get:
+      tags: [deployments]
+      summary: Plano e Dockerfile do deploy
+      description: |
+        Derivado da análise pelo planner atual. Só existe quando a análise está
+        `READY`.
+      operationId: getPlan
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: O plano.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Plan'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          description: Deploy inexistente (`not_found`) ou ainda sem análise (`analysis_unavailable`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: A análise não está pronta (`plan_unavailable`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /deployments/{id}/answers:
+    post:
+      tags: [deployments]
+      summary: Responde as pendências de um deploy
+      description: |
+        Só vale em `NEEDS_INPUT`. O deploy volta à fila e a nova análise roda
+        sobre o mesmo commit.
+      operationId: answerDeployment
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [overrides]
+              properties:
+                overrides:
+                  $ref: '#/components/schemas/Overrides'
+      responses:
+        '202':
+          description: Resposta registrada; o deploy está na fila de novo.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Deployment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: O deploy não está aguardando informações (`not_awaiting_input`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /deployments/{id}/cancel:
+    post:
+      tags: [deployments]
+      summary: Cancela um deploy que ainda não executou
+      description: |
+        Só em `QUEUED` (sem worker) e `NEEDS_INPUT`. Não há corpo.
+      operationId: cancelDeployment
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Deploy em `CANCELLED`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Deployment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: O worker já começou (`deployment_started`) ou o deploy já terminou (`deployment_finished`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /projects/{id}/env:
+    get:
+      tags: [env]
+      summary: Lista as variáveis do projeto
+      description: Só nome e metadados; o valor nunca é devolvido.
+      operationId: listEnv
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: As variáveis.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [variables]
+                properties:
+                  variables:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/EnvVariable'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/env/{name}:
+    put:
+      tags: [env]
+      summary: Define (ou substitui) uma variável
+      description: |
+        O valor é cifrado e nunca volta pela API. Variáveis da plataforma
+        (como `PORT`) não podem ser definidas. Um deploy em execução continua
+        com o valor antigo até um novo deploy (`redeploy_required`).
+      operationId: putEnv
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/EnvName'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [value]
+              properties:
+                value:
+                  type: string
+                  minLength: 1
+                  maxLength: 32768
+      responses:
+        '200':
+          description: Variável gravada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnvVariableResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [env]
+      summary: Remove uma variável
+      operationId: deleteEnv
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/EnvName'
+      responses:
+        '204':
+          description: Variável removida.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/env/{name}/generate:
+    post:
+      tags: [env]
+      summary: Gera um segredo que o próprio app inventa
+      description: |
+        Só para nomes como `JWT_SECRET` ou `SESSION_SECRET`, e só por ação
+        explícita. Se já houver valor, é preciso enviar `{"replace": true}`,
+        porque trocá-lo invalida o que foi assinado com o anterior. O valor
+        gerado nunca é devolvido.
+      operationId: generateEnv
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/EnvName'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                replace:
+                  type: boolean
+                  default: false
+      responses:
+        '200':
+          description: Segredo gerado e guardado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnvVariableResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: A variável já tem valor e `replace` não foi enviado (`conflict`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: __Host-cobogo_session
+      description: |
+        Cookie de sessão definido por `/auth/login` ou `/setup`. Em
+        desenvolvimento por HTTP (`COBOGO_COOKIE_INSECURE=1`) o nome é
+        `cobogo_session`.
+  headers:
+    SessionCookie:
+      description: Cookie de sessão (`HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`).
+      schema:
+        type: string
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    EnvName:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^[A-Za-z_][A-Za-z0-9_]{0,127}$'
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    Before:
+      name: before
+      in: query
+      description: Cursor opaco; use o `next_before` da página anterior.
+      schema:
+        type: string
+  responses:
+    BadRequest:
+      description: Requisição inválida (`invalid_request`, `weak_password`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthenticated:
+      description: Sessão ausente ou expirada (`unauthenticated`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: |
+        Não existe ou pertence a outro administrador (`not_found`); a API não
+        distingue.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    RateLimited:
+      description: Muitas tentativas (`rate_limited`); veja `Retry-After`, em segundos.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Estável; decida por ele.
+              enum:
+                - invalid_request
+                - unauthenticated
+                - forbidden
+                - csrf
+                - not_found
+                - conflict
+                - unsupported_media_type
+                - payload_too_large
+                - rate_limited
+                - unavailable
+                - internal
+                - invalid_credentials
+                - invalid_setup_token
+                - setup_closed
+                - weak_password
+                - not_awaiting_input
+                - deployment_started
+                - deployment_finished
+                - analysis_unavailable
+                - plan_unavailable
+            message:
+              type: string
+              description: Em português, para leitura humana.
+    NextBefore:
+      type: string
+      description: Cursor da próxima página; vazio na última.
+    User:
+      type: object
+      required: [id, login, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        login:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    UserEnvelope:
+      type: object
+      required: [user]
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+    Project:
+      type: object
+      required: [id, slug, repository_url, root_directory, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+        repository_url:
+          type: string
+        root_directory:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    ProjectSummary:
+      allOf:
+        - $ref: '#/components/schemas/Project'
+        - type: object
+          required: [last_deployment]
+          properties:
+            last_deployment:
+              nullable: true
+              allOf:
+                - $ref: '#/components/schemas/DeploymentBrief'
+    DeploymentBrief:
+      type: object
+      required: [id, state, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        state:
+          $ref: '#/components/schemas/DeploymentState'
+        created_at:
+          type: string
+          format: date-time
+    DeploymentState:
+      type: string
+      description: |
+        Final: `SUCCEEDED`, `FAILED`, `UNSUPPORTED`, `CANCELLED`. Espera por
+        você: `NEEDS_INPUT`.
+      enum:
+        - QUEUED
+        - FETCHING
+        - ANALYZING
+        - NEEDS_INPUT
+        - UNSUPPORTED
+        - GENERATING
+        - BUILDING
+        - PROVISIONING
+        - STARTING
+        - VERIFYING
+        - SUCCEEDED
+        - FAILED
+        - CANCELLED
+    Overrides:
+      type: object
+      description: |
+        Valores explícitos por campo do plano. Campos aceitos: `start_command`,
+        `build_command`, `port`, `execution_mode` (`production` ou
+        `development`), `node_version` (`22`, `24` ou `26`) e `health_path`.
+        Valores de variáveis de ambiente nunca passam por aqui.
+      additionalProperties:
+        type: string
+    Deployment:
+      type: object
+      required: [id, project_id, commit_sha, state, idempotency_key, overrides, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        analysis_id:
+          type: string
+          format: uuid
+          description: Ausente até a primeira análise.
+        commit_sha:
+          type: string
+          description: Vazio até o commit ser fixado.
+        state:
+          $ref: '#/components/schemas/DeploymentState'
+        idempotency_key:
+          type: string
+        overrides:
+          $ref: '#/components/schemas/Overrides'
+        failure_reason:
+          type: string
+          description: Só em `FAILED`.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    DeploymentEvent:
+      type: object
+      required: [id, deployment_id, sequence, stage, event_type, occurred_at, payload]
+      properties:
+        id:
+          type: string
+          format: uuid
+        deployment_id:
+          type: string
+          format: uuid
+        sequence:
+          type: integer
+          description: Crescente e sem repetição dentro do deploy.
+        stage:
+          type: string
+          description: Por exemplo `fetching`, `building`, `verifying`, `pipeline`.
+        event_type:
+          type: string
+          description: Por exemplo `started`, `completed`, `log`, `probe`, `attempt`, `failed`, `succeeded`, `cancelled`.
+        occurred_at:
+          type: string
+          format: date-time
+        payload:
+          type: object
+          additionalProperties: true
+          description: |
+            Varia por evento. Nunca contém valores de variáveis (só nomes). Em
+            `failed`, pode trazer `error`, `exit_code`, `log_tail` (já
+            redigido) e `diagnosis`.
+    Release:
+      type: object
+      required: [id, deployment_id, image_id, container_id, operational_state, health, host_port, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        deployment_id:
+          type: string
+          format: uuid
+        image_id:
+          type: string
+        container_id:
+          type: string
+        operational_state:
+          type: string
+        health:
+          type: string
+        host_port:
+          type: integer
+          description: Porta no host. A URL pública depende do roteamento (DEC-19) e ainda não é devolvida.
+        created_at:
+          type: string
+          format: date-time
+    EnvVariable:
+      type: object
+      required: [name, version, source, key_version, created_at, updated_at]
+      properties:
+        name:
+          type: string
+        version:
+          type: integer
+        source:
+          type: string
+          enum: [user, generated]
+        key_version:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    EnvVariableResult:
+      allOf:
+        - $ref: '#/components/schemas/EnvVariable'
+        - type: object
+          required: [redeploy_required]
+          properties:
+            redeploy_required:
+              type: boolean
+              description: Um deploy em execução continua com o valor antigo até um novo deploy.
+    Plan:
+      type: object
+      required: [profile, runtime, build_image, node_version, package_manager, install_command, start_command, execution_mode, port, port_origin, health_path, dockerfile]
+      properties:
+        profile:
+          type: string
+          example: P-NODE
+        runtime:
+          type: string
+        build_image:
+          type: string
+        node_version:
+          type: string
+        package_manager:
+          type: string
+        install_command:
+          type: string
+        build_command:
+          type: string
+        start_command:
+          type: string
+        execution_mode:
+          type: string
+          enum: [production, development]
+        port:
+          type: integer
+        port_origin:
+          type: string
+          enum: [override, declaration, inference, default]
+        health_path:
+          type: string
+        dockerfile:
+          type: string
+    Analysis:
+      type: object
+      required: [id, project_id, commit_sha, rules_version, outcome, result, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        commit_sha:
+          type: string
+        rules_version:
+          type: string
+        outcome:
+          $ref: '#/components/schemas/AnalysisOutcome'
+        result:
+          $ref: '#/components/schemas/AnalysisResult'
+        created_at:
+          type: string
+          format: date-time
+    AnalysisOutcome:
+      type: string
+      enum: [READY, NEEDS_INPUT, UNSUPPORTED]
+    AnalysisResult:
+      type: object
+      required: [outcome, catalog_version, rules, fields, pending, conflicts, unsupported, config_variables, warnings, evidences, coverage]
+      properties:
+        outcome:
+          $ref: '#/components/schemas/AnalysisOutcome'
+        catalog_version:
+          type: string
+        rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppliedRule'
+        fields:
+          type: object
+          description: Campos do plano resolvidos, por nome (`start_command`, `port`, `node_version`, ...).
+          additionalProperties:
+            $ref: '#/components/schemas/Field'
+        pending:
+          type: array
+          description: O que o usuário precisa informar.
+          items:
+            $ref: '#/components/schemas/Finding'
+        conflicts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Finding'
+        unsupported:
+          type: array
+          items:
+            $ref: '#/components/schemas/Finding'
+        config_variables:
+          type: array
+          description: Variáveis de ambiente do projeto; nenhum valor do repositório sai daqui, exceto `default_value` de valores não secretos.
+          items:
+            $ref: '#/components/schemas/ConfigVariable'
+        warnings:
+          type: array
+          description: Avisos que nunca bloqueiam (por exemplo, credencial exposta no repositório).
+          items:
+            $ref: '#/components/schemas/Finding'
+        evidences:
+          type: array
+          items:
+            $ref: '#/components/schemas/Evidence'
+        coverage:
+          $ref: '#/components/schemas/Coverage'
+    AppliedRule:
+      type: object
+      required: [id, version, state, status]
+      properties:
+        id:
+          type: string
+        version:
+          type: string
+        state:
+          type: string
+        status:
+          type: string
+        reason:
+          type: string
+    Origin:
+      type: string
+      description: De onde veio o valor, em ordem decrescente de precedência.
+      enum: [override, declaration, inference, default]
+    Proposal:
+      type: object
+      required: [field, value, origin, rule]
+      properties:
+        field:
+          type: string
+        value:
+          type: string
+        origin:
+          $ref: '#/components/schemas/Origin'
+        rule:
+          type: string
+        evidence_ids:
+          type: array
+          items:
+            type: string
+    Field:
+      type: object
+      required: [value, origin]
+      properties:
+        value:
+          type: string
+        origin:
+          $ref: '#/components/schemas/Origin'
+        rules:
+          type: array
+          items:
+            type: string
+        evidence_ids:
+          type: array
+          items:
+            type: string
+        overrode:
+          type: array
+          description: Propostas que um override do usuário cobriu.
+          items:
+            $ref: '#/components/schemas/Proposal'
+    Option:
+      type: object
+      required: [value]
+      properties:
+        value:
+          type: string
+        kind:
+          type: string
+          description: Inferência a partir do comando; apresente-a como tal.
+          enum: [production, development]
+        note:
+          type: string
+    Finding:
+      type: object
+      required: [message]
+      properties:
+        rule:
+          type: string
+        field:
+          type: string
+        message:
+          type: string
+        evidence_ids:
+          type: array
+          items:
+            type: string
+        options:
+          type: array
+          description: Valores que o usuário pode escolher; nunca aplicados sem escolha explícita.
+          items:
+            $ref: '#/components/schemas/Option'
+        omitted:
+          type: array
+          description: O que a regra deixou de oferecer, para a interface mostrar tudo.
+          items:
+            type: string
+    EnvReference:
+      type: object
+      required: [path, scope]
+      properties:
+        path:
+          type: string
+        scope:
+          $ref: '#/components/schemas/Scope'
+    Scope:
+      type: string
+      enum: [runtime, build, test, unknown]
+    ConfigVariable:
+      type: object
+      required: [name, class, example, declared_in_example]
+      properties:
+        name:
+          type: string
+        class:
+          type: string
+          description: |
+            `platform` (fornecida pelo Cobogó), `generable` (segredo que o app
+            inventa; pode ser gerado sob ação do usuário) ou `user`.
+          enum: [platform, generable, user]
+        example:
+          type: string
+          description: Como aparece no arquivo de exemplo.
+          enum: [absent, empty, placeholder, default, commented, exposed]
+        default_value:
+          type: string
+          description: Só no estado `default` (valor não secreto).
+        hint:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [likely_required, likely_optional, commented, prefilled, undeclared, referenced_only]
+            message:
+              type: string
+        declared_in_example:
+          type: boolean
+        references:
+          type: array
+          items:
+            $ref: '#/components/schemas/EnvReference'
+        evidence_ids:
+          type: array
+          items:
+            type: string
+    Evidence:
+      type: object
+      required: [id, extractor, kind, source, scope]
+      properties:
+        id:
+          type: string
+        extractor:
+          type: string
+        kind:
+          type: string
+        name:
+          type: string
+        value:
+          type: string
+        source:
+          type: string
+        line:
+          type: integer
+        scope:
+          $ref: '#/components/schemas/Scope'
+    Coverage:
+      type: object
+      required: [files_read, gaps]
+      properties:
+        files_read:
+          type: integer
+        gaps:
+          type: array
+          items:
+            type: object
+            required: [path, reason]
+            properties:
+              path:
+                type: string
+              reason:
+                type: string

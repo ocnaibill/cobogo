@@ -570,6 +570,11 @@ func TestEveryAdministratorOnlySeesTheirOwnResources(t *testing.T) {
 		{"POST", "/api/v1/projects/" + projectID + "/deployments", `{"idempotency_key":"intruso"}`},
 		{"GET", "/api/v1/deployments/" + d, ""},
 		{"POST", "/api/v1/deployments/" + d + "/answers", `{"overrides":{"port":"3000"}}`},
+		{"GET", "/api/v1/projects/" + projectID + "/deployments", ""},
+		{"GET", "/api/v1/deployments/" + d + "/events", ""},
+		{"GET", "/api/v1/deployments/" + d + "/analysis", ""},
+		{"GET", "/api/v1/deployments/" + d + "/plan", ""},
+		{"POST", "/api/v1/deployments/" + d + "/cancel", ""},
 		{"GET", "/api/v1/projects/" + projectID + "/env", ""},
 		{"PUT", "/api/v1/projects/" + projectID + "/env/CHAVE", `{"value":"valor-do-intruso"}`},
 		{"DELETE", "/api/v1/projects/" + projectID + "/env/CHAVE", ""},
@@ -579,6 +584,13 @@ func TestEveryAdministratorOnlySeesTheirOwnResources(t *testing.T) {
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("%s %s by another user: %d, want 404 (not revealed): %s", c.method, c.path, rec.Code, rec.Body)
 		}
+	}
+
+	if rec := h.do("GET", "/api/v1/projects", ""); rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), projectID) {
+		t.Errorf("another user's project list: %d %s", rec.Code, rec.Body)
+	}
+	if got, _ := h.st.GetDeployment(context.Background(), dep.ID); got.State != domain.DeploymentQueued {
+		t.Errorf("the intruder's cancel changed the state to %s", got.State)
 	}
 
 	// O dono continua com tudo intacto.

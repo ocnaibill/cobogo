@@ -1,6 +1,6 @@
 # DEC-27 — Autenticação do administrador e endurecimento da API
 
-> **Estado:** proposta de 16/11/2026, aguardando revisão do autor. **4a implementado** (itens 1 a 14); o 4b (item 15) segue só como princípios.
+> **Estado:** proposta de 16/11/2026, aguardando revisão do autor. **4a implementado** (itens 1 a 14); o 4b (item 15) está na DEC-28.
 >
 > **Escopo:** parte 4 do backend. **4a:** autenticação, sessão, proteção de requisições de alteração, limite de tentativas, validação de entrada (`root_directory`, `repository_url`) e limites do servidor. **4b:** princípios do contrato da API para o React; o OpenAPI e os endpoints novos são implementados depois, sob estas regras.
 >
