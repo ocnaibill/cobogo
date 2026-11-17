@@ -4,6 +4,8 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+
+	"github.com/ocnaibill/cobogo/internal/domain"
 )
 
 const goodKey = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=" // 32 bytes
@@ -109,7 +111,7 @@ func TestLoadLimits(t *testing.T) {
 	}
 
 	c, err := load(nil)
-	if err != nil || c.Limits != (Limits{}) {
+	if err != nil || c.Limits != (domain.Limits{}) {
 		t.Fatalf("no variables must leave the zero value (the adapter's default applies): %+v, %v", c.Limits, err)
 	}
 
@@ -120,19 +122,21 @@ func TestLoadLimits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := (Limits{AppMemoryMB: 1024, AppCPUs: 0.5, AppPids: 512, BuildMemoryMB: 4096, BuildCPUs: 4}); c.Limits != want {
+	if want := (domain.Limits{AppMemoryMB: 1024, AppCPUs: 0.5, AppPids: 512, BuildMemoryMB: 4096, BuildCPUs: 4}); c.Limits != want {
 		t.Errorf("Limits = %+v, want %+v", c.Limits, want)
 	}
 
 	for name, extra := range map[string]map[string]string{
-		"memory too low":      {"COBOGO_APP_MEMORY_MB": "8"},
-		"memory not a number": {"COBOGO_APP_MEMORY_MB": "muita"},
-		"negative pids":       {"COBOGO_APP_PIDS": "-1"},
-		"pids too low":        {"COBOGO_APP_PIDS": "2"},
-		"cpus zero":           {"COBOGO_APP_CPUS": "0"},
-		"cpus NaN":            {"COBOGO_APP_CPUS": "NaN"},
-		"build memory low":    {"COBOGO_BUILD_MEMORY_MB": "100"},
-		"build cpus text":     {"COBOGO_BUILD_CPUS": "dois"},
+		"memory too low":       {"COBOGO_APP_MEMORY_MB": "8"},
+		"memory not a number":  {"COBOGO_APP_MEMORY_MB": "muita"},
+		"negative pids":        {"COBOGO_APP_PIDS": "-1"},
+		"pids too low":         {"COBOGO_APP_PIDS": "2"},
+		"cpus zero":            {"COBOGO_APP_CPUS": "0"},
+		"cpus NaN":             {"COBOGO_APP_CPUS": "NaN"},
+		"build memory low":     {"COBOGO_BUILD_MEMORY_MB": "100"},
+		"build cpus text":      {"COBOGO_BUILD_CPUS": "dois"},
+		"extra host with port": {"COBOGO_EXTRA_GIT_HOSTS": "git.exemplo.com:8080"},
+		"extra host is an IP":  {"COBOGO_EXTRA_GIT_HOSTS": "10.0.0.1"},
 	} {
 		if _, err := load(extra); err == nil || !strings.Contains(err.Error(), "COBOGO_") {
 			t.Errorf("%s: err = %v, want an error naming the variable", name, err)

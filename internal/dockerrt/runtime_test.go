@@ -142,6 +142,9 @@ CMD ["node", "-e", "console.error('Error: DATABASE_URL is not defined'); process
 	if running, code, serr := rt.State(context.Background(), res.ContainerID); serr != nil || running || code != 3 {
 		t.Errorf("state = running %v code %d err %v", running, code, serr)
 	}
+	if oom, err := rt.OOMKilled(context.Background(), res.ContainerID); err != nil || oom {
+		t.Errorf("a plain exit(3) is not a memory kill: OOMKilled = %v, %v", oom, err)
+	}
 }
 
 func TestLogTailKeepsOnlyTheLastLines(t *testing.T) {

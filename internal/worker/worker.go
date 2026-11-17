@@ -23,6 +23,7 @@ import (
 	"github.com/ocnaibill/cobogo/internal/gitsource"
 	"github.com/ocnaibill/cobogo/internal/planner"
 	"github.com/ocnaibill/cobogo/internal/redact"
+	"github.com/ocnaibill/cobogo/internal/settings"
 	"github.com/ocnaibill/cobogo/internal/store"
 	"github.com/ocnaibill/cobogo/internal/validate"
 
@@ -43,20 +44,22 @@ const (
 )
 
 type Worker struct {
-	store    *store.Store
-	runtime  *dockerrt.Runtime
-	log      *slog.Logger
-	gitHosts []string
+	store   *store.Store
+	runtime *dockerrt.Runtime
+	log     *slog.Logger
+	// settings resolve a política operacional (limites e hosts de repositório)
+	// a cada deploy, então uma mudança no painel vale sem reiniciar (DEC-30).
+	settings *settings.Resolver
 }
 
-func New(st *store.Store, rt *dockerrt.Runtime, log *slog.Logger) *Worker {
-	return &Worker{store: st, runtime: rt, log: log, gitHosts: validate.GitHosts(nil)}
+// New monta o worker. O resolvedor de configurações pode ser nil: sem ele só
+// valem o ambiente vazio e os padrões de fábrica.
+func New(st *store.Store, rt *dockerrt.Runtime, log *slog.Logger, cfg *settings.Resolver) *Worker {
+	if cfg == nil {
+		cfg = settings.NewResolver(st, settings.Env{})
+	}
+	return &Worker{store: st, runtime: rt, log: log, settings: cfg}
 }
-
-// SetGitHosts define os hosts de repositório aceitos além dos padrão. O worker
-// valida de novo a URL antes de clonar, mesmo que a API já tenha validado
-// (defesa em profundidade, DEC-27 item 13).
-func (w *Worker) SetGitHosts(extra []string) { w.gitHosts = validate.GitHosts(extra) }
 
 // Run bloqueia reivindicando e processando um job por vez (RNF-05: um build
 // simultâneo em M1), até ctx ser cancelado.
@@ -228,6 +231,7 @@ func (w *Worker) finish(ctx context.Context, o *store.Owned) {
 type failureDetail struct {
 	LogTail   string
 	ExitCode  *int
+	OOMKilled bool
 	Diagnosis diagnosis.Diagnosis
 }
 
@@ -243,7 +247,7 @@ func (e *detailedError) Unwrap() error { return e.err }
 // investigate junta log e diagnóstico de um contêiner que não ficou no ar.
 // projectValues são os valores das variáveis do projeto, removidos do log antes
 // de qualquer gravação (RN-11); inventory e have vêm da análise e do projeto.
-func (w *Worker) investigate(ctx context.Context, containerID string, cause error, projectValues []string, inventory []domain.ConfigVariable, have map[string]string) failureDetail {
+func (w *Worker) investigate(ctx context.Context, rt *dockerrt.Runtime, limits domain.Limits, containerID string, cause error, projectValues []string, inventory []domain.ConfigVariable, have map[string]string) failureDetail {
 	ictx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
 	defer cancel()
 
@@ -261,6 +265,19 @@ func (w *Worker) investigate(ctx context.Context, containerID string, cause erro
 	redacted := redact.Values(redact.Clean(raw), projectValues)
 	detail.LogTail = redact.Tail(redacted, logTailBytes)
 	detail.Diagnosis = diagnosis.Diagnose(redacted, diagnosis.Unset(inventory, have), detail.ExitCode != nil)
+
+	// Falta de memória é a causa mais exata de todas: o daemon a informa, e ela
+	// prevalece sobre qualquer palpite pelo log (DEC-30 item 11).
+	if oom, err := rt.OOMKilled(ictx, containerID); err != nil {
+		w.log.Warn("ler se o contêiner morreu por memória", "erro", err)
+	} else if oom {
+		detail.OOMKilled = true
+		detail.Diagnosis = diagnosis.Diagnosis{
+			Confidence: diagnosis.Confirmed,
+			Message: fmt.Sprintf("a aplicação foi encerrada por exceder o limite de memória (%d MiB); aumente-o nas configurações do projeto ou nas globais",
+				limits.AppMemoryMB),
+		}
+	}
 	return detail
 }
 
@@ -282,6 +299,9 @@ func (w *Worker) fail(ctx context.Context, o *store.Owned, dep *domain.Deploymen
 			payload["exit_code"] = *de.detail.ExitCode
 		}
 		payload["diagnosis"] = de.detail.Diagnosis
+		if de.detail.OOMKilled {
+			payload["oom_killed"] = true
+		}
 		if de.detail.Diagnosis.Message != "" {
 			reason += " — " + de.detail.Diagnosis.Message
 		}
@@ -328,7 +348,19 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 	// Um deploy já com SHA fixado (resposta a uma pendência, RF-08, ou
 	// retomada) reutiliza o mesmo commit, mesmo que a branch tenha avançado
 	// (RN-04).
-	repositoryURL, err := validate.RepositoryURL(project.RepositoryURL, w.gitHosts)
+	// O worker valida de novo a URL antes de clonar, mesmo que a API já tenha
+	// validado (defesa em profundidade, DEC-27 item 13), com a lista de hosts
+	// vigente agora.
+	gitHosts, err := w.settings.GitHosts(ctx)
+	if err != nil {
+		return at("FETCHING", err)
+	}
+	limits, err := w.settings.Limits(ctx, project.Limits)
+	if err != nil {
+		return at("FETCHING", err)
+	}
+	rt := w.runtime.WithLimits(limits)
+	repositoryURL, err := validate.RepositoryURL(project.RepositoryURL, gitHosts)
 	if err != nil {
 		return at("FETCHING", fmt.Errorf("repositório não permitido: %w", err))
 	}
@@ -406,6 +438,7 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 		"port":            plan.Port,
 		"port_origin":     plan.PortOrigin,
 		"dockerfile":      plan.Dockerfile,
+		"limits":          limits,
 	}); err != nil {
 		return err
 	}
@@ -428,7 +461,7 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 			return at("BUILDING", err)
 		}
 	}
-	buildResult, err := w.runtime.Build(buildCtx, rootDir, plan.Dockerfile, imageTag, plan.Runtime, func(line string) {
+	buildResult, err := rt.Build(buildCtx, rootDir, plan.Dockerfile, imageTag, plan.Runtime, func(line string) {
 		_ = w.emit(ctx, o, dep.ID, "building", "log", map[string]any{"line": line})
 	})
 	cancelBuild()
@@ -485,7 +518,7 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 	if err := o.Check(ctx); err != nil {
 		return at("STARTING", err)
 	}
-	runResult, err := w.runtime.Run(ctx, imageTag, containerName, plan.Port, envValues, dep.ID.String())
+	runResult, err := rt.Run(ctx, imageTag, containerName, plan.Port, envValues, dep.ID.String())
 
 	// A partir do create existe uma candidata: qualquer saída sem sucesso a
 	// remove, pelo ID (se a posse foi perdida, o novo dono pode ter a dele, com
@@ -506,7 +539,7 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 		if runResult.ContainerID != "" && ctx.Err() == nil {
 			// O contêiner existe mas não ficou no ar (por exemplo, caiu no boot
 			// por falta de uma variável): o log e o diagnóstico explicam.
-			err = &detailedError{err: err, detail: w.investigate(ctx, runResult.ContainerID, err, projectValues, result.ConfigVariables, have)}
+			err = &detailedError{err: err, detail: w.investigate(ctx, rt, limits, runResult.ContainerID, err, projectValues, result.ConfigVariables, have)}
 		}
 		return at("STARTING", err)
 	}
@@ -523,7 +556,7 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 	})
 	if err != nil {
 		if ctx.Err() == nil {
-			err = &detailedError{err: err, detail: w.investigate(ctx, runResult.ContainerID, err, projectValues, result.ConfigVariables, have)}
+			err = &detailedError{err: err, detail: w.investigate(ctx, rt, limits, runResult.ContainerID, err, projectValues, result.ConfigVariables, have)}
 		}
 		return at("VERIFYING", err)
 	}

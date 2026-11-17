@@ -35,6 +35,8 @@ tags:
     description: Deploys, progresso, análise e plano
   - name: env
     description: Variáveis de ambiente do projeto (os valores nunca são devolvidos)
+  - name: settings
+    description: Política operacional editável (limites de recursos e hosts de repositório)
   - name: health
     description: Disponibilidade
 security:
@@ -730,6 +732,144 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /projects/{id}/limits:
+    get:
+      tags: [projects]
+      summary: Limites de recursos do projeto
+      description: |
+        `overrides` são só os valores que o projeto define; `effective` traz o
+        valor que vale para cada limite e de onde ele vem (`project`,
+        `database`, `env` ou `default`). A mudança vale a partir do próximo
+        deploy; um contêiner em execução mantém os limites com que subiu.
+      operationId: getProjectLimits
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Sobreposições e valores efetivos.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LimitsView'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [projects]
+      summary: Substitui os limites do projeto
+      description: |
+        Troca todas as sobreposições: campo ausente volta a herdar do nível de
+        cima, e `{}` limpa tudo. Os valores seguem as mesmas faixas das
+        configurações globais.
+      operationId: putProjectLimits
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Limits'
+      responses:
+        '200':
+          description: Sobreposições e valores efetivos depois da troca.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LimitsView'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /settings:
+    get:
+      tags: [settings]
+      summary: Política operacional editável
+      description: |
+        Cada chave com o valor efetivo, a origem, o padrão de fábrica e a faixa
+        aceita, para montar o formulário. Fundação e segurança (banco, chave,
+        origem pública, proxies) não aparecem: só o ambiente as define.
+      operationId: listSettings
+      responses:
+        '200':
+          description: As chaves.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [settings]
+                properties:
+                  settings:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Setting'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+  /settings/{key}:
+    put:
+      tags: [settings]
+      summary: Define uma configuração
+      description: |
+        Números para os limites; lista de nomes de host para `extra_git_hosts`.
+        Texto no lugar de número é recusado. Limites valem a partir do próximo
+        deploy; hosts valem na hora.
+      operationId: putSetting
+      parameters:
+        - $ref: '#/components/parameters/SettingKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [value]
+              properties:
+                value:
+                  description: Número ou lista de textos, conforme o `kind` da chave.
+      responses:
+        '200':
+          description: A chave com o novo valor efetivo.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Setting'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          description: Chave desconhecida (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      tags: [settings]
+      summary: Devolve uma configuração ao ambiente ou ao padrão
+      description: Idempotente.
+      operationId: resetSetting
+      parameters:
+        - $ref: '#/components/parameters/SettingKey'
+      responses:
+        '200':
+          description: A chave com o valor efetivo depois de remover o do banco.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Setting'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          description: Chave desconhecida (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 components:
   securitySchemes:
     cookieAuth:
@@ -746,6 +886,13 @@ components:
       schema:
         type: string
   parameters:
+    SettingKey:
+      name: key
+      in: path
+      required: true
+      schema:
+        type: string
+        enum: [app_memory_mb, app_cpus, app_pids, build_memory_mb, build_cpus, extra_git_hosts]
     Id:
       name: id
       in: path
@@ -862,10 +1009,79 @@ components:
       properties:
         user:
           $ref: '#/components/schemas/User'
+    Limits:
+      type: object
+      description: |
+        Tetos de recursos. Todos os campos são opcionais; ausente (ou zero)
+        significa "herda do nível de cima".
+      additionalProperties: false
+      properties:
+        app_memory_mb:
+          type: integer
+          minimum: 64
+          maximum: 262144
+          description: Memória de cada contêiner de aplicação, em MiB (sem swap). Passar dela mata a aplicação.
+        app_cpus:
+          type: number
+          minimum: 0.1
+          maximum: 256
+        app_pids:
+          type: integer
+          minimum: 16
+          maximum: 65536
+        build_memory_mb:
+          type: integer
+          minimum: 256
+          maximum: 262144
+        build_cpus:
+          type: number
+          minimum: 0.1
+          maximum: 256
+    LimitsView:
+      type: object
+      required: [overrides, effective]
+      properties:
+        overrides:
+          $ref: '#/components/schemas/Limits'
+        effective:
+          type: object
+          description: Por limite (`app_memory_mb`, `app_cpus`, ...), o valor que vale e de onde vem.
+          additionalProperties:
+            type: object
+            required: [value, source]
+            properties:
+              value:
+                type: number
+              source:
+                type: string
+                enum: [project, database, env, default]
+    Setting:
+      type: object
+      required: [key, kind, value, source, default]
+      properties:
+        key:
+          type: string
+        kind:
+          type: string
+          enum: [integer, number, hosts]
+        value:
+          description: Número (`integer`, `number`) ou lista de textos (`hosts`).
+        source:
+          type: string
+          enum: [database, env, default]
+        default:
+          description: Padrão de fábrica, do mesmo tipo de `value`.
+        min:
+          type: number
+          description: Só nos limites.
+        max:
+          type: number
     Project:
       type: object
-      required: [id, slug, repository_url, root_directory, created_at]
+      required: [id, slug, repository_url, root_directory, limits, created_at]
       properties:
+        limits:
+          $ref: '#/components/schemas/Limits'
         id:
           type: string
           format: uuid

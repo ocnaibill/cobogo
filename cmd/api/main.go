@@ -21,8 +21,8 @@ import (
 	"github.com/ocnaibill/cobogo/internal/config"
 	"github.com/ocnaibill/cobogo/internal/httpapi"
 	"github.com/ocnaibill/cobogo/internal/secrets"
+	"github.com/ocnaibill/cobogo/internal/settings"
 	"github.com/ocnaibill/cobogo/internal/store"
-	"github.com/ocnaibill/cobogo/internal/validate"
 )
 
 func main() {
@@ -109,7 +109,7 @@ func main() {
 		Store: st, Log: log,
 		PublicURL: cfg.PublicURL, CookieInsecure: cfg.CookieInsecure,
 		TrustedProxies: cfg.TrustedProxies,
-		GitHosts:       validate.GitHosts(cfg.ExtraGitHosts),
+		Settings:       settings.NewResolver(st, settings.Env{Limits: cfg.Limits, GitHosts: cfg.ExtraGitHosts}),
 		SetupToken:     setupToken,
 		Hasher:         hasher,
 		Limiter:        auth.NewLoginLimiter(),

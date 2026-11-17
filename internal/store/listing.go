@@ -66,7 +66,7 @@ func cursorArgs(c *Cursor) (*time.Time, *uuid.UUID) {
 func (s *Store) ListProjectsFor(ctx context.Context, ownerID uuid.UUID, limit int, after *Cursor) ([]domain.ProjectSummary, *Cursor, error) {
 	at, id := cursorArgs(after)
 	rows, err := s.pool.Query(ctx, `
-		SELECT p.id, p.owner_id, p.slug, p.repository_url, p.root_directory, p.created_at,
+		SELECT p.id, p.owner_id, p.slug, p.repository_url, p.root_directory, p.limits, p.created_at,
 		       d.id, d.state, d.created_at
 		FROM projects p
 		LEFT JOIN LATERAL (
@@ -88,9 +88,14 @@ func (s *Store) ListProjectsFor(ctx context.Context, ownerID uuid.UUID, limit in
 		var depID *uuid.UUID
 		var depState *domain.DeploymentState
 		var depCreated *time.Time
-		if err := rows.Scan(&it.ID, &it.OwnerID, &it.Slug, &it.RepositoryURL, &it.RootDirectory, &it.CreatedAt,
+		var limitsRaw string
+		if err := rows.Scan(&it.ID, &it.OwnerID, &it.Slug, &it.RepositoryURL, &it.RootDirectory, &limitsRaw, &it.CreatedAt,
 			&depID, &depState, &depCreated); err != nil {
 			return nil, nil, fmt.Errorf("store: ler projeto: %w", err)
+		}
+		var lerr error
+		if it.Limits, lerr = scanLimits(limitsRaw); lerr != nil {
+			return nil, nil, lerr
 		}
 		if depID != nil {
 			it.LastDeployment = &domain.DeploymentBrief{ID: *depID, State: *depState, CreatedAt: *depCreated}

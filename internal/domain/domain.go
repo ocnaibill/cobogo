@@ -15,8 +15,51 @@ type Project struct {
 	Slug          string     `json:"slug"`
 	RepositoryURL string     `json:"repository_url"`
 	RootDirectory string     `json:"root_directory"`
-	CreatedAt     time.Time  `json:"created_at"`
+	// Limits são as sobreposições de recursos deste projeto; campo zero herda
+	// da configuração global (DEC-30 item 7).
+	Limits    Limits    `json:"limits"`
+	CreatedAt time.Time `json:"created_at"`
 }
+
+// Limits são os tetos de recursos de contêineres de aplicação e de builds
+// (DEC-29, DEC-30). Zero em um campo significa "não definido": vale o nível de
+// cima (projeto, banco, ambiente, padrão de fábrica).
+type Limits struct {
+	AppMemoryMB   int     `json:"app_memory_mb,omitempty"`
+	AppCPUs       float64 `json:"app_cpus,omitempty"`
+	AppPids       int     `json:"app_pids,omitempty"`
+	BuildMemoryMB int     `json:"build_memory_mb,omitempty"`
+	BuildCPUs     float64 `json:"build_cpus,omitempty"`
+}
+
+// DefaultLimits são os padrões de fábrica, pensados para uma VM de 16 GiB
+// (DEC-30 item 4). O limite é teto, não reserva.
+func DefaultLimits() Limits {
+	return Limits{AppMemoryMB: 1024, AppCPUs: 1, AppPids: 256, BuildMemoryMB: 4096, BuildCPUs: 2}
+}
+
+// Over completa os campos não definidos de l com os de base.
+func (l Limits) Over(base Limits) Limits {
+	if l.AppMemoryMB == 0 {
+		l.AppMemoryMB = base.AppMemoryMB
+	}
+	if l.AppCPUs == 0 {
+		l.AppCPUs = base.AppCPUs
+	}
+	if l.AppPids == 0 {
+		l.AppPids = base.AppPids
+	}
+	if l.BuildMemoryMB == 0 {
+		l.BuildMemoryMB = base.BuildMemoryMB
+	}
+	if l.BuildCPUs == 0 {
+		l.BuildCPUs = base.BuildCPUs
+	}
+	return l
+}
+
+// WithDefaults completa o que falta com os padrões de fábrica.
+func (l Limits) WithDefaults() Limits { return l.Over(DefaultLimits()) }
 
 // DeploymentBrief resume um deploy para listas (DEC-28 item 5).
 type DeploymentBrief struct {

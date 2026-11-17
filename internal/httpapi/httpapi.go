@@ -21,6 +21,7 @@ import (
 
 	"github.com/ocnaibill/cobogo/internal/auth"
 	"github.com/ocnaibill/cobogo/internal/domain"
+	"github.com/ocnaibill/cobogo/internal/settings"
 	"github.com/ocnaibill/cobogo/internal/store"
 	"github.com/ocnaibill/cobogo/internal/validate"
 )
@@ -44,8 +45,9 @@ type Options struct {
 	CookieInsecure bool
 	// TrustedProxies são as redes de que cabeçalhos de proxy são aceitos.
 	TrustedProxies []netip.Prefix
-	// GitHosts são os hosts de repositório permitidos (padrão mais extras).
-	GitHosts []string
+	// Settings resolve a política operacional (hosts de repositório, limites):
+	// o banco sobrepõe o ambiente (DEC-30). Nil usa só os padrões de fábrica.
+	Settings *settings.Resolver
 	// SetupToken autoriza a criação do administrador; nil quando já existe um.
 	SetupToken *auth.SetupToken
 	Hasher     *auth.Hasher
@@ -58,7 +60,7 @@ type Server struct {
 	publicOrigin   string
 	cookieInsecure bool
 	trusted        []netip.Prefix
-	gitHosts       []string
+	settings       *settings.Resolver
 	setup          *auth.SetupToken
 	hasher         *auth.Hasher
 	limiter        *auth.LoginLimiter
@@ -74,16 +76,16 @@ func NewRouter(o Options) (http.Handler, error) {
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return nil, errors.New("httpapi: PublicURL inválida")
 	}
-	hosts := o.GitHosts
-	if len(hosts) == 0 {
-		hosts = validate.GitHosts(nil)
+	cfg := o.Settings
+	if cfg == nil {
+		cfg = settings.NewResolver(o.Store, settings.Env{})
 	}
 	s := &Server{
 		store: o.Store, log: o.Log,
 		publicOrigin:   strings.ToLower(u.Scheme + "://" + u.Host),
 		cookieInsecure: o.CookieInsecure,
 		trusted:        o.TrustedProxies,
-		gitHosts:       hosts,
+		settings:       cfg,
 		setup:          o.SetupToken,
 		hasher:         o.Hasher,
 		limiter:        o.Limiter,
@@ -131,6 +133,11 @@ func (s *Server) routes() []route {
 		{"GET /api/v1/deployments/{id}/plan", s.authed(s.handleGetPlan)},
 		{"POST /api/v1/deployments/{id}/answers", s.authed(s.handleAnswerDeployment)},
 		{"POST /api/v1/deployments/{id}/cancel", s.authed(s.handleCancelDeployment)},
+		{"GET /api/v1/settings", s.authed(s.handleListSettings)},
+		{"PUT /api/v1/settings/{key}", s.authed(s.handlePutSetting)},
+		{"DELETE /api/v1/settings/{key}", s.authed(s.handleResetSetting)},
+		{"GET /api/v1/projects/{id}/limits", s.authed(s.handleGetProjectLimits)},
+		{"PUT /api/v1/projects/{id}/limits", s.authed(s.handlePutProjectLimits)},
 		{"GET /api/v1/projects/{id}/env", s.authed(s.handleListEnv)},
 		{"PUT /api/v1/projects/{id}/env/{name}", s.authed(s.handlePutEnv)},
 		{"DELETE /api/v1/projects/{id}/env/{name}", s.authed(s.handleDeleteEnv)},
@@ -201,7 +208,13 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request, use
 		writeError(w, http.StatusBadRequest, "slug inválido: use letras minúsculas, números e hífen")
 		return
 	}
-	repositoryURL, err := validate.RepositoryURL(req.RepositoryURL, s.gitHosts)
+	hosts, err := s.settings.GitHosts(r.Context())
+	if err != nil {
+		s.log.Error("ler hosts de repositório", "erro", err)
+		writeError(w, http.StatusInternalServerError, "erro interno")
+		return
+	}
+	repositoryURL, err := validate.RepositoryURL(req.RepositoryURL, hosts)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

@@ -26,6 +26,8 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
+
+	"github.com/ocnaibill/cobogo/internal/domain"
 )
 
 const (
@@ -33,52 +35,20 @@ const (
 	LabelDeployment = "cobogo.deployment"
 )
 
-// Limits são os tetos de recursos de um contêiner de aplicação e de um build
-// (DEC-29). Zero em qualquer campo usa o padrão.
-type Limits struct {
-	AppMemoryMB   int
-	AppCPUs       float64
-	AppPids       int
-	BuildMemoryMB int
-	BuildCPUs     float64
-}
-
-// DefaultLimits são os padrões aprovados na DEC-29.
-func DefaultLimits() Limits {
-	return Limits{AppMemoryMB: 512, AppCPUs: 1, AppPids: 256, BuildMemoryMB: 2048, BuildCPUs: 2}
-}
-
-// withDefaults completa os campos zerados.
-func (l Limits) withDefaults() Limits {
-	d := DefaultLimits()
-	if l.AppMemoryMB <= 0 {
-		l.AppMemoryMB = d.AppMemoryMB
-	}
-	if l.AppCPUs <= 0 {
-		l.AppCPUs = d.AppCPUs
-	}
-	if l.AppPids <= 0 {
-		l.AppPids = d.AppPids
-	}
-	if l.BuildMemoryMB <= 0 {
-		l.BuildMemoryMB = d.BuildMemoryMB
-	}
-	if l.BuildCPUs <= 0 {
-		l.BuildCPUs = d.BuildCPUs
-	}
-	return l
-}
-
 const mib = 1 << 20
 
 // Runtime encapsula o ciclo de vida de build e execução de uma release.
 type Runtime struct {
 	cli    *client.Client
-	limits Limits
+	limits domain.Limits
 }
 
-// SetLimits troca os limites; campos zerados voltam ao padrão.
-func (r *Runtime) SetLimits(l Limits) { r.limits = l.withDefaults() }
+// WithLimits devolve um Runtime que usa os limites dados (campos zerados
+// valem o padrão de fábrica). O original não muda: o worker escolhe os
+// limites de cada deploy sem afetar os outros (DEC-30 item 6).
+func (r *Runtime) WithLimits(l domain.Limits) *Runtime {
+	return &Runtime{cli: r.cli, limits: l.WithDefaults()}
+}
 
 // New conecta ao daemon indicado por DOCKER_HOST, ou ao socket padrão do
 // host quando a variável não está definida.
@@ -87,7 +57,7 @@ func New() (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dockerrt: conectar ao daemon: %w", err)
 	}
-	return &Runtime{cli: cli, limits: DefaultLimits()}, nil
+	return &Runtime{cli: cli, limits: domain.DefaultLimits()}, nil
 }
 
 // excludedFromContext nunca entra no contexto de build (RN-11, §11.3).
@@ -237,14 +207,14 @@ func (r *Runtime) Build(ctx context.Context, workspaceDir, dockerfile, imageTag,
 		return BuildResult{}, err
 	}
 
-	resp, err := r.cli.ImageBuild(ctx, buildCtx, buildOptions(imageTag, r.limits.withDefaults()))
+	resp, err := r.cli.ImageBuild(ctx, buildCtx, buildOptions(imageTag, r.limits))
 	if err != nil {
 		return BuildResult{}, fmt.Errorf("dockerrt: iniciar build: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if err := streamBuildLog(resp.Body, logSink); err != nil {
-		return BuildResult{}, err
+		return BuildResult{}, withMemoryHint(err, r.limits.BuildMemoryMB)
 	}
 
 	inspect, _, err := r.cli.ImageInspectWithRaw(ctx, imageTag)
@@ -257,7 +227,7 @@ func (r *Runtime) Build(ctx context.Context, workspaceDir, dockerfile, imageTag,
 
 // buildOptions monta as opções do build, com os limites de memória e CPU
 // (DEC-29 item 6).
-func buildOptions(imageTag string, l Limits) types.ImageBuildOptions {
+func buildOptions(imageTag string, l domain.Limits) types.ImageBuildOptions {
 	memory := int64(l.BuildMemoryMB) * mib
 	const period = 100000
 	return types.ImageBuildOptions{
@@ -273,6 +243,17 @@ func buildOptions(imageTag string, l Limits) types.ImageBuildOptions {
 		CPUPeriod:  period,
 		CPUQuota:   int64(l.BuildCPUs * period),
 	}
+}
+
+// withMemoryHint acrescenta ao erro de um passo de build que terminou com
+// código 137 (SIGKILL) a causa provável: o limite de memória do build
+// (DEC-30 item 11). O código 137 também pode vir de um kill manual, então o
+// texto diz "provavelmente".
+func withMemoryHint(err error, buildMemoryMB int) error {
+	if err == nil || !strings.Contains(err.Error(), "non-zero code: 137") {
+		return err
+	}
+	return fmt.Errorf("%w — o passo foi encerrado à força (código 137), provavelmente por exceder o limite de memória do build (%d MiB); aumente-o nas configurações", err, buildMemoryMB)
 }
 
 type buildStreamMessage struct {
@@ -310,7 +291,7 @@ type RunResult struct {
 // appHostConfig é a configuração de host de todo contêiner de aplicação:
 // porta só no loopback, limites de recursos, sem capacidades e sem ganho de
 // privilégio, e log com tamanho máximo (DEC-29).
-func appHostConfig(portSpec nat.Port, l Limits) *container.HostConfig {
+func appHostConfig(portSpec nat.Port, l domain.Limits) *container.HostConfig {
 	memory := int64(l.AppMemoryMB) * mib
 	pids := int64(l.AppPids)
 	return &container.HostConfig{
@@ -358,7 +339,7 @@ func (r *Runtime) Run(ctx context.Context, imageTag, containerName string, conta
 			LabelDeployment: deploymentID,
 		},
 	}
-	hostCfg := appHostConfig(portSpec, r.limits.withDefaults())
+	hostCfg := appHostConfig(portSpec, r.limits)
 
 	created, err := r.cli.ContainerCreate(ctx, cfg, hostCfg, nil, nil, containerName)
 	if err != nil {
@@ -464,6 +445,20 @@ func (r *Runtime) State(ctx context.Context, containerID string) (running bool, 
 		return false, 0, errors.New("dockerrt: o daemon não informou o estado do contêiner")
 	}
 	return inspect.State.Running, inspect.State.ExitCode, nil
+}
+
+// OOMKilled diz se o kernel encerrou o contêiner por falta de memória: o
+// daemon informa isso com exatidão, ao contrário do código de saída 137, que
+// um kill manual também produz (DEC-30 item 11).
+func (r *Runtime) OOMKilled(ctx context.Context, containerID string) (bool, error) {
+	inspect, err := r.cli.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return false, fmt.Errorf("dockerrt: inspecionar contêiner: %w", err)
+	}
+	if inspect.State == nil {
+		return false, errors.New("dockerrt: o daemon não informou o estado do contêiner")
+	}
+	return inspect.State.OOMKilled, nil
 }
 
 // LogTail devolve as últimas lines linhas do log do contêiner (stdout e

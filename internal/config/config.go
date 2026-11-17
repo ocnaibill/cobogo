@@ -5,14 +5,15 @@ package config
 
 import (
 	"fmt"
-	"math"
 	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 
+	"github.com/ocnaibill/cobogo/internal/domain"
 	"github.com/ocnaibill/cobogo/internal/secrets"
+	"github.com/ocnaibill/cobogo/internal/settings"
 )
 
 type Config struct {
@@ -28,7 +29,8 @@ type Config struct {
 	// TrustedProxies são as redes de que a API aceita cabeçalhos de proxy
 	// (CF-Connecting-IP, X-Forwarded-For). Vazio: nenhum (DEC-27 item 11).
 	TrustedProxies []netip.Prefix
-	// ExtraGitHosts acrescenta hosts à lista de repositórios permitidos.
+	// ExtraGitHosts acrescenta hosts à lista de repositórios permitidos; vale
+	// como padrão inicial, o banco o sobrepõe (DEC-30).
 	ExtraGitHosts []string
 	// CookieInsecure troca o cookie de sessão por um sem Secure nem prefixo
 	// __Host-, só para desenvolvimento por HTTP.
@@ -36,16 +38,7 @@ type Config struct {
 
 	// Limits são os tetos de recursos dos contêineres de aplicação e dos builds
 	// (DEC-29); valem para o worker. Zero usa o padrão.
-	Limits Limits
-}
-
-// Limits são os limites de recursos configuráveis por instalação.
-type Limits struct {
-	AppMemoryMB   int
-	AppCPUs       float64
-	AppPids       int
-	BuildMemoryMB int
-	BuildCPUs     float64
+	Limits domain.Limits
 }
 
 func Load() (Config, error) {
@@ -53,7 +46,6 @@ func Load() (Config, error) {
 		DatabaseURL:    os.Getenv("DATABASE_URL"),
 		APIAddr:        envOr("API_ADDR", ":8080"),
 		PublicURL:      strings.TrimRight(strings.TrimSpace(os.Getenv("COBOGO_PUBLIC_URL")), "/"),
-		ExtraGitHosts:  splitList(os.Getenv("COBOGO_EXTRA_GIT_HOSTS")),
 		CookieInsecure: os.Getenv("COBOGO_COOKIE_INSECURE") == "1",
 	}
 	if c.DatabaseURL == "" {
@@ -76,62 +68,45 @@ func Load() (Config, error) {
 		}
 		c.TrustedProxies = append(c.TrustedProxies, prefix)
 	}
-	limits, err := loadLimits()
+	limits, hosts, err := loadEnvDefaults()
 	if err != nil {
 		return Config{}, err
 	}
-	c.Limits = limits
+	c.Limits, c.ExtraGitHosts = limits, hosts
 	return c, nil
 }
 
-// loadLimits lê os limites de recursos. Ausente vale zero (padrão da DEC-29);
-// presente, tem de estar numa faixa que não derrube o que ele limita.
-func loadLimits() (Limits, error) {
-	var l Limits
-	var err error
-	if l.AppMemoryMB, err = intEnv("COBOGO_APP_MEMORY_MB", 64, 1<<20); err != nil {
-		return Limits{}, err
+// loadEnvDefaults lê a política operacional do ambiente (limites e hosts
+// extras). Ausente vale zero ou vazio; presente, tem de estar na faixa da
+// chave (as mesmas definições do painel, DEC-30). Estes valores são só o
+// padrão inicial: o banco os sobrepõe.
+func loadEnvDefaults() (domain.Limits, []string, error) {
+	get := func(key string) (string, error) {
+		d, _ := settings.Lookup(key)
+		return settings.ParseEnv(key, os.Getenv(d.EnvVar))
 	}
-	if l.AppPids, err = intEnv("COBOGO_APP_PIDS", 16, 1<<20); err != nil {
-		return Limits{}, err
+	var l domain.Limits
+	var firstErr error
+	num := func(key string) float64 {
+		raw, err := get(key)
+		if err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("config: %w", err)
+		}
+		v, _ := strconv.ParseFloat(raw, 64)
+		return v
 	}
-	if l.BuildMemoryMB, err = intEnv("COBOGO_BUILD_MEMORY_MB", 256, 1<<20); err != nil {
-		return Limits{}, err
+	l.AppMemoryMB = int(num(settings.AppMemoryMB))
+	l.AppCPUs = num(settings.AppCPUs)
+	l.AppPids = int(num(settings.AppPids))
+	l.BuildMemoryMB = int(num(settings.BuildMemoryMB))
+	l.BuildCPUs = num(settings.BuildCPUs)
+	hostsRaw, err := get(settings.ExtraGitHosts)
+	if err != nil && firstErr == nil {
+		firstErr = fmt.Errorf("config: %w", err)
 	}
-	if l.AppCPUs, err = floatEnv("COBOGO_APP_CPUS", 0.1, 256); err != nil {
-		return Limits{}, err
-	}
-	if l.BuildCPUs, err = floatEnv("COBOGO_BUILD_CPUS", 0.1, 256); err != nil {
-		return Limits{}, err
-	}
-	return l, nil
+	return l, splitList(hostsRaw), firstErr
 }
 
-func intEnv(name string, min, max int) (int, error) {
-	raw := strings.TrimSpace(os.Getenv(name))
-	if raw == "" {
-		return 0, nil
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n < min || n > max {
-		return 0, fmt.Errorf("config: %s inválida: use um inteiro de %d a %d", name, min, max)
-	}
-	return n, nil
-}
-
-func floatEnv(name string, min, max float64) (float64, error) {
-	raw := strings.TrimSpace(os.Getenv(name))
-	if raw == "" {
-		return 0, nil
-	}
-	n, err := strconv.ParseFloat(raw, 64)
-	if err != nil || math.IsNaN(n) || n < min || n > max {
-		return 0, fmt.Errorf("config: %s inválida: use um número de %g a %g", name, min, max)
-	}
-	return n, nil
-}
-
-// ValidateForAPI confere o que só a API exige: a URL pública do painel.
 func (c Config) ValidateForAPI() error {
 	if c.PublicURL == "" {
 		return fmt.Errorf("config: variável COBOGO_PUBLIC_URL é obrigatória (por exemplo https://cobogo.exemplo.com, ou http://localhost:8080 em desenvolvimento)")

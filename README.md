@@ -61,7 +61,7 @@ Guarde a chave: sem ela os valores já gravados não podem ser lidos. Outras var
 
 - `COBOGO_TRUSTED_PROXIES`: redes de que a API aceita `CF-Connecting-IP` e `X-Forwarded-For`, por exemplo a rede do Traefik (`172.18.0.0/16`). Sem isso, atrás de um proxy ou túnel todos os clientes parecem ter o mesmo IP, e o limite de tentativas de login passa a valer para todos de uma vez; a API avisa no log quando vê esses cabeçalhos de uma origem não confiável.
 - `COBOGO_EXTRA_GIT_HOSTS`: hosts de repositório além de `github.com`, `gitlab.com`, `codeberg.org`, `bitbucket.org` e `git.sr.ht`.
-- Limites de recursos (worker; DEC-29), todos opcionais: `COBOGO_APP_MEMORY_MB` (padrão 512), `COBOGO_APP_CPUS` (1), `COBOGO_APP_PIDS` (256) para cada aplicação publicada, e `COBOGO_BUILD_MEMORY_MB` (2048) e `COBOGO_BUILD_CPUS` (2) para cada build. Passar do limite de memória mata a aplicação com o código de saída 137. Todo contêiner de aplicação também roda sem capacidades do Linux e sem poder ganhar privilégio, com log limitado a 30 MiB.
+- Política operacional, opcional (DEC-29 e DEC-30): `COBOGO_APP_MEMORY_MB` (padrão 1024), `COBOGO_APP_CPUS` (1), `COBOGO_APP_PIDS` (256) para cada aplicação publicada, `COBOGO_BUILD_MEMORY_MB` (4096) e `COBOGO_BUILD_CPUS` (2) para cada build, e `COBOGO_EXTRA_GIT_HOSTS`. Valem como **padrão inicial**: o administrador os troca pelo painel (`/api/v1/settings`) sem reiniciar, e o valor do banco sobrepõe o do ambiente. Um projeto ainda pode sobrepor os limites (`/api/v1/projects/<id>/limits`). Passar do limite de memória mata a aplicação, e a falha diz isso. Todo contêiner de aplicação também roda sem capacidades do Linux e sem poder ganhar privilégio, com log limitado a 30 MiB.
 
 Em dois terminais, na raiz do projeto (com a chave exportada em ambos):
 
@@ -181,6 +181,22 @@ Ao suceder, a `release` traz a porta publicada no host para acesso direto ao con
 **Quando falha:** o evento `failed` traz o código de saída, as últimas 50 linhas do log do contêiner (com os valores das variáveis do projeto trocados por `[REDIGIDO]`) e um `diagnosis`. Ele diz `confirmed` quando o log reclama de uma variável sem valor, `possible` quando há variáveis sem valor que o código usa, e `unknown` caso contrário. O Cobogó não afirma uma causa sem o nome dela no log.
 
 **Job interrompido:** se o worker cair, outro retoma o deploy do início, no mesmo commit, depois que o lease (60 s) vencer. Com `SIGTERM` o job volta à fila na hora. Depois de 3 tentativas interrompidas o deploy falha.
+
+### **6. Configurações e limites de recursos**
+
+```bash
+# política operacional: valor efetivo, origem (database, env, default), padrão e faixa
+curl "${H[@]}" $API/api/v1/settings
+curl "${H[@]}" -X PUT $API/api/v1/settings/build_memory_mb -d '{"value": 8192}'
+curl "${H[@]}" -X DELETE $API/api/v1/settings/build_memory_mb   # volta ao ambiente ou ao padrão
+curl "${H[@]}" -X PUT $API/api/v1/settings/extra_git_hosts -d '{"value": ["git.exemplo.com"]}'
+
+# sobreposição por projeto (campo ausente herda; {} limpa)
+curl "${H[@]}" -X PUT $API/api/v1/projects/<id>/limits -d '{"app_memory_mb": 2048}'
+curl "${H[@]}" $API/api/v1/projects/<id>/limits
+```
+
+Limites valem a partir do **próximo deploy**; um contêiner em execução mantém os que tinha. Hosts de repositório valem na hora. Banco, chave, origem pública e proxies confiáveis só mudam pelo ambiente. Se uma aplicação for morta por falta de memória, o evento `failed` traz `oom_killed` e um diagnóstico `confirmed` com o limite que valia.
 
 ## Testes automatizados
 

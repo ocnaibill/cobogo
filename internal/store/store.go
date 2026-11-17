@@ -60,15 +60,19 @@ func (s *Store) CreateProject(ctx context.Context, ownerID uuid.UUID, slug, repo
 // nome de um deploy já autorizado; a API usa GetProjectFor.
 func (s *Store) GetProject(ctx context.Context, id uuid.UUID) (domain.Project, error) {
 	var p domain.Project
+	var limitsRaw string
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, owner_id, slug, repository_url, root_directory, created_at
+		SELECT id, owner_id, slug, repository_url, root_directory, limits, created_at
 		FROM projects WHERE id = $1`, id,
-	).Scan(&p.ID, &p.OwnerID, &p.Slug, &p.RepositoryURL, &p.RootDirectory, &p.CreatedAt)
+	).Scan(&p.ID, &p.OwnerID, &p.Slug, &p.RepositoryURL, &p.RootDirectory, &limitsRaw, &p.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Project{}, ErrNotFound
 	}
 	if err != nil {
 		return domain.Project{}, fmt.Errorf("store: buscar projeto: %w", err)
+	}
+	if p.Limits, err = scanLimits(limitsRaw); err != nil {
+		return domain.Project{}, err
 	}
 	return p, nil
 }

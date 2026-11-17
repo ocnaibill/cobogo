@@ -186,7 +186,7 @@ CMD ["node", "-e", "console.error('conectando com ' + process.env.DB_PASSWORD + 
 		{Name: "DB_PASSWORD", Class: domain.ClassUser},
 		{Name: "PORT", Class: domain.ClassPlatform},
 	}
-	detail := w.investigate(ctx, res.ContainerID, runErr, []string{secret}, inventory, map[string]string{"DB_PASSWORD": ""})
+	detail := w.investigate(ctx, rt, domain.DefaultLimits(), res.ContainerID, runErr, []string{secret}, inventory, map[string]string{"DB_PASSWORD": ""})
 
 	if strings.Contains(detail.LogTail, secret) {
 		t.Errorf("the project's secret reached the stored log: %q", detail.LogTail)
@@ -199,6 +199,49 @@ CMD ["node", "-e", "console.error('conectando com ' + process.env.DB_PASSWORD + 
 	}
 	if detail.Diagnosis.Confidence != diagnosis.Confirmed || len(detail.Diagnosis.Variables) != 1 || detail.Diagnosis.Variables[0] != "DATABASE_URL" {
 		t.Errorf("diagnosis = %+v", detail.Diagnosis)
+	}
+}
+
+// Uma aplicação morta pelo kernel por falta de memória é diagnosticada pelo
+// que o daemon informa, e a mensagem cita o limite que valia (DEC-30 item 11).
+func TestInvestigateReportsAMemoryKill(t *testing.T) {
+	if os.Getenv("COBOGO_TEST_DOCKER") != "1" {
+		t.Skip("defina COBOGO_TEST_DOCKER=1 para rodar testes com Docker")
+	}
+	limits := domain.Limits{AppMemoryMB: 96}.WithDefaults()
+	rt, err := dockerrt.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt = rt.WithLimits(limits)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	const tag = "cobogo-test/oom:1"
+	dockerfile := `FROM node:26-slim
+CMD ["node", "-e", "const b=Buffer.alloc(400*1024*1024,1);console.log(b.length)"]
+`
+	if _, err := rt.Build(ctx, t.TempDir(), dockerfile, tag, "node:26-slim", nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = exec.Command("docker", "rmi", "-f", tag).Run() })
+
+	res, runErr := rt.Run(ctx, tag, "cobogo-test-oom", 3000, nil, "deploy-oom-test")
+	t.Cleanup(func() { _ = rt.Remove(context.Background(), res.ContainerID) })
+	if res.ContainerID == "" {
+		t.Fatalf("run: %v", runErr)
+	}
+	for i := 0; i < 100; i++ {
+		if running, _, _ := rt.State(ctx, res.ContainerID); !running {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	w := &Worker{runtime: rt, log: quiet}
+	detail := w.investigate(ctx, rt, limits, res.ContainerID, runErr, nil, nil, nil)
+	if !detail.OOMKilled || detail.Diagnosis.Confidence != diagnosis.Confirmed || !strings.Contains(detail.Diagnosis.Message, "96 MiB") {
+		t.Errorf("detail = %+v", detail)
 	}
 }
 

@@ -1,6 +1,6 @@
 # DEC-29 — Limites e endurecimento do contêiner da aplicação, e contexto de build seguro
 
-> **Estado:** decidida com o autor em 17/11/2026 (limites padrão aprovados); **implementada** (itens 1 a 10). Parte 5a.
+> **Estado:** decidida com o autor em 17/11/2026; **implementada** (itens 1 a 10). Parte 5a. **Os padrões de 512 MiB e 2 GiB foram substituídos pela DEC-30** (1024 MiB e 4096 MiB, e limites editáveis pelo painel); o restante vale como está.
 >
 > **Escopo:** o que o adaptador Docker impõe a todo contêiner de aplicação e a todo build, e como o contexto de build trata links simbólicos e arquivos especiais.
 >

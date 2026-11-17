@@ -206,7 +206,7 @@ func TestOnlyTheHashOfTheTokenIsStored(t *testing.T) {
 	u := admin(t, st)
 	token, _ := newSession(t, st, u.ID)
 	var leaked bool
-	if err := pool.QueryRow(ctx, `SELECT bool_or(position($1 in convert_from(token_hash, 'LATIN1')) > 0 OR user_agent LIKE '%' || $1 || '%' OR ip LIKE '%' || $1 || '%') FROM sessions`, token).Scan(&leaked); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT bool_or(position(convert_to($1, 'UTF8') in token_hash) > 0 OR user_agent LIKE '%' || $1 || '%' OR ip LIKE '%' || $1 || '%') FROM sessions`, token).Scan(&leaked); err != nil {
 		t.Fatal(err)
 	}
 	if leaked {

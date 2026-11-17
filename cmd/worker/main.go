@@ -12,6 +12,7 @@ import (
 	"github.com/ocnaibill/cobogo/internal/config"
 	"github.com/ocnaibill/cobogo/internal/dockerrt"
 	"github.com/ocnaibill/cobogo/internal/secrets"
+	"github.com/ocnaibill/cobogo/internal/settings"
 	"github.com/ocnaibill/cobogo/internal/store"
 	"github.com/ocnaibill/cobogo/internal/worker"
 )
@@ -46,19 +47,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	rt.SetLimits(dockerrt.Limits{
-		AppMemoryMB: cfg.Limits.AppMemoryMB, AppCPUs: cfg.Limits.AppCPUs, AppPids: cfg.Limits.AppPids,
-		BuildMemoryMB: cfg.Limits.BuildMemoryMB, BuildCPUs: cfg.Limits.BuildCPUs,
-	})
-
 	box, err := secrets.NewBox(cfg.SecretKey, 1)
 	if err != nil {
 		log.Error("preparar cifra de variáveis", "erro", err)
 		os.Exit(1)
 	}
 	st := store.New(pool).WithCipher(box)
-	w := worker.New(st, rt, log)
-	w.SetGitHosts(cfg.ExtraGitHosts)
+	w := worker.New(st, rt, log, settings.NewResolver(st, settings.Env{Limits: cfg.Limits, GitHosts: cfg.ExtraGitHosts}))
 
 	log.Info("worker Cobogó no ar")
 	if err := w.Run(ctx); err != nil && err != context.Canceled {
