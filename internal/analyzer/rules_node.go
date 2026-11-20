@@ -127,12 +127,14 @@ func ruleHEU02() Rule {
 	}
 }
 
-// HEU-05: um contrato de PORT em código de runtime é só uma pista; o número
-// nunca é inferido (RN-02), então a porta sempre fica pendente até um override.
+// HEU-05: quando o código de execução lê PORT, a plataforma escolhe o número e
+// o entrega (DEC-35): é contrato, não porta padrão (RN-02). O valor de reserva
+// escrito no código nunca é adotado. Sem contrato de execução, a porta fica
+// pendente até um override.
 func ruleHEU05() Rule {
 	return Rule{
 		Meta: RuleMeta{
-			ID: "HEU-05", Version: ruleVersion, State: RuleProposed,
+			ID: "HEU-05", Version: "0.3", State: RuleProposed,
 			Requires: []string{"HEU-01"},
 			Fields:   []string{domain.FieldPort, domain.FieldHealthPath},
 		},
@@ -148,12 +150,16 @@ func ruleHEU05() Rule {
 				}
 			}
 
+			if len(runtime) > 0 {
+				return RuleOutput{Proposals: []domain.Proposal{
+					defaultHealth,
+					{Field: domain.FieldPort, Value: domain.PlatformPort, Origin: domain.OriginPlatform, EvidenceIDs: evidenceIDs(runtime)},
+				}}
+			}
+
 			var msg string
 			var cited []domain.Evidence
 			switch {
-			case len(runtime) > 0:
-				msg = fmt.Sprintf("HEU-05: contrato de PORT detectado em %s, mas o valor numérico não é inferido automaticamente (RN-02); informe a porta", runtime[0].Source)
-				cited = runtime
 			case len(refs) > 0:
 				msg = fmt.Sprintf("HEU-05: PORT referenciada apenas em código de teste ou de ferramentas (%s); sem contrato de runtime, informe a porta", refs[0].Source)
 				cited = refs

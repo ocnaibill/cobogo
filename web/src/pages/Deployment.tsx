@@ -122,11 +122,13 @@ export function DeploymentPage() {
     }
   }
 
-  async function redeploy() {
+  async function redeploy(overrides?: Record<string, string>) {
     setBusy("redeploy");
     setActionError(null);
     try {
-      const d = await unwrap(api.POST("/projects/{id}/deployments", { params: { path: { id: dep!.project_id } }, body: { idempotency_key: idempotencyKey() } }));
+      const d = await unwrap(
+        api.POST("/projects/{id}/deployments", { params: { path: { id: dep!.project_id } }, body: { idempotency_key: idempotencyKey(), overrides } }),
+      );
       navigate(`/deploys/${d.id}`);
     } catch (e) {
       setActionError(e instanceof Error ? e.message : String(e));
@@ -158,7 +160,7 @@ export function DeploymentPage() {
               </Button>
             )}
             {isTerminal(state) && (
-              <Button icon="refresh" onClick={redeploy} busy={busy === "redeploy"}>
+              <Button icon="refresh" onClick={() => redeploy()} busy={busy === "redeploy"}>
                 Novo deploy
               </Button>
             )}
@@ -549,8 +551,28 @@ function UnsupportedPanel({ deploymentId }: { deploymentId: string }) {
   );
 }
 
-function FailurePanel({ reason, failure, projectId, onRedeploy, busy }: { reason?: string; failure: FailureDetail | null; projectId: string; onRedeploy: () => void; busy: boolean }) {
+/** Mostra como código os trechos entre crases das mensagens do worker. */
+function withCode(text: string): ReactNode[] {
+  return text.split(/`([^`]+)`/).map((part, i) => (i % 2 ? <code key={i}>{part}</code> : part));
+}
+
+function FailurePanel({
+  reason,
+  failure,
+  projectId,
+  onRedeploy,
+  busy,
+}: {
+  reason?: string;
+  failure: FailureDetail | null;
+  projectId: string;
+  onRedeploy: (overrides?: Record<string, string>) => void;
+  busy: boolean;
+}) {
   const d = failure?.diagnosis;
+  const [port, setPort] = useState("");
+  const portSuspect = !failure?.oomKilled && d?.field === "port";
+  const portValid = /^\d{1,5}$/.test(port) && Number(port) > 0 && Number(port) < 65536;
   return (
     <Card
       title="Diagnóstico da falha"
@@ -574,7 +596,9 @@ function FailurePanel({ reason, failure, projectId, onRedeploy, busy }: { reason
             <p className="small">
               {failure?.oomKilled
                 ? "O kernel encerrou a aplicação por exceder o limite de memória."
-                : (d?.message ?? "O Cobogó não reconheceu um padrão conhecido neste erro. O log abaixo mostra o que a aplicação escreveu.")}
+                : d?.message
+                  ? withCode(d.message)
+                  : "O Cobogó não reconheceu um padrão conhecido neste erro. O log abaixo mostra o que a aplicação escreveu."}
             </p>
           </div>
         </div>
@@ -589,7 +613,9 @@ function FailurePanel({ reason, failure, projectId, onRedeploy, busy }: { reason
             <strong>Próximo passo:</strong>
             {failure?.oomKilled
               ? "aumente a memória do projeto e publique de novo."
-              : d?.variables?.length
+              : portSuspect
+                ? "informe a porta em que a aplicação escuta e publique de novo."
+                : d?.variables?.length
                 ? `preencha ${d.variables.join(", ")} e publique de novo.`
                 : "corrija no repositório e peça um novo deploy."}
           </span>
@@ -604,9 +630,27 @@ function FailurePanel({ reason, failure, projectId, onRedeploy, busy }: { reason
                 Preencher variáveis
               </LinkButton>
             )}
-            <Button variant="primary" icon="refresh" onClick={onRedeploy} busy={busy}>
-              Novo deploy
-            </Button>
+            {portSuspect ? (
+              <form
+                className="row"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (portValid) onRedeploy({ port });
+                }}
+              >
+                <label className="sr-only" htmlFor="fix-port">
+                  Porta em que a aplicação escuta
+                </label>
+                <input id="fix-port" className="input-sm mono" inputMode="numeric" placeholder="porta, ex.: 3000" value={port} onChange={(e) => setPort(e.target.value.trim())} />
+                <Button type="submit" variant="primary" icon="refresh" busy={busy} disabled={!portValid}>
+                  Novo deploy com esta porta
+                </Button>
+              </form>
+            ) : (
+              <Button variant="primary" icon="refresh" onClick={() => onRedeploy()} busy={busy}>
+                Novo deploy
+              </Button>
+            )}
           </div>
         </div>
       </div>
@@ -735,7 +779,7 @@ function AnalysisView({ deploymentId, hasAnalysis }: { deploymentId: string; has
   return <AnalysisDetail analysis={analysis.data!} />;
 }
 
-const ORIGIN_TONE: Record<string, "info" | "neutral" | "success" | "brand"> = { override: "info", default: "neutral", declaration: "success", inference: "brand" };
+const ORIGIN_TONE: Record<string, "info" | "neutral" | "success" | "brand"> = { override: "info", default: "neutral", declaration: "success", platform: "success", inference: "brand" };
 
 export function AnalysisDetail({ analysis }: { analysis: Analysis }) {
   const r = analysis.result;
@@ -787,6 +831,9 @@ export function AnalysisDetail({ analysis }: { analysis: Analysis }) {
                   </p>
                 ) : null;
               })}
+              {f.origin === "platform" && name === "port" && (
+                <p className="evidence">O app lê <code>PORT</code>, então o Cobogó escolhe a porta e a entrega nessa variável. Se ele escutar em outra, a verificação mostra.</p>
+              )}
               {(f.rules ?? []).length > 0 && <p className="meta">regra: {(f.rules ?? []).join(", ")}</p>}
             </div>
           ))}

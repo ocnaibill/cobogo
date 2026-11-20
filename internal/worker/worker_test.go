@@ -265,3 +265,16 @@ func TestFailureDetailTravelsWithTheError(t *testing.T) {
 		t.Errorf("stage lost in the chain: %#v", wrapped)
 	}
 }
+
+func TestPortSourceNamesWhereTheCodeReadsPORT(t *testing.T) {
+	result := domain.AnalysisResult{
+		Fields:    map[string]domain.Field{domain.FieldPort: {Value: "8080", Origin: domain.OriginPlatform, EvidenceIDs: []string{"e1"}}},
+		Evidences: []domain.Evidence{{ID: "e0", Source: "other.js"}, {ID: "e1", Source: "src/index.js", Line: 7}},
+	}
+	if got := portSource(result); got != "src/index.js:7" {
+		t.Errorf("portSource = %q, want src/index.js:7", got)
+	}
+	if got := portSource(domain.AnalysisResult{}); got != "" {
+		t.Errorf("portSource without a port field = %q, want empty", got)
+	}
+}

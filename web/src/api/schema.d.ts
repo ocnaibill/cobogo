@@ -621,7 +621,8 @@ export interface components {
             /**
              * @description Varia por evento. Nunca contém valores de variáveis (só nomes). Em
              *     `failed`, pode trazer `error`, `exit_code`, `log_tail` (já
-             *     redigido) e `diagnosis`.
+             *     redigido) e `diagnosis` (`confidence`, `message`, `variables` e,
+             *     quando a correção é um override num novo deploy, `field`).
              */
             payload: {
                 [key: string]: unknown;
@@ -676,7 +677,7 @@ export interface components {
             execution_mode: "production" | "development";
             port: number;
             /** @enum {string} */
-            port_origin: "override" | "declaration" | "inference" | "default";
+            port_origin: "override" | "declaration" | "platform" | "inference" | "default";
             health_path: string;
             dockerfile: string;
         };
@@ -721,10 +722,12 @@ export interface components {
             reason?: string;
         };
         /**
-         * @description De onde veio o valor, em ordem decrescente de precedência.
+         * @description De onde veio o valor, em ordem decrescente de precedência. `platform` é
+         *     um valor que a plataforma escolhe porque o repositório declara o
+         *     contrato (o app lê `PORT`; DEC-35).
          * @enum {string}
          */
-        Origin: "override" | "declaration" | "inference" | "default";
+        Origin: "override" | "declaration" | "platform" | "inference" | "default";
         Proposal: {
             field: string;
             value: string;

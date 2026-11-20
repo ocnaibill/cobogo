@@ -32,7 +32,26 @@ type Diagnosis struct {
 	Confidence Confidence `json:"confidence"`
 	// Variables são as variáveis relacionadas, em ordem estável.
 	Variables []string `json:"variables,omitempty"`
-	Message   string   `json:"message"`
+	// Field é o campo do plano suspeito, quando a correção é um override num
+	// novo deploy (por enquanto só "port"; DEC-35).
+	Field   string `json:"field,omitempty"`
+	Message string `json:"message"`
+}
+
+// PlatformPortIgnored explica a sonda que não obteve resposta de um app que lê
+// PORT: a plataforma entregou a porta, mas nada respondeu nela (DEC-35 item 5).
+// source é onde o código lê PORT ("index.js:12"), quando se sabe.
+func PlatformPortIgnored(port int, source string) Diagnosis {
+	where := "O código lê `PORT`"
+	if source != "" {
+		where = fmt.Sprintf("O código lê `PORT` em `%s`", source)
+	}
+	return Diagnosis{
+		Confidence: Possible,
+		Field:      domain.FieldPort,
+		Message: fmt.Sprintf("Possível causa: a porta. %s, então a plataforma definiu %d, mas nada respondeu nela. "+
+			"Se a aplicação escuta em outra porta (ou só em 127.0.0.1), informe a porta certa num novo deploy.", where, port),
+	}
 }
 
 // complaint reconhece, em minúsculas, uma linha que reclama de falta de

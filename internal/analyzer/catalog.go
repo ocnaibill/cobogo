@@ -89,7 +89,7 @@ type Catalog struct {
 	Fields     []FieldSpec
 }
 
-const nodeCatalogVersion = "p-node-0.3"
+const nodeCatalogVersion = "p-node-0.4"
 
 func NodeCatalog() Catalog {
 	return Catalog{

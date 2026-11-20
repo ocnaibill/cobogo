@@ -158,7 +158,8 @@ export interface FailureDetail {
   exitCode?: number;
   logTail?: string;
   oomKilled?: boolean;
-  diagnosis?: { confidence: "confirmed" | "possible" | "unknown"; message: string; variables?: string[] };
+  /** `field`: o campo do plano suspeito, corrigível com um override num novo deploy (DEC-35). */
+  diagnosis?: { confidence: "confirmed" | "possible" | "unknown"; message: string; variables?: string[]; field?: string };
 }
 
 export function failureDetail(events: DeploymentEvent[]): FailureDetail | null {
@@ -197,6 +198,7 @@ export function profileLabel(id?: string): string | undefined {
 export const ORIGIN_LABEL: Record<string, string> = {
   override: "informado por você",
   declaration: "declarado no repositório",
+  platform: "definida pela plataforma",
   inference: "inferido",
   default: "padrão",
 };

@@ -37,6 +37,10 @@ var SupportedNodeVersions = []string{"22", "24", "26"}
 
 const DefaultNodeVersion = "26"
 
+// PlatformPort é a porta que a plataforma entrega em PORT a um app que a lê
+// em código de execução (DEC-35). Dentro do contêiner não há disputa de porta.
+const PlatformPort = "8080"
+
 // Scope diz onde uma evidência se aplica (§4.1 do motor).
 type Scope string
 
@@ -54,8 +58,11 @@ type Origin string
 const (
 	OriginOverride    Origin = "override"
 	OriginDeclaration Origin = "declaration"
-	OriginInference   Origin = "inference"
-	OriginDefault     Origin = "default"
+	// OriginPlatform é um valor que a própria plataforma escolhe porque o
+	// repositório declara um contrato para ele (o app lê PORT; DEC-35).
+	OriginPlatform  Origin = "platform"
+	OriginInference Origin = "inference"
+	OriginDefault   Origin = "default"
 )
 
 // Evidence é um fato observado no repositório por um extrator. O ID deriva

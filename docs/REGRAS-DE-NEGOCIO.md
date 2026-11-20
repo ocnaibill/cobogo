@@ -3,7 +3,7 @@
 > Extraído de [PROJETO-MESTRE.md §8](PROJETO-MESTRE.md#8-regras-de-produto-e-operação).
 
 - **RN-01**: "Deploy funcional" exige build concluído, contêiner em execução e probe HTTP aprovado; no experimento, exige também o teste funcional definido para o repositório.
-- **RN-02**: Informação obrigatória ausente ou sinais conflitantes impedem execução automática do plano. Uma porta padrão nunca é apresentada como porta comprovada.
+- **RN-02**: Informação obrigatória ausente ou sinais conflitantes impedem execução automática do plano. Uma porta padrão nunca é apresentada como porta comprovada. Quando o código de execução lê `PORT`, a plataforma escolhe o número e o injeta; isso é contrato, não porta padrão (DEC-35), e a sonda de readiness continua sendo a prova.
 - **RN-03**: Overrides válidos e explícitos têm precedência; depois vêm declarações suportadas do repositório e, por último, defaults documentados. Restrições de segurança prevalecem sobre configurações.
 - **RN-04**: Cada deploy usa um commit imutável e um plano final imutável. A mudança da branch depois da análise exige novo deploy.
 - **RN-05**: Driver de banco em dependências é apenas pista. Criar banco exige declaração ou seleção explícita do serviço e do vínculo de configuração.

@@ -181,13 +181,14 @@ func checkOwnership(meta RuleMeta, out RuleOutput) error {
 }
 
 var originRank = map[domain.Origin]int{
-	domain.OriginDeclaration: 3,
+	domain.OriginDeclaration: 4,
+	domain.OriginPlatform:    3,
 	domain.OriginInference:   2,
 	domain.OriginDefault:     1,
 }
 
-// resolve junta as propostas por campo: override > declaração > inferência >
-// default. Valores diferentes no mesmo nível são conflito, nunca "o último
+// resolve junta as propostas por campo: override > declaração > plataforma >
+// inferência > default. Valores diferentes no mesmo nível são conflito, nunca "o último
 // vence". Com fillRequired, campo obrigatório sem valor e sem pendência vira
 // pendência genérica.
 func resolve(cat Catalog, proposals []domain.Proposal, pending, conflicts []domain.Finding,

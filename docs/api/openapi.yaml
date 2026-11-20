@@ -1216,7 +1216,8 @@ components:
           description: |
             Varia por evento. Nunca contém valores de variáveis (só nomes). Em
             `failed`, pode trazer `error`, `exit_code`, `log_tail` (já
-            redigido) e `diagnosis`.
+            redigido) e `diagnosis` (`confidence`, `message`, `variables` e,
+            quando a correção é um override num novo deploy, `field`).
     Release:
       type: object
       required: [id, deployment_id, image_id, container_id, operational_state, health, host_port, created_at]
@@ -1303,7 +1304,7 @@ components:
           type: integer
         port_origin:
           type: string
-          enum: [override, declaration, inference, default]
+          enum: [override, declaration, platform, inference, default]
         health_path:
           type: string
         dockerfile:
@@ -1394,8 +1395,11 @@ components:
           type: string
     Origin:
       type: string
-      description: De onde veio o valor, em ordem decrescente de precedência.
-      enum: [override, declaration, inference, default]
+      description: |
+        De onde veio o valor, em ordem decrescente de precedência. `platform` é
+        um valor que a plataforma escolhe porque o repositório declara o
+        contrato (o app lê `PORT`; DEC-35).
+      enum: [override, declaration, platform, inference, default]
     Proposal:
       type: object
       required: [field, value, origin, rule]

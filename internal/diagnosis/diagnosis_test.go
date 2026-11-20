@@ -116,3 +116,18 @@ func TestUnset(t *testing.T) {
 		t.Errorf("unset = %v: platform variables and the ones the project has must be excluded", names)
 	}
 }
+
+func TestPlatformPortIgnoredPointsAtThePortField(t *testing.T) {
+	d := PlatformPortIgnored(8080, "index.js:4")
+	if d.Field != domain.FieldPort || d.Confidence != Possible {
+		t.Errorf("diagnosis = %+v, want field port with possible confidence", d)
+	}
+	for _, want := range []string{"index.js:4", "8080", "novo deploy"} {
+		if !strings.Contains(d.Message, want) {
+			t.Errorf("message %q lacks %q", d.Message, want)
+		}
+	}
+	if d := PlatformPortIgnored(8080, ""); !strings.Contains(d.Message, "O código lê `PORT`,") {
+		t.Errorf("without a source the message must still read well: %q", d.Message)
+	}
+}

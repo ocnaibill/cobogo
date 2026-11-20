@@ -81,23 +81,25 @@ func fixtures() []fixture {
 
 	return []fixture{
 		{
-			name:  "node app with PORT contract needs the port",
+			// DEC-35: o app lê PORT, então a plataforma escolhe a porta.
+			name:  "node app with PORT contract gets the platform port",
 			files: portRepo,
 			want: want{
-				outcome:         domain.AnalysisNeedsInput,
-				fields:          nodeFields("node index.js", nil),
-				pending:         []string{"port"},
+				outcome: domain.AnalysisReady,
+				fields: nodeFields("node index.js", map[string]wantField{
+					domain.FieldPort: {value: domain.PlatformPort, origin: domain.OriginPlatform},
+				}),
 				configVariables: []string{"PORT"},
 			},
 		},
 		{
-			name:      "port override resolves the pending field",
+			name:      "port override beats the platform port",
 			files:     portRepo,
 			overrides: map[string]string{"port": "3000"},
 			want: want{
 				outcome: domain.AnalysisReady,
 				fields: nodeFields("node index.js", map[string]wantField{
-					domain.FieldPort: {value: "3000", origin: domain.OriginOverride},
+					domain.FieldPort: {value: "3000", origin: domain.OriginOverride, overrode: 1},
 				}),
 				configVariables: []string{"PORT"},
 			},
@@ -124,7 +126,7 @@ func fixtures() []fixture {
 			want: want{
 				outcome: domain.AnalysisReady,
 				fields: nodeFields("node index.js", map[string]wantField{
-					domain.FieldPort: {value: "3000", origin: domain.OriginOverride},
+					domain.FieldPort: {value: "3000", origin: domain.OriginOverride, overrode: 1},
 				}),
 				configVariables: []string{"DATABASE_URL", "JWT_SECRET", "LOG_LEVEL", "PORT"},
 			},
@@ -398,11 +400,6 @@ func TestPortPendingMessages(t *testing.T) {
 		want  string
 	}{
 		{
-			name:  "runtime contract names the file",
-			files: nodeRepo(`{"scripts":{"start":"node index.js"}}`, map[string]string{"src/index.js": "process.env.PORT"}),
-			want:  "src/index.js",
-		},
-		{
 			name: "test-only reference says so",
 			files: nodeRepo(`{"scripts":{"start":"node index.js"}}`, map[string]string{
 				"test/a.test.js": "process.env.PORT",
@@ -436,9 +433,11 @@ func TestPortPendingMessages(t *testing.T) {
 	}
 }
 
-func TestPortPendingCitesOnlyRuntimeEvidence(t *testing.T) {
+// DEC-35: a porta da plataforma cita só a leitura de PORT em código de
+// execução, e o valor de reserva escrito no código nunca é adotado (RN-02).
+func TestPlatformPortCitesOnlyRuntimeEvidence(t *testing.T) {
 	files := nodeRepo(`{"scripts":{"start":"node index.js"}}`, map[string]string{
-		"index.js": "process.env.PORT",
+		"index.js": "const port = process.env.PORT || 5006",
 		"test.js":  "process.env.PORT",
 	})
 	got, err := Analyze(toFS(files), Input{})
@@ -449,13 +448,15 @@ func TestPortPendingCitesOnlyRuntimeEvidence(t *testing.T) {
 	for _, e := range got.Evidences {
 		byID[e.ID] = e
 	}
-	for _, p := range got.Pending {
-		if p.Field != domain.FieldPort {
-			continue
-		}
-		if len(p.EvidenceIDs) != 1 || byID[p.EvidenceIDs[0]].Source != "index.js" {
-			t.Errorf("port pending cites %v, want only the index.js evidence", p.EvidenceIDs)
-		}
+	port, ok := got.Fields[domain.FieldPort]
+	if !ok {
+		t.Fatalf("port not resolved; pending = %v", got.Pending)
+	}
+	if port.Value != domain.PlatformPort || port.Origin != domain.OriginPlatform {
+		t.Errorf("port = %q (%s), want %q (platform)", port.Value, port.Origin, domain.PlatformPort)
+	}
+	if len(port.EvidenceIDs) != 1 || byID[port.EvidenceIDs[0]].Source != "index.js" {
+		t.Errorf("port cites %v, want only the index.js evidence", port.EvidenceIDs)
 	}
 }
 

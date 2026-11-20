@@ -602,7 +602,14 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 	}
 	if err != nil {
 		if ctx.Err() == nil {
-			err = &detailedError{err: err, detail: w.investigate(ctx, rt, limits, runResult.ContainerID, err, projectValues, result.ConfigVariables, have)}
+			detail := w.investigate(ctx, rt, limits, runResult.ContainerID, err, projectValues, result.ConfigVariables, have)
+			// O app seguiu rodando, o log não aponta outra causa e a porta veio
+			// do contrato de PORT: a suspeita é a porta (DEC-35 item 5).
+			if detail.ExitCode == nil && !detail.OOMKilled && detail.Diagnosis.Confidence == diagnosis.Unknown &&
+				plan.PortOrigin == string(domain.OriginPlatform) {
+				detail.Diagnosis = diagnosis.PlatformPortIgnored(plan.Port, portSource(result))
+			}
+			err = &detailedError{err: err, detail: detail}
 		}
 		return at("VERIFYING", err)
 	}
@@ -654,4 +661,22 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 	return w.emit(ctx, o, dep.ID, "verifying", "succeeded", map[string]any{
 		"url": finalURL, "routed": releaseURL != "",
 	})
+}
+
+// portSource diz onde a análise viu o código ler PORT ("index.js:12"), para o
+// diagnóstico da porta da plataforma.
+func portSource(result domain.AnalysisResult) string {
+	f, ok := result.Fields[domain.FieldPort]
+	if !ok || len(f.EvidenceIDs) == 0 {
+		return ""
+	}
+	for _, e := range result.Evidences {
+		if e.ID == f.EvidenceIDs[0] {
+			if e.Line > 0 {
+				return fmt.Sprintf("%s:%d", e.Source, e.Line)
+			}
+			return e.Source
+		}
+	}
+	return ""
 }
