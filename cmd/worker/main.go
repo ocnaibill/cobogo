@@ -36,8 +36,8 @@ func main() {
 	}
 	defer pool.Close()
 
-	if err := store.Migrate(ctx, pool); err != nil {
-		log.Error("aplicar migrations", "erro", err)
+	if err := store.Prepare(ctx, pool, cfg.AutoMigrate); err != nil {
+		log.Error("preparar o esquema do banco", "erro", err)
 		os.Exit(1)
 	}
 

@@ -36,6 +36,10 @@ type Config struct {
 	// listener interno próprio (DEC-31 item 8). Sem token o listener não sobe.
 	RouterAddr  string
 	RouterToken string
+	// AutoMigrate faz o processo aplicar as migrations ao subir (padrão, para o
+	// desenvolvimento). Desligado, ele só confere o esquema: as migrations
+	// rodam em passo próprio, com o role dono (DEC-33 item 6).
+	AutoMigrate bool
 	// ProbeMode escolhe como o worker alcança uma aplicação recém-criada: "host"
 	// (a porta publicada no loopback, para desenvolvimento) ou "network" (o nome
 	// do contêiner na rede do projeto, quando o worker roda em contêiner;
@@ -62,6 +66,7 @@ func Load() (Config, error) {
 		APIAddr:        envOr("API_ADDR", ":8080"),
 		RouterAddr:     envOr("COBOGO_ROUTER_ADDR", ":8081"),
 		RouterToken:    strings.TrimSpace(os.Getenv("COBOGO_ROUTER_TOKEN")),
+		AutoMigrate:    envBool("COBOGO_AUTO_MIGRATE", true),
 		ProbeMode:      strings.ToLower(strings.TrimSpace(envOr("COBOGO_PROBE", "host"))),
 		PanelTarget:    strings.TrimRight(strings.TrimSpace(os.Getenv("COBOGO_PANEL_TARGET")), "/"),
 		PublicURL:      strings.TrimRight(strings.TrimSpace(os.Getenv("COBOGO_PUBLIC_URL")), "/"),
@@ -191,4 +196,16 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// envBool lê uma variável booleana: "0", "false", "off" e "no" desligam; "1",
+// "true", "on" e "yes" ligam; vazio ou outro valor usa o padrão.
+func envBool(key string, def bool) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "0", "false", "off", "no":
+		return false
+	case "1", "true", "on", "yes":
+		return true
+	}
+	return def
 }

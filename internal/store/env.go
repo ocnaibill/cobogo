@@ -53,10 +53,11 @@ func (s *Store) PutEnvVariable(ctx context.Context, projectID uuid.UUID, name, v
 	}
 
 	version := 1
+	exists := false
 	var current int
 	switch err := tx.QueryRow(ctx, `SELECT version FROM env_variables WHERE project_id = $1 AND name = $2`, projectID, name).Scan(&current); {
 	case err == nil:
-		version = current + 1
+		version, exists = current+1, true
 	case !errors.Is(err, pgx.ErrNoRows):
 		return domain.EnvVariable{}, fmt.Errorf("store: ler versão da variável: %w", err)
 	}
@@ -66,17 +67,27 @@ func (s *Store) PutEnvVariable(ctx context.Context, projectID uuid.UUID, name, v
 		return domain.EnvVariable{}, err
 	}
 
+	// Duas instruções em vez de INSERT ... ON CONFLICT: o ON CONFLICT DO UPDATE
+	// lê o texto cifrado pela linha EXCLUDED, o que exigiria à API o privilégio
+	// de SELECT sobre ele (DEC-33 item 3). A serialização acima já impede a corrida.
 	now := time.Now().UTC()
 	var v domain.EnvVariable
-	err = tx.QueryRow(ctx, `
-		INSERT INTO env_variables (id, project_id, name, version, source, ciphertext, key_version, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
-		ON CONFLICT (project_id, name) DO UPDATE
-		SET version = EXCLUDED.version, source = EXCLUDED.source, ciphertext = EXCLUDED.ciphertext,
-			key_version = EXCLUDED.key_version, updated_at = EXCLUDED.updated_at
-		RETURNING name, version, source, key_version, created_at, updated_at`,
-		uuid.New(), projectID, name, version, source, sealed, s.cipher.KeyVersion(), now,
-	).Scan(&v.Name, &v.Version, &v.Source, &v.KeyVersion, &v.CreatedAt, &v.UpdatedAt)
+	if exists {
+		err = tx.QueryRow(ctx, `
+			UPDATE env_variables
+			SET version = $3, source = $4, ciphertext = $5, key_version = $6, updated_at = $7
+			WHERE project_id = $1 AND name = $2
+			RETURNING name, version, source, key_version, created_at, updated_at`,
+			projectID, name, version, source, sealed, s.cipher.KeyVersion(), now,
+		).Scan(&v.Name, &v.Version, &v.Source, &v.KeyVersion, &v.CreatedAt, &v.UpdatedAt)
+	} else {
+		err = tx.QueryRow(ctx, `
+			INSERT INTO env_variables (id, project_id, name, version, source, ciphertext, key_version, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
+			RETURNING name, version, source, key_version, created_at, updated_at`,
+			uuid.New(), projectID, name, version, source, sealed, s.cipher.KeyVersion(), now,
+		).Scan(&v.Name, &v.Version, &v.Source, &v.KeyVersion, &v.CreatedAt, &v.UpdatedAt)
+	}
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23503" { // projeto inexistente

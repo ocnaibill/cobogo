@@ -221,10 +221,11 @@ Para testar a pilha inteira na própria máquina, sem túnel (DEC-32): API, work
 ```bash
 cp deploy/.env.example deploy/.env.local     # e preencha; o Git ignora este arquivo
 # em .env.local: COBOGO_PUBLIC_URL=http://localhost:8088  COBOGO_APPS_DOMAIN=localhost:8088  COBOGO_APPS_SCHEME=http
+# e as senhas (POSTGRES_PASSWORD, COBOGO_OWNER_PASSWORD, COBOGO_API_PASSWORD, COBOGO_WORKER_PASSWORD): openssl rand -hex 24
 docker compose --env-file deploy/.env.local -f deploy/compose.yml -f deploy/compose.local.yml up -d --build
 ```
 
-O painel responde em `http://localhost:8088` (pelo Traefik) e a API também em `127.0.0.1:18080`. Na VM, use só `deploy/compose.yml`, que não publica porta nenhuma, e o perfil `tunnel` para o `cloudflared`. O roteiro de instalação na VM e os roles do banco vêm nas próximas partes.
+O painel responde em `http://localhost:8088` (pelo Traefik) e a API também em `127.0.0.1:18080`. Na VM, use só `deploy/compose.yml`, que não publica porta nenhuma, e o perfil `tunnel` para o `cloudflared`. O PostgreSQL da pilha tem roles separados (DEC-33): o serviço `migrate` roda uma vez, com o role dono do esquema, aplica as migrations e os privilégios, e só então a API (`cobogo_api`) e o worker (`cobogo_worker`) sobem. Eles não migram (`COBOGO_AUTO_MIGRATE=0`): conferem que o esquema é o esperado e param com uma mensagem clara se não for. No desenvolvimento fora de contêiner nada muda: um usuário e migração automática (`COBOGO_AUTO_MIGRATE` vale 1). Para aplicar migrations e privilégios à mão: `DATABASE_URL=<role dono> go run ./cmd/api migrate`. O roteiro de instalação na VM vem na próxima parte.
 
 ## Testes automatizados
 

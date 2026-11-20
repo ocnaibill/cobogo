@@ -215,3 +215,18 @@ func TestLoadProbeAndPanelSettings(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadAutoMigrate(t *testing.T) {
+	base := map[string]string{"DATABASE_URL": "postgres://x", "COBOGO_SECRET_KEY": goodKey}
+	for value, want := range map[string]bool{
+		"": true, "1": true, "true": true, "on": true, "yes": true, "lixo": true,
+		"0": false, "false": false, "FALSE": false, "off": false, " no ": false,
+	} {
+		setEnv(t, base)
+		t.Setenv("COBOGO_AUTO_MIGRATE", value)
+		c, err := Load()
+		if err != nil || c.AutoMigrate != want {
+			t.Errorf("COBOGO_AUTO_MIGRATE=%q: AutoMigrate = %v, %v; want %v (an unrecognised value keeps the default, on)", value, c.AutoMigrate, err, want)
+		}
+	}
+}

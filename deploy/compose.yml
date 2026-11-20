@@ -7,6 +7,10 @@
 # locais, pelo arquivo compose.local.yml). Só o proxy monta o socket do Docker.
 name: cobogo
 
+x-api-build: &api-build
+  context: ..
+  dockerfile: deploy/Dockerfile.api
+
 x-hardened: &hardened
   restart: unless-stopped
   read_only: true
@@ -20,9 +24,14 @@ services:
     environment:
       POSTGRES_USER: cobogo
       POSTGRES_DB: cobogo_core
+      # O superusuário só serve ao script de criação dos roles (DEC-33).
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD}
+      COBOGO_OWNER_PASSWORD: ${COBOGO_OWNER_PASSWORD:?defina COBOGO_OWNER_PASSWORD}
+      COBOGO_API_PASSWORD: ${COBOGO_API_PASSWORD:?defina COBOGO_API_PASSWORD}
+      COBOGO_WORKER_PASSWORD: ${COBOGO_WORKER_PASSWORD:?defina COBOGO_WORKER_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./postgres/10-roles.sh:/docker-entrypoint-initdb.d/10-roles.sh:ro
     # O Postgres precisa trocar de dono e de usuário na inicialização.
     cap_drop: [ALL]
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
@@ -67,13 +76,27 @@ services:
     mem_limit: 128m
     networks: [control]
 
+  # Aplica as migrations e os privilégios com o role dono, uma vez, antes de a API
+  # e o worker subirem (DEC-33). Só ele tem permissão de DDL.
+  migrate:
+    build: *api-build
+    <<: *hardened
+    restart: "no"
+    command: ["migrate"]
+    environment:
+      DATABASE_URL: postgres://cobogo_owner:${COBOGO_OWNER_PASSWORD}@postgres:5432/cobogo_core?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 128m
+    networks: [control]
+
   api:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile.api
+    build: *api-build
     <<: *hardened
     environment:
-      DATABASE_URL: postgres://cobogo:${POSTGRES_PASSWORD}@postgres:5432/cobogo_core?sslmode=disable
+      DATABASE_URL: postgres://cobogo_api:${COBOGO_API_PASSWORD}@postgres:5432/cobogo_core?sslmode=disable
+      COBOGO_AUTO_MIGRATE: "0"
       COBOGO_SECRET_KEY: ${COBOGO_SECRET_KEY:?defina COBOGO_SECRET_KEY}
       COBOGO_PUBLIC_URL: ${COBOGO_PUBLIC_URL:?defina COBOGO_PUBLIC_URL}
       COBOGO_COOKIE_INSECURE: ${COBOGO_COOKIE_INSECURE:-0}
@@ -91,8 +114,8 @@ services:
       retries: 6
       start_period: 10s
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     mem_limit: 256m
     networks: [control, routing]
 
@@ -103,7 +126,8 @@ services:
     <<: *hardened
     environment:
       DOCKER_HOST: tcp://docker-proxy:2375
-      DATABASE_URL: postgres://cobogo:${POSTGRES_PASSWORD}@postgres:5432/cobogo_core?sslmode=disable
+      DATABASE_URL: postgres://cobogo_worker:${COBOGO_WORKER_PASSWORD}@postgres:5432/cobogo_core?sslmode=disable
+      COBOGO_AUTO_MIGRATE: "0"
       COBOGO_SECRET_KEY: ${COBOGO_SECRET_KEY:?defina COBOGO_SECRET_KEY}
       # Dentro de um contêiner a porta publicada no host não é alcançável: a
       # sonda fala com a aplicação pelo nome, na rede do projeto (DEC-32 item 5).
@@ -113,8 +137,8 @@ services:
     # O workspace de clonagem: só aqui o worker escreve.
     tmpfs: ["/tmp:size=4g,mode=1777"]
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       docker-proxy:
         condition: service_started
     mem_limit: 1g

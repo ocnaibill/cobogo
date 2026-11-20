@@ -29,6 +29,16 @@ import (
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
+	// `cobogo-api migrate`: aplica as migrations e a matriz de privilégios com o
+	// role dono, em passo próprio (DEC-33 item 5). Só precisa de DATABASE_URL.
+	if len(os.Args) > 1 && os.Args[1] == "migrate" {
+		if err := migrateCommand(log); err != nil {
+			log.Error("migrar o banco", "erro", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Error("carregar configuração", "erro", err)
@@ -45,8 +55,8 @@ func main() {
 	}
 	defer pool.Close()
 
-	if err := store.Migrate(ctx, pool); err != nil {
-		log.Error("aplicar migrations", "erro", err)
+	if err := store.Prepare(ctx, pool, cfg.AutoMigrate); err != nil {
+		log.Error("preparar o esquema do banco", "erro", err)
 		os.Exit(1)
 	}
 
@@ -274,4 +284,35 @@ func serveRouting(ctx context.Context, st *store.Store, cfg config.Config, log *
 			os.Exit(1)
 		}
 	}()
+}
+
+// migrateCommand aplica as migrations e, se os roles de aplicação existem, a
+// matriz de privilégios. Sai com erro se qualquer passo falhar, o que impede a
+// API e o worker de subirem sobre um esquema pela metade.
+func migrateCommand(log *slog.Logger) error {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		return errors.New("DATABASE_URL é obrigatória (o role dono do esquema)")
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		return fmt.Errorf("conectar ao postgres: %w", err)
+	}
+	defer pool.Close()
+
+	if err := store.Migrate(ctx, pool); err != nil {
+		return err
+	}
+	applied, err := store.ApplyGrants(ctx, pool, store.DefaultRoles)
+	if err != nil {
+		return err
+	}
+	if applied {
+		log.Info("migrations e privilégios aplicados", "roles", store.DefaultRoles.API+", "+store.DefaultRoles.Worker)
+	} else {
+		log.Warn("migrations aplicadas; os roles de aplicação não existem, então os privilégios não foram aplicados (esperado só em desenvolvimento)")
+	}
+	return nil
 }
