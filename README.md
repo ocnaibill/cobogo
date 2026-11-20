@@ -61,6 +61,7 @@ Guarde a chave: sem ela os valores já gravados não podem ser lidos. Outras var
 
 - `COBOGO_TRUSTED_PROXIES`: redes de que a API aceita `CF-Connecting-IP` e `X-Forwarded-For`, por exemplo a rede do Traefik (`172.18.0.0/16`). Sem isso, atrás de um proxy ou túnel todos os clientes parecem ter o mesmo IP, e o limite de tentativas de login passa a valer para todos de uma vez; a API avisa no log quando vê esses cabeçalhos de uma origem não confiável.
 - `COBOGO_EXTRA_GIT_HOSTS`: hosts de repositório além de `github.com`, `gitlab.com`, `codeberg.org`, `bitbucket.org` e `git.sr.ht`.
+- Roteamento por hostname (DEC-31): `COBOGO_ROUTER_TOKEN` (24 caracteres ou mais; gere com `openssl rand -hex 32`) liga um listener **interno** (`COBOGO_ROUTER_ADDR`, padrão `:8081`) que serve ao Traefik a tabela de rotas. Sem o token o listener não sobe. **Não publique essa porta**: ela deve existir só na rede entre o Cobogó e o Traefik. O domínio das aplicações é a configuração `apps_domain` (e `apps_scheme`), editável pelo painel; `COBOGO_APPS_DOMAIN` e `COBOGO_APPS_SCHEME` são o padrão inicial.
 - Política operacional, opcional (DEC-29 e DEC-30): `COBOGO_APP_MEMORY_MB` (padrão 1024), `COBOGO_APP_CPUS` (1), `COBOGO_APP_PIDS` (256) para cada aplicação publicada, `COBOGO_BUILD_MEMORY_MB` (4096) e `COBOGO_BUILD_CPUS` (2) para cada build, e `COBOGO_EXTRA_GIT_HOSTS`. Valem como **padrão inicial**: o administrador os troca pelo painel (`/api/v1/settings`) sem reiniciar, e o valor do banco sobrepõe o do ambiente. Um projeto ainda pode sobrepor os limites (`/api/v1/projects/<id>/limits`). Passar do limite de memória mata a aplicação, e a falha diz isso. Todo contêiner de aplicação também roda sem capacidades do Linux e sem poder ganhar privilégio, com log limitado a 30 MiB.
 
 Em dois terminais, na raiz do projeto (com a chave exportada em ambos):
@@ -197,6 +198,21 @@ curl "${H[@]}" $API/api/v1/projects/<id>/limits
 ```
 
 Limites valem a partir do **próximo deploy**; um contêiner em execução mantém os que tinha. Hosts de repositório valem na hora. Banco, chave, origem pública e proxies confiáveis só mudam pelo ambiente. Se uma aplicação for morta por falta de memória, o evento `failed` traz `oom_killed` e um diagnóstico `confirmed` com o limite que valia.
+
+### **7. Endereço público das aplicações (desenvolvimento)**
+
+O Traefik de desenvolvimento lê as rotas do listener interno do Cobogó e não acessa o Docker:
+
+```bash
+export COBOGO_ROUTER_TOKEN="$(openssl rand -hex 32)"      # o mesmo para a API e para o Traefik
+docker network create cobogo-ingress 2>/dev/null || true
+docker compose -f deploy/dev/traefik.yml up -d
+# suba a API e o worker com COBOGO_ROUTER_TOKEN exportado, e então:
+curl "${H[@]}" -X PUT $API/api/v1/settings/apps_domain -d '{"value": "localhost:8088"}'
+curl "${H[@]}" -X PUT $API/api/v1/settings/apps_scheme -d '{"value": "http"}'
+```
+
+A partir do próximo deploy, a aplicação do projeto `meu-app` responde em `http://meu-app.localhost:8088/` e a `release` traz essa `url`. A rota muda até 2 s depois de o deploy concluir. Os contêineres de releases anteriores continuam rodando, sem receber tráfego, até a atualização com release preservada (parte 5c).
 
 ## Testes automatizados
 

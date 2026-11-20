@@ -1,6 +1,6 @@
 # DEC-19 — Topologia de execução e fronteira de confiança
 
-> **Estado:** aceita em 20/10/2026.
+> **Estado:** aceita em 20/10/2026. **Atualizada em 20/11/2026 pela [DEC-31](DEC-31-roteamento-por-hostname-redes-e-url-da-release.md):** o Traefik passa a ler as rotas por um provider HTTP servido pelo Cobogó, em vez de descobrir contêineres pelo Docker; o proxy `docker-proxy-discovery` da tabela do item 2 deixa de ser necessário. O restante desta decisão continua valendo.
 >
 > **Escopo:** como o Cobogó é executado na VM do homelab, como ele acessa o Docker e
 > qual modelo de tenancy o D0/MVP assume.

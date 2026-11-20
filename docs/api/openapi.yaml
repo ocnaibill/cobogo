@@ -276,6 +276,10 @@ paths:
                 slug:
                   type: string
                   pattern: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'
+                  description: |
+                    Vira o nome público (`<slug>.<apps_domain>`). Nomes reservados
+                    (`www`, `mail`, `docs`, `api`, `admin`, `painel`, `cobogo`,
+                    `traefik`) são recusados.'
                 repository_url:
                   type: string
                   format: uri
@@ -892,7 +896,7 @@ components:
       required: true
       schema:
         type: string
-        enum: [app_memory_mb, app_cpus, app_pids, build_memory_mb, build_cpus, extra_git_hosts]
+        enum: [app_memory_mb, app_cpus, app_pids, build_memory_mb, build_cpus, extra_git_hosts, apps_domain, apps_scheme]
     Id:
       name: id
       in: path
@@ -1063,9 +1067,17 @@ components:
           type: string
         kind:
           type: string
-          enum: [integer, number, hosts]
+          enum: [integer, number, hosts, domain, choice]
         value:
-          description: Número (`integer`, `number`) ou lista de textos (`hosts`).
+          description: |
+            Número (`integer`, `number`), lista de textos (`hosts`) ou texto
+            (`domain`, `choice`). `apps_domain` vazio desliga o roteamento das
+            aplicações; pode levar porta (`localhost:8088`).
+        choices:
+          type: array
+          items:
+            type: string
+          description: Valores aceitos de uma chave `choice`.
         source:
           type: string
           enum: [database, env, default]
@@ -1225,7 +1237,13 @@ components:
           type: string
         host_port:
           type: integer
-          description: Porta no host. A URL pública depende do roteamento (DEC-19) e ainda não é devolvida.
+          description: Porta no loopback do host, para acesso direto ao contêiner.
+        url:
+          type: string
+          description: |
+            Endereço público com que a release foi roteada (`<slug>.<apps_domain>`).
+            Ausente quando não havia domínio configurado. Mudar o domínio depois
+            não reescreve releases antigas.
         created_at:
           type: string
           format: date-time

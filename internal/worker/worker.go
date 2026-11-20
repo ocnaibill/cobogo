@@ -359,6 +359,10 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 	if err != nil {
 		return at("FETCHING", err)
 	}
+	routing, err := w.settings.Apps(ctx)
+	if err != nil {
+		return at("FETCHING", err)
+	}
 	rt := w.runtime.WithLimits(limits)
 	repositoryURL, err := validate.RepositoryURL(project.RepositoryURL, gitHosts)
 	if err != nil {
@@ -518,7 +522,19 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 	if err := o.Check(ctx); err != nil {
 		return at("STARTING", err)
 	}
-	runResult, err := rt.Run(ctx, imageTag, containerName, plan.Port, envValues, dep.ID.String())
+	// Rede do projeto e, se há domínio, a de ingress (DEC-31). O contêiner sobe
+	// fora do ingress: só entra depois de validado.
+	projectNet := dockerrt.ProjectNetwork(project.ID.String())
+	if err := rt.EnsureNetwork(ctx, projectNet, map[string]string{dockerrt.LabelProject: project.ID.String()}); err != nil {
+		return at("STARTING", err)
+	}
+	if routing.Enabled() {
+		if err := rt.EnsureNetwork(ctx, dockerrt.IngressNetwork, nil); err != nil {
+			return at("STARTING", err)
+		}
+	}
+	runResult, err := rt.Run(ctx, imageTag, containerName, plan.Port, envValues, dep.ID.String(),
+		dockerrt.WithNetwork(projectNet), dockerrt.WithLabels(map[string]string{dockerrt.LabelProject: project.ID.String()}))
 
 	// A partir do create existe uma candidata: qualquer saída sem sucesso a
 	// remove, pelo ID (se a posse foi perdida, o novo dono pode ter a dele, com
@@ -568,14 +584,44 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 		return err
 	}
 
-	if _, err := o.CreateRelease(ctx, dep.ID, buildResult.ImageID, runResult.ContainerID, "active", "healthy", runResult.HostPort); err != nil {
-		return at("VERIFYING", err)
+	// Promoção (DEC-31 item 10): a candidata entra no ingress; depois, numa só
+	// transação, o deploy vai a SUCCEEDED e a release vira a ativa do projeto.
+	// Uma falha antes disso remove a candidata e deixa a release anterior no ar.
+	spec := store.ReleaseSpec{
+		ImageID: buildResult.ImageID, ContainerID: runResult.ContainerID, Health: "healthy", HostPort: runResult.HostPort,
 	}
-	if err := o.Transition(ctx, dep.ID, domain.DeploymentSucceeded, ""); err != nil {
+	if routing.Enabled() {
+		if err := o.Check(ctx); err != nil {
+			return at("VERIFYING", err)
+		}
+		if err := rt.Promote(ctx, runResult.ContainerID, dockerrt.IngressNetwork); err != nil {
+			return at("VERIFYING", err)
+		}
+		spec.URL = routing.URL(project.Slug)
+		spec.RouteHost = routing.Host(project.Slug)
+		spec.RouteTarget = fmt.Sprintf("http://%s:%d", containerName, plan.Port)
+	}
+	if _, err := o.PromoteRelease(ctx, dep.ID, spec); err != nil {
 		return at("VERIFYING", err)
 	}
 	succeeded = true
+	releaseURL := spec.URL
+
+	// As releases anteriores ficam como estão, no ingress e rodando: o Traefik
+	// leva até um ciclo de consulta para trocar a rota, e desconectar a antiga
+	// antes disso derrubaria pedidos em andamento. Rebaixar e retirar, com um
+	// período de espera maior que o ciclo, é a parte 5c (RF-15).
+	if routing.Enabled() {
+		if err := w.emit(ctx, o, dep.ID, "routing", "promoted", map[string]any{"url": releaseURL}); err != nil {
+			return err
+		}
+	}
+
+	finalURL := releaseURL
+	if finalURL == "" {
+		finalURL = fmt.Sprintf("http://127.0.0.1:%d/", runResult.HostPort)
+	}
 	return w.emit(ctx, o, dep.ID, "verifying", "succeeded", map[string]any{
-		"url": fmt.Sprintf("http://127.0.0.1:%d/", runResult.HostPort),
+		"url": finalURL, "routed": releaseURL != "",
 	})
 }

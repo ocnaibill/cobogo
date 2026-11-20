@@ -15,6 +15,21 @@ import (
 // DefaultGitHosts são os hosts públicos de repositório aceitos por padrão.
 var DefaultGitHosts = []string{"github.com", "gitlab.com", "codeberg.org", "bitbucket.org", "git.sr.ht"}
 
+// reservedSlugs são nomes que um projeto não pode tomar: ficariam parecidos
+// demais com serviços do próprio Cobogó ou com endereços de infraestrutura
+// (DEC-31 item 4).
+var reservedSlugs = []string{"www", "mail", "docs", "api", "admin", "painel", "cobogo", "traefik"}
+
+// ReservedSlug diz se o slug é um dos nomes reservados.
+func ReservedSlug(slug string) bool {
+	for _, r := range reservedSlugs {
+		if slug == r {
+			return true
+		}
+	}
+	return false
+}
+
 // GitHosts junta os hosts padrão aos extras da configuração, em minúsculas e
 // sem repetição.
 func GitHosts(extra []string) []string {

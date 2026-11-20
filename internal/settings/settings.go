@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/netip"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -26,6 +27,8 @@ const (
 	BuildMemoryMB = "build_memory_mb"
 	BuildCPUs     = "build_cpus"
 	ExtraGitHosts = "extra_git_hosts"
+	AppsDomain    = "apps_domain"
+	AppsScheme    = "apps_scheme"
 )
 
 // Kind é o tipo do valor de uma chave.
@@ -35,6 +38,10 @@ const (
 	KindInt   Kind = "integer"
 	KindFloat Kind = "number"
 	KindHosts Kind = "hosts"
+	// KindDomain é um nome de host só, ou vazio para desligar.
+	KindDomain Kind = "domain"
+	// KindChoice é um valor de uma lista fechada.
+	KindChoice Kind = "choice"
 )
 
 // Def descreve uma chave: tipo, faixa aceita e a variável de ambiente que a
@@ -44,16 +51,25 @@ type Def struct {
 	Kind     Kind
 	Min, Max float64
 	EnvVar   string
+	// Choices são os valores aceitos de uma KindChoice.
+	Choices []string
+	// Default é o padrão de fábrica dos tipos que não são limites.
+	Default string
+	// AllowEmpty diz que um valor vazio gravado é uma escolha ("nenhum"), e
+	// não a ausência de valor: ele sobrepõe o ambiente.
+	AllowEmpty bool
 }
 
 // Defs são as chaves, na ordem em que o painel as mostra.
 var Defs = []Def{
-	{AppMemoryMB, KindInt, 64, 262144, "COBOGO_APP_MEMORY_MB"},
-	{AppCPUs, KindFloat, 0.1, 256, "COBOGO_APP_CPUS"},
-	{AppPids, KindInt, 16, 65536, "COBOGO_APP_PIDS"},
-	{BuildMemoryMB, KindInt, 256, 262144, "COBOGO_BUILD_MEMORY_MB"},
-	{BuildCPUs, KindFloat, 0.1, 256, "COBOGO_BUILD_CPUS"},
-	{ExtraGitHosts, KindHosts, 0, 0, "COBOGO_EXTRA_GIT_HOSTS"},
+	{Key: AppMemoryMB, Kind: KindInt, Min: 64, Max: 262144, EnvVar: "COBOGO_APP_MEMORY_MB"},
+	{Key: AppCPUs, Kind: KindFloat, Min: 0.1, Max: 256, EnvVar: "COBOGO_APP_CPUS"},
+	{Key: AppPids, Kind: KindInt, Min: 16, Max: 65536, EnvVar: "COBOGO_APP_PIDS"},
+	{Key: BuildMemoryMB, Kind: KindInt, Min: 256, Max: 262144, EnvVar: "COBOGO_BUILD_MEMORY_MB"},
+	{Key: BuildCPUs, Kind: KindFloat, Min: 0.1, Max: 256, EnvVar: "COBOGO_BUILD_CPUS"},
+	{Key: ExtraGitHosts, Kind: KindHosts, EnvVar: "COBOGO_EXTRA_GIT_HOSTS", AllowEmpty: true},
+	{Key: AppsDomain, Kind: KindDomain, EnvVar: "COBOGO_APPS_DOMAIN", AllowEmpty: true},
+	{Key: AppsScheme, Kind: KindChoice, EnvVar: "COBOGO_APPS_SCHEME", Choices: []string{"https", "http"}, Default: "https"},
 }
 
 // Lookup acha a definição de uma chave.
@@ -122,6 +138,31 @@ func (d Def) Normalize(raw string) (string, error) {
 			return "", invalid("no máximo %d hosts", maxHosts)
 		}
 		return strings.Join(hosts, ","), nil
+	case KindDomain:
+		v := strings.ToLower(strings.TrimSpace(raw))
+		host, port, hasPort := strings.Cut(v, ":")
+		if hasPort {
+			n, err := strconv.Atoi(port)
+			if err != nil || n < 1 || n > 65535 || strconv.Itoa(n) != port {
+				return "", invalid("a porta de %q deve ser um número de 1 a 65535", v)
+			}
+		}
+		if host == "" && !hasPort {
+			return "", nil
+		}
+		if host != "localhost" && (len(host) > 253 || !hostPattern.MatchString(host)) {
+			return "", invalid("%q não é um nome de domínio (sem esquema nem caminho; porta opcional)", v)
+		}
+		if _, err := netip.ParseAddr(host); err == nil {
+			return "", invalid("%q é um endereço IP; use um nome de domínio", v)
+		}
+		return v, nil
+	case KindChoice:
+		v := strings.ToLower(strings.TrimSpace(raw))
+		if !slices.Contains(d.Choices, v) {
+			return "", invalid("use um de: %s", strings.Join(d.Choices, ", "))
+		}
+		return v, nil
 	}
 	return "", invalid("chave desconhecida")
 }
@@ -145,14 +186,22 @@ func (d Def) FromJSON(raw json.RawMessage) (string, error) {
 			return "", invalid("envie uma lista de nomes de host")
 		}
 		return d.Normalize(strings.Join(list, ","))
+	case KindDomain, KindChoice:
+		var text string
+		if err := json.Unmarshal(raw, &text); err != nil {
+			return "", invalid("envie um texto")
+		}
+		return d.Normalize(text)
 	}
 	return "", invalid("chave desconhecida")
 }
 
 // Env são os valores de ambiente que servem de padrão inicial (zero = ausente).
 type Env struct {
-	Limits   domain.Limits
-	GitHosts []string
+	Limits     domain.Limits
+	GitHosts   []string
+	AppsDomain string
+	AppsScheme string
 }
 
 func (e Env) raw(key string) string {
@@ -169,6 +218,10 @@ func (e Env) raw(key string) string {
 		return nonZeroFloat(e.Limits.BuildCPUs)
 	case ExtraGitHosts:
 		return strings.Join(e.GitHosts, ",")
+	case AppsDomain:
+		return e.AppsDomain
+	case AppsScheme:
+		return e.AppsScheme
 	}
 	return ""
 }
@@ -237,13 +290,16 @@ func (r *Resolver) stored(ctx context.Context) (map[string]string, error) {
 }
 
 func defaultRaw(key string) string {
-	l := domain.DefaultLimits()
-	return Env{Limits: l}.raw(key)
+	if d, ok := Lookup(key); ok && !d.IsLimit() {
+		return d.Default
+	}
+	return Env{Limits: domain.DefaultLimits()}.raw(key)
 }
 
 // pick escolhe o texto e a fonte de uma chave, sem o nível do projeto.
 func (r *Resolver) pick(stored map[string]string, key string) (raw, source string) {
-	if v := stored[key]; v != "" || (key == ExtraGitHosts && hasKey(stored, key)) {
+	d, _ := Lookup(key)
+	if v := stored[key]; v != "" || (d.AllowEmpty && hasKey(stored, key)) {
 		return v, SourceDatabase
 	}
 	if v := r.env.raw(key); v != "" {
@@ -263,6 +319,8 @@ type Item struct {
 	Default any      `json:"default"`
 	Min     *float64 `json:"min,omitempty"`
 	Max     *float64 `json:"max,omitempty"`
+	// Choices são os valores aceitos de uma chave do tipo choice.
+	Choices []string `json:"choices,omitempty"`
 }
 
 func typed(d Def, raw string) any {
@@ -273,6 +331,9 @@ func typed(d Def, raw string) any {
 	case KindFloat:
 		f, _ := strconv.ParseFloat(raw, 64)
 		return f
+	}
+	if d.Kind == KindDomain || d.Kind == KindChoice {
+		return raw
 	}
 	hosts := []string{}
 	for _, h := range strings.Split(raw, ",") {
@@ -297,6 +358,7 @@ func (r *Resolver) List(ctx context.Context) ([]Item, error) {
 			min, max := d.Min, d.Max
 			it.Min, it.Max = &min, &max
 		}
+		it.Choices = d.Choices
 		items = append(items, it)
 	}
 	return items, nil
@@ -356,6 +418,50 @@ func (r *Resolver) GitHosts(ctx context.Context) ([]string, error) {
 	}
 	raw, _ := r.pick(stored, ExtraGitHosts)
 	return validate.GitHosts(typed(Def{Kind: KindHosts}, raw).([]string)), nil
+}
+
+// Routing é a configuração de roteamento das aplicações (DEC-31): o domínio e
+// o esquema da URL pública. Domínio vazio desliga o roteamento. O domínio pode
+// levar uma porta (`localhost:8088`), que aparece na URL mas não no nome de
+// host que o Traefik compara.
+type Routing struct {
+	Domain string
+	Scheme string
+}
+
+// Enabled diz se as aplicações recebem um endereço público.
+func (r Routing) Enabled() bool { return r.Domain != "" }
+
+// hostAndPort separa o domínio da porta opcional.
+func (r Routing) hostAndPort() (host, port string) {
+	host, port, _ = strings.Cut(r.Domain, ":")
+	return host, port
+}
+
+// Host é o nome público de um projeto, sem porta.
+func (r Routing) Host(slug string) string {
+	host, _ := r.hostAndPort()
+	return slug + "." + host
+}
+
+// URL é o endereço público de um projeto, com a porta se houver e a barra final.
+func (r Routing) URL(slug string) string {
+	_, port := r.hostAndPort()
+	if port != "" {
+		port = ":" + port
+	}
+	return r.Scheme + "://" + r.Host(slug) + port + "/"
+}
+
+// Apps devolve o roteamento efetivo.
+func (r *Resolver) Apps(ctx context.Context) (Routing, error) {
+	stored, err := r.stored(ctx)
+	if err != nil {
+		return Routing{}, err
+	}
+	domainRaw, _ := r.pick(stored, AppsDomain)
+	schemeRaw, _ := r.pick(stored, AppsScheme)
+	return Routing{Domain: domainRaw, Scheme: schemeRaw}, nil
 }
 
 // ValidateLimits confere as sobreposições de um projeto: cada campo definido

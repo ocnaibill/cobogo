@@ -53,7 +53,7 @@ func main() {
 		os.Exit(1)
 	}
 	st := store.New(pool).WithCipher(box)
-	w := worker.New(st, rt, log, settings.NewResolver(st, settings.Env{Limits: cfg.Limits, GitHosts: cfg.ExtraGitHosts}))
+	w := worker.New(st, rt, log, settings.NewResolver(st, settings.Env{Limits: cfg.Limits, GitHosts: cfg.ExtraGitHosts, AppsDomain: cfg.AppsDomain, AppsScheme: cfg.AppsScheme}))
 
 	log.Info("worker Cobogó no ar")
 	if err := w.Run(ctx); err != nil && err != context.Canceled {

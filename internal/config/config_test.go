@@ -143,3 +143,48 @@ func TestLoadLimits(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadAppsRoutingDefaults(t *testing.T) {
+	base := map[string]string{"DATABASE_URL": "postgres://x", "COBOGO_SECRET_KEY": goodKey}
+	setEnv(t, base)
+	t.Setenv("COBOGO_APPS_DOMAIN", " Cobogo.DEV ")
+	t.Setenv("COBOGO_APPS_SCHEME", "HTTP")
+	c, err := Load()
+	if err != nil || c.AppsDomain != "cobogo.dev" || c.AppsScheme != "http" {
+		t.Fatalf("Load = %q %q, %v", c.AppsDomain, c.AppsScheme, err)
+	}
+	for name, kv := range map[string][2]string{
+		"domain with scheme": {"COBOGO_APPS_DOMAIN", "https://cobogo.dev"},
+		"scheme unknown":     {"COBOGO_APPS_SCHEME", "ftp"},
+	} {
+		setEnv(t, base)
+		t.Setenv("COBOGO_APPS_DOMAIN", "")
+		t.Setenv("COBOGO_APPS_SCHEME", "")
+		t.Setenv(kv[0], kv[1])
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), kv[0]) {
+			t.Errorf("%s: err = %v, want an error naming %s", name, err, kv[0])
+		}
+	}
+}
+
+func TestLoadRouterSettings(t *testing.T) {
+	base := map[string]string{"DATABASE_URL": "postgres://x", "COBOGO_SECRET_KEY": goodKey}
+	load := func(addr, token string) (Config, error) {
+		setEnv(t, base)
+		t.Setenv("COBOGO_ROUTER_ADDR", addr)
+		t.Setenv("COBOGO_ROUTER_TOKEN", token)
+		return Load()
+	}
+
+	c, err := load("", "")
+	if err != nil || c.RouterAddr != ":8081" || c.RouterToken != "" {
+		t.Fatalf("defaults = %q %q, %v: no token means the listener stays off", c.RouterAddr, c.RouterToken, err)
+	}
+	c, err = load("10.0.0.5:9000", "  "+strings.Repeat("t", 32)+"\n")
+	if err != nil || c.RouterAddr != "10.0.0.5:9000" || c.RouterToken != strings.Repeat("t", 32) {
+		t.Errorf("set = %q %q, %v", c.RouterAddr, c.RouterToken, err)
+	}
+	if _, err := load("", strings.Repeat("t", 23)); err == nil || !strings.Contains(err.Error(), "COBOGO_ROUTER_TOKEN") {
+		t.Errorf("a short token must be refused, naming the variable: %v", err)
+	}
+}

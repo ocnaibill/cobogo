@@ -322,7 +322,11 @@ func appHostConfig(portSpec nat.Port, l domain.Limits) *container.HostConfig {
 // Todo contêiner leva os labels cobogo.managed e cobogo.deployment, que
 // identificam o que o Cobogó criou para um deploy: uma retomada (DEC-26) remove
 // o que uma tentativa anterior deixou, sem tocar em recursos alheios (RF-18).
-func (r *Runtime) Run(ctx context.Context, imageTag, containerName string, containerPort int, env map[string]string, deploymentID string) (RunResult, error) {
+func (r *Runtime) Run(ctx context.Context, imageTag, containerName string, containerPort int, env map[string]string, deploymentID string, opts ...RunOption) (RunResult, error) {
+	var spec runSpec
+	for _, o := range opts {
+		o(&spec)
+	}
 	portSpec := nat.Port(strconv.Itoa(containerPort) + "/tcp")
 
 	envList := make([]string, 0, len(env))
@@ -334,12 +338,18 @@ func (r *Runtime) Run(ctx context.Context, imageTag, containerName string, conta
 		Image:        imageTag,
 		Env:          envList,
 		ExposedPorts: nat.PortSet{portSpec: struct{}{}},
-		Labels: map[string]string{
-			LabelManaged:    "true",
-			LabelDeployment: deploymentID,
-		},
+		Labels:       map[string]string{},
 	}
+	for k, v := range spec.labels {
+		cfg.Labels[k] = v
+	}
+	// Os labels do Cobogó vêm por último: nada os substitui (RF-18).
+	cfg.Labels[LabelManaged] = "true"
+	cfg.Labels[LabelDeployment] = deploymentID
 	hostCfg := appHostConfig(portSpec, r.limits)
+	if spec.network != "" {
+		hostCfg.NetworkMode = container.NetworkMode(spec.network)
+	}
 
 	created, err := r.cli.ContainerCreate(ctx, cfg, hostCfg, nil, nil, containerName)
 	if err != nil {

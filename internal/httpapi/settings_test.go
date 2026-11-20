@@ -102,6 +102,9 @@ func TestSettingsValidation(t *testing.T) {
 		"host with scheme": {"extra_git_hosts", `{"value":["https://git.exemplo.com"]}`},
 		"host as text":     {"extra_git_hosts", `{"value":"git.exemplo.com"}`},
 		"ip as host":       {"extra_git_hosts", `{"value":["10.0.0.1"]}`},
+		"domain scheme":    {"apps_domain", `{"value":"https://cobogo.dev"}`},
+		"domain as list":   {"apps_domain", `{"value":["cobogo.dev"]}`},
+		"scheme unknown":   {"apps_scheme", `{"value":"ftp"}`},
 		"not json":         {"app_memory_mb", `oi`},
 	} {
 		if rec := h.do("PUT", "/api/v1/settings/"+c.key, c.body); rec.Code != http.StatusBadRequest || decode[apiError](t, rec).Error.Code != "invalid_request" {
@@ -254,5 +257,28 @@ func TestSettingsAndLimitsAreForTheirOwnerOnly(t *testing.T) {
 		if rec := h.do(c.method, c.path, c.body); rec.Code != http.StatusUnauthorized {
 			t.Errorf("%s %s without a session: %d, want 401", c.method, c.path, rec.Code)
 		}
+	}
+}
+
+func TestAppsRoutingSettings(t *testing.T) {
+	h := newHarness(t)
+	h.login()
+	by := h.settingsByKey()
+	if by["apps_domain"].Value != "" || by["apps_domain"].Source != "default" || by["apps_scheme"].Value != "https" {
+		t.Errorf("defaults = %+v / %+v", by["apps_domain"], by["apps_scheme"])
+	}
+	if rec := h.do("PUT", "/api/v1/settings/apps_domain", `{"value":"Cobogo.DEV"}`); rec.Code != http.StatusOK || decode[settingView](t, rec).Value != "cobogo.dev" {
+		t.Fatalf("put domain: %d %s", rec.Code, rec.Body)
+	}
+	if rec := h.do("PUT", "/api/v1/settings/apps_scheme", `{"value":"http"}`); rec.Code != http.StatusOK {
+		t.Fatalf("put scheme: %d %s", rec.Code, rec.Body)
+	}
+	by = h.settingsByKey()
+	if by["apps_domain"].Value != "cobogo.dev" || by["apps_domain"].Source != "database" || by["apps_scheme"].Value != "http" {
+		t.Errorf("after put = %+v / %+v", by["apps_domain"], by["apps_scheme"])
+	}
+	// Um valor vazio desliga o roteamento e continua sendo do banco.
+	if rec := h.do("PUT", "/api/v1/settings/apps_domain", `{"value":""}`); rec.Code != http.StatusOK || decode[settingView](t, rec).Source != "database" {
+		t.Errorf("switching routing off: %d %s", rec.Code, rec.Body)
 	}
 }

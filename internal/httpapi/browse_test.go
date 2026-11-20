@@ -177,13 +177,13 @@ func TestDeploymentDetailIsASummaryWithoutEvents(t *testing.T) {
 		t.Errorf("deployment = %+v", got)
 	}
 
-	if _, err := o.CreateRelease(t.Context(), dep.ID, "img", "ctr", "active", "healthy", 41234); err != nil {
+	if _, err := o.CreateRelease(t.Context(), dep.ID, "img", "ctr", "active", "healthy", 41234, "https://app.cobogo.test/"); err != nil {
 		t.Fatal(err)
 	}
 	withRelease := decode[struct {
 		Release *domain.Release `json:"release"`
 	}](t, h.do("GET", "/api/v1/deployments/"+dep.ID.String(), ""))
-	if withRelease.Release == nil || withRelease.Release.HostPort != 41234 {
+	if withRelease.Release == nil || withRelease.Release.HostPort != 41234 || withRelease.Release.URL != "https://app.cobogo.test/" {
 		t.Errorf("release = %+v", withRelease.Release)
 	}
 }
@@ -368,5 +368,19 @@ func TestNewRoutesRequireASession(t *testing.T) {
 		if rec.Code != http.StatusUnauthorized || decode[apiError](t, rec).Error.Code != "unauthenticated" {
 			t.Errorf("%s %s without a session: %d %s", c.method, c.path, rec.Code, rec.Body)
 		}
+	}
+}
+
+func TestReservedSlugsCannotBeUsed(t *testing.T) {
+	h := newHarness(t)
+	h.login()
+	for _, slug := range []string{"www", "api", "admin", "cobogo", "painel", "traefik", "mail", "docs"} {
+		rec := h.do("POST", "/api/v1/projects", `{"slug":"`+slug+`","repository_url":"https://github.com/exemplo/repo"}`)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "reservado") {
+			t.Errorf("%s: %d %s, want 400 reserved", slug, rec.Code, rec.Body)
+		}
+	}
+	if rec := h.do("POST", "/api/v1/projects", `{"slug":"api-de-pagamentos","repository_url":"https://github.com/exemplo/repo"}`); rec.Code != http.StatusCreated {
+		t.Errorf("a name that merely contains a reserved word is fine: %d %s", rec.Code, rec.Body)
 	}
 }

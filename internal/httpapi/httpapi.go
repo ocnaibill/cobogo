@@ -208,6 +208,10 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request, use
 		writeError(w, http.StatusBadRequest, "slug inválido: use letras minúsculas, números e hífen")
 		return
 	}
+	if validate.ReservedSlug(req.Slug) {
+		writeError(w, http.StatusBadRequest, "slug reservado: escolha outro nome para o projeto")
+		return
+	}
 	hosts, err := s.settings.GitHosts(r.Context())
 	if err != nil {
 		s.log.Error("ler hosts de repositório", "erro", err)

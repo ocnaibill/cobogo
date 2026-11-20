@@ -245,3 +245,102 @@ func TestValidateLimits(t *testing.T) {
 		}
 	}
 }
+
+func TestAppsDomainAndSchemeValidation(t *testing.T) {
+	domainDef, _ := Lookup(AppsDomain)
+	schemeDef, _ := Lookup(AppsScheme)
+	for _, c := range []struct {
+		def  Def
+		raw  string
+		ok   bool
+		want string
+	}{
+		{domainDef, "cobogo.dev", true, "cobogo.dev"},
+		{domainDef, " Apps.Cobogo.DEV ", true, "apps.cobogo.dev"},
+		{domainDef, "localhost", true, "localhost"},
+		{domainDef, "", true, ""},
+		{domainDef, "https://cobogo.dev", false, ""},
+		{domainDef, "cobogo.dev:8080", true, "cobogo.dev:8080"},
+		{domainDef, "localhost:8088", true, "localhost:8088"},
+		{domainDef, "cobogo.dev:0", false, ""},
+		{domainDef, "cobogo.dev:65536", false, ""},
+		{domainDef, "cobogo.dev:80x", false, ""},
+		{domainDef, "cobogo.dev:080", false, ""},
+		{domainDef, "cobogo.dev:", false, ""},
+		{domainDef, ":8080", false, ""},
+		{domainDef, "10.0.0.1:80", false, ""},
+		{domainDef, "a.dev:1:2", false, ""},
+		{domainDef, "*.cobogo.dev", false, ""},
+		{domainDef, ".cobogo.dev", false, ""},
+		{domainDef, "cobogo.dev/", false, ""},
+		{domainDef, "10.0.0.1", false, ""},
+		{domainDef, "co bogo.dev", false, ""},
+		{domainDef, "cobogo.dev`) || Host(`x", false, ""},
+		{domainDef, "semponto", false, ""},
+		{schemeDef, "https", true, "https"},
+		{schemeDef, "HTTP", true, "http"},
+		{schemeDef, "ftp", false, ""},
+		{schemeDef, "", false, ""},
+	} {
+		got, err := c.def.Normalize(c.raw)
+		if (err == nil) != c.ok || got != c.want {
+			t.Errorf("%s %q = %q, %v; want ok=%v %q", c.def.Key, c.raw, got, err, c.ok, c.want)
+		}
+	}
+	if got, err := domainDef.FromJSON(json.RawMessage(`"cobogo.dev"`)); err != nil || got != "cobogo.dev" {
+		t.Errorf("FromJSON = %q, %v", got, err)
+	}
+	for _, raw := range []string{`5`, `["cobogo.dev"]`, `true`} {
+		if _, err := domainDef.FromJSON(json.RawMessage(raw)); err == nil {
+			t.Errorf("apps_domain must be a JSON string, accepted %s", raw)
+		}
+	}
+}
+
+func TestAppsRoutingPrecedenceAndURLs(t *testing.T) {
+	// Sem nada: roteamento desligado e esquema padrão https.
+	r, err := NewResolver(nil, Env{}).Apps(ctx)
+	if err != nil || r.Enabled() || r.Scheme != "https" {
+		t.Fatalf("defaults = %+v, %v", r, err)
+	}
+
+	// O ambiente liga.
+	r, _ = NewResolver(nil, Env{AppsDomain: "cobogo.dev", AppsScheme: "http"}).Apps(ctx)
+	if !r.Enabled() || r.Host("meu-app") != "meu-app.cobogo.dev" || r.URL("meu-app") != "http://meu-app.cobogo.dev/" {
+		t.Errorf("env = %+v", r)
+	}
+
+	// Porta opcional: aparece na URL, não no nome de host da regra.
+	r, _ = NewResolver(nil, Env{AppsDomain: "localhost:8088", AppsScheme: "http"}).Apps(ctx)
+	if r.Host("meu-app") != "meu-app.localhost" || r.URL("meu-app") != "http://meu-app.localhost:8088/" {
+		t.Errorf("with a port = host %q url %q", r.Host("meu-app"), r.URL("meu-app"))
+	}
+
+	// O banco sobrepõe o ambiente, inclusive com vazio (desliga).
+	db := fakeDB{values: map[string]string{AppsDomain: "outro.dev", AppsScheme: "https"}}
+	if r, _ = NewResolver(db, Env{AppsDomain: "cobogo.dev", AppsScheme: "http"}).Apps(ctx); r.Domain != "outro.dev" || r.Scheme != "https" {
+		t.Errorf("database over env = %+v", r)
+	}
+	off := fakeDB{values: map[string]string{AppsDomain: ""}}
+	if r, _ = NewResolver(off, Env{AppsDomain: "cobogo.dev"}).Apps(ctx); r.Enabled() {
+		t.Errorf("an empty stored domain must switch routing off even with an env default: %+v", r)
+	}
+
+	if _, err := NewResolver(fakeDB{err: errors.New("banco fora")}, Env{}).Apps(ctx); err == nil {
+		t.Error("Apps must fail when the settings cannot be read")
+	}
+
+	items, _ := NewResolver(db, Env{}).List(ctx)
+	for _, it := range items {
+		switch it.Key {
+		case AppsDomain:
+			if it.Value != "outro.dev" || it.Source != SourceDatabase || it.Default != "" || it.Kind != KindDomain {
+				t.Errorf("apps_domain item = %+v", it)
+			}
+		case AppsScheme:
+			if it.Value != "https" || !slices.Equal(it.Choices, []string{"https", "http"}) || it.Default != "https" {
+				t.Errorf("apps_scheme item = %+v", it)
+			}
+		}
+	}
+}

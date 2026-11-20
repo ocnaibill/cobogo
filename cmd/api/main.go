@@ -109,7 +109,7 @@ func main() {
 		Store: st, Log: log,
 		PublicURL: cfg.PublicURL, CookieInsecure: cfg.CookieInsecure,
 		TrustedProxies: cfg.TrustedProxies,
-		Settings:       settings.NewResolver(st, settings.Env{Limits: cfg.Limits, GitHosts: cfg.ExtraGitHosts}),
+		Settings:       settings.NewResolver(st, settings.Env{Limits: cfg.Limits, GitHosts: cfg.ExtraGitHosts, AppsDomain: cfg.AppsDomain, AppsScheme: cfg.AppsScheme}),
 		SetupToken:     setupToken,
 		Hasher:         hasher,
 		Limiter:        auth.NewLoginLimiter(),
@@ -120,6 +120,7 @@ func main() {
 	}
 
 	go cleanSessions(ctx, st, log)
+	serveRouting(ctx, st, cfg, log)
 
 	// Timeouts contra conexões lentas (DEC-27 item 14).
 	srv := &http.Server{
@@ -226,4 +227,41 @@ func readPassword() (string, error) {
 		return "", errors.New("não consegui ler a senha da entrada padrão")
 	}
 	return strings.TrimRight(line, "\r\n"), nil
+}
+
+// serveRouting sobe o endpoint de rotas do Traefik em um listener interno
+// próprio (DEC-31 item 8). Sem token configurado, o roteamento por hostname
+// fica desligado e nada é aberto.
+func serveRouting(ctx context.Context, st *store.Store, cfg config.Config, log *slog.Logger) {
+	if cfg.RouterToken == "" {
+		log.Info("COBOGO_ROUTER_TOKEN ausente: o endpoint de rotas do Traefik não sobe (roteamento por hostname desligado)")
+		return
+	}
+	handler, err := httpapi.NewRoutingHandler(st, cfg.RouterToken, log)
+	if err != nil {
+		log.Error("montar o endpoint de rotas", "erro", err)
+		os.Exit(1)
+	}
+	srv := &http.Server{
+		Addr:              cfg.RouterAddr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    8 << 10,
+	}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+	go func() {
+		log.Info("endpoint de rotas do Traefik no ar (só na rede de controle; não o publique)", "addr", cfg.RouterAddr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("endpoint de rotas encerrou", "erro", err)
+			os.Exit(1)
+		}
+	}()
 }

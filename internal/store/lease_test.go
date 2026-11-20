@@ -81,7 +81,11 @@ func TestStaleOwnerCannotWriteAnything(t *testing.T) {
 			return err
 		},
 		"create release": func() error {
-			_, err := stale.CreateRelease(ctx, dep.ID, "img", "ctr", "active", "healthy", 1)
+			_, err := stale.CreateRelease(ctx, dep.ID, "img", "ctr", "active", "healthy", 1, "")
+			return err
+		},
+		"promote release": func() error {
+			_, err := stale.PromoteRelease(ctx, dep.ID, store.ReleaseSpec{ImageID: "img", ContainerID: "ctr", Health: "healthy", HostPort: 1})
 			return err
 		},
 		"renew":   func() error { return stale.Renew(ctx, time.Hour) },

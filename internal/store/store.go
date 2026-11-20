@@ -427,9 +427,9 @@ func (s *Store) ListEvents(ctx context.Context, deploymentID uuid.UUID) ([]domai
 func (s *Store) GetReleaseByDeployment(ctx context.Context, deploymentID uuid.UUID) (domain.Release, error) {
 	var r domain.Release
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, deployment_id, image_id, container_id, operational_state, health, host_port, created_at
+		SELECT id, deployment_id, image_id, container_id, operational_state, health, host_port, url, created_at
 		FROM releases WHERE deployment_id = $1 ORDER BY created_at DESC LIMIT 1`, deploymentID,
-	).Scan(&r.ID, &r.DeploymentID, &r.ImageID, &r.ContainerID, &r.OperationalState, &r.Health, &r.HostPort, &r.CreatedAt)
+	).Scan(&r.ID, &r.DeploymentID, &r.ImageID, &r.ContainerID, &r.OperationalState, &r.Health, &r.HostPort, &r.URL, &r.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Release{}, ErrNotFound
 	}
@@ -437,4 +437,29 @@ func (s *Store) GetReleaseByDeployment(ctx context.Context, deploymentID uuid.UU
 		return domain.Release{}, fmt.Errorf("store: buscar release: %w", err)
 	}
 	return r, nil
+}
+
+// ListRoutes devolve a tabela de rotas do Traefik: para cada projeto, a sua
+// release ativa que tem rota (DEC-31 item 9). Só lê o banco.
+func (s *Store) ListRoutes(ctx context.Context) ([]domain.Route, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT DISTINCT ON (d.project_id) p.slug, r.route_host, r.route_target
+		FROM releases r
+		JOIN deployments d ON d.id = r.deployment_id
+		JOIN projects p ON p.id = d.project_id
+		WHERE r.operational_state = 'active' AND r.route_host <> '' AND r.route_target <> ''
+		ORDER BY d.project_id, r.created_at DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("store: listar rotas: %w", err)
+	}
+	defer rows.Close()
+	var routes []domain.Route
+	for rows.Next() {
+		var rt domain.Route
+		if err := rows.Scan(&rt.Slug, &rt.Host, &rt.Target); err != nil {
+			return nil, fmt.Errorf("store: ler rota: %w", err)
+		}
+		routes = append(routes, rt)
+	}
+	return routes, rows.Err()
 }

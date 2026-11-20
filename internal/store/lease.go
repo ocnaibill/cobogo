@@ -198,17 +198,68 @@ func (o *Owned) AppendEvent(ctx context.Context, deploymentID uuid.UUID, stage, 
 }
 
 // CreateRelease registra a release de um deploy bem-sucedido.
-func (o *Owned) CreateRelease(ctx context.Context, deploymentID uuid.UUID, imageID, containerID, operationalState, health string, hostPort int) (domain.Release, error) {
+func (o *Owned) CreateRelease(ctx context.Context, deploymentID uuid.UUID, imageID, containerID, operationalState, health string, hostPort int, url string) (domain.Release, error) {
 	r := domain.Release{
 		ID: uuid.New(), DeploymentID: deploymentID, ImageID: imageID, ContainerID: containerID,
-		OperationalState: operationalState, Health: health, HostPort: hostPort, CreatedAt: time.Now().UTC(),
+		OperationalState: operationalState, Health: health, HostPort: hostPort, URL: url, CreatedAt: time.Now().UTC(),
 	}
 	err := o.withLease(ctx, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
-			INSERT INTO releases (id, deployment_id, image_id, container_id, operational_state, health, host_port, created_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-			r.ID, r.DeploymentID, r.ImageID, r.ContainerID, r.OperationalState, r.Health, r.HostPort, r.CreatedAt)
+			INSERT INTO releases (id, deployment_id, image_id, container_id, operational_state, health, host_port, url, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+			r.ID, r.DeploymentID, r.ImageID, r.ContainerID, r.OperationalState, r.Health, r.HostPort, r.URL, r.CreatedAt)
 		if err != nil {
+			return fmt.Errorf("store: criar release: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return domain.Release{}, err
+	}
+	return r, nil
+}
+
+// ReleaseSpec descreve a release que um deploy bem-sucedido promove.
+type ReleaseSpec struct {
+	ImageID, ContainerID, Health string
+	HostPort                     int
+	// URL, RouteHost e RouteTarget só existem quando há roteamento (DEC-31).
+	URL, RouteHost, RouteTarget string
+}
+
+// PromoteRelease conclui um deploy com sucesso e promove a sua release, numa
+// única transação protegida pela posse (DEC-31 item 10): o deploy vai a
+// SUCCEEDED, a release nova fica ativa e as anteriores do projeto passam a
+// superseded. Ou tudo vale, ou nada: nunca há SUCCEEDED sem release, nem uma
+// release ativa de um deploy que não terminou.
+func (o *Owned) PromoteRelease(ctx context.Context, deploymentID uuid.UUID, spec ReleaseSpec) (domain.Release, error) {
+	r := domain.Release{
+		ID: uuid.New(), DeploymentID: deploymentID, ImageID: spec.ImageID, ContainerID: spec.ContainerID,
+		OperationalState: "active", Health: spec.Health, HostPort: spec.HostPort,
+		URL: spec.URL, RouteHost: spec.RouteHost, RouteTarget: spec.RouteTarget, CreatedAt: time.Now().UTC(),
+	}
+	err := o.withLease(ctx, func(tx pgx.Tx) error {
+		var from domain.DeploymentState
+		var projectID uuid.UUID
+		if err := tx.QueryRow(ctx, `SELECT state, project_id FROM deployments WHERE id = $1 FOR UPDATE`, deploymentID).Scan(&from, &projectID); err != nil {
+			return fmt.Errorf("store: ler deployment: %w", err)
+		}
+		if !domain.CanTransition(from, domain.DeploymentSucceeded) {
+			return fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, from, domain.DeploymentSucceeded)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE deployments SET state = $1, failure_reason = NULL, updated_at = now() WHERE id = $2`, domain.DeploymentSucceeded, deploymentID); err != nil {
+			return fmt.Errorf("store: concluir deployment: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE releases SET operational_state = 'superseded'
+			WHERE operational_state = 'active'
+			  AND deployment_id IN (SELECT id FROM deployments WHERE project_id = $1)`, projectID); err != nil {
+			return fmt.Errorf("store: substituir releases anteriores: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO releases (id, deployment_id, image_id, container_id, operational_state, health, host_port, url, route_host, route_target, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+			r.ID, r.DeploymentID, r.ImageID, r.ContainerID, r.OperationalState, r.Health, r.HostPort, r.URL, r.RouteHost, r.RouteTarget, r.CreatedAt); err != nil {
 			return fmt.Errorf("store: criar release: %w", err)
 		}
 		return nil

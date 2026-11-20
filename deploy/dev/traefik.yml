@@ -1,0 +1,42 @@
+# Traefik para DESENVOLVIMENTO (DEC-31 item 14). Roteia as aplicações do Cobogó
+# por hostname, lendo a tabela de rotas do endpoint interno da API (provider
+# HTTP). Não acessa o Docker: não monta o socket.
+#
+# Uso (COBOGO_ROUTER_TOKEN é o mesmo da API, com 24 caracteres ou mais):
+#   export COBOGO_ROUTER_TOKEN="$(openssl rand -hex 32)"
+#   docker network create cobogo-ingress 2>/dev/null || true
+#   docker compose -f deploy/dev/traefik.yml up -d
+#   # suba a API e o worker com a mesma COBOGO_ROUTER_TOKEN
+#
+# Depois, no Cobogó, defina apps_domain = localhost:8088 e apps_scheme = http
+# (PUT /api/v1/settings/...). A aplicação do projeto "meu-app" responde em
+# http://meu-app.localhost:8088/ (os navegadores resolvem *.localhost sozinhos).
+name: cobogo-dev-traefik
+
+services:
+  traefik:
+    image: traefik:v3.6
+    container_name: cobogo-dev-traefik
+    restart: unless-stopped
+    command:
+      - --providers.http.endpoint=http://host.docker.internal:8081/traefik/config
+      - --providers.http.pollInterval=2s
+      - --providers.http.pollTimeout=5s
+      - --providers.http.headers.Authorization=Bearer ${COBOGO_ROUTER_TOKEN:?defina COBOGO_ROUTER_TOKEN}
+      - --entrypoints.web.address=:80
+      - --api.dashboard=false
+      - --log.level=INFO
+      - --accesslog=false
+    ports:
+      # Só no loopback: o roteamento de desenvolvimento não é exposto à rede local.
+      - "127.0.0.1:8088:80"
+    extra_hosts:
+      # Docker Desktop já resolve este nome; no Linux ele aponta para o host.
+      - "host.docker.internal:host-gateway"
+    networks:
+      - cobogo-ingress
+
+networks:
+  cobogo-ingress:
+    external: true
+    name: cobogo-ingress

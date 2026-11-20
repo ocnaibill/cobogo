@@ -32,6 +32,13 @@ type Config struct {
 	// ExtraGitHosts acrescenta hosts à lista de repositórios permitidos; vale
 	// como padrão inicial, o banco o sobrepõe (DEC-30).
 	ExtraGitHosts []string
+	// RouterAddr e RouterToken configuram o endpoint de rotas do Traefik, em um
+	// listener interno próprio (DEC-31 item 8). Sem token o listener não sobe.
+	RouterAddr  string
+	RouterToken string
+	// AppsDomain e AppsScheme são o padrão inicial do roteamento das
+	// aplicações (DEC-31); o banco os sobrepõe.
+	AppsDomain, AppsScheme string
 	// CookieInsecure troca o cookie de sessão por um sem Secure nem prefixo
 	// __Host-, só para desenvolvimento por HTTP.
 	CookieInsecure bool
@@ -45,6 +52,8 @@ func Load() (Config, error) {
 	c := Config{
 		DatabaseURL:    os.Getenv("DATABASE_URL"),
 		APIAddr:        envOr("API_ADDR", ":8080"),
+		RouterAddr:     envOr("COBOGO_ROUTER_ADDR", ":8081"),
+		RouterToken:    strings.TrimSpace(os.Getenv("COBOGO_ROUTER_TOKEN")),
 		PublicURL:      strings.TrimRight(strings.TrimSpace(os.Getenv("COBOGO_PUBLIC_URL")), "/"),
 		CookieInsecure: os.Getenv("COBOGO_COOKIE_INSECURE") == "1",
 	}
@@ -68,11 +77,22 @@ func Load() (Config, error) {
 		}
 		c.TrustedProxies = append(c.TrustedProxies, prefix)
 	}
+	if c.RouterToken != "" && len(c.RouterToken) < 24 {
+		return Config{}, fmt.Errorf("config: COBOGO_ROUTER_TOKEN precisa ter ao menos 24 caracteres (gere com `openssl rand -hex 32`)")
+	}
 	limits, hosts, err := loadEnvDefaults()
 	if err != nil {
 		return Config{}, err
 	}
 	c.Limits, c.ExtraGitHosts = limits, hosts
+	for key, dst := range map[string]*string{settings.AppsDomain: &c.AppsDomain, settings.AppsScheme: &c.AppsScheme} {
+		def, _ := settings.Lookup(key)
+		v, err := settings.ParseEnv(key, os.Getenv(def.EnvVar))
+		if err != nil {
+			return Config{}, fmt.Errorf("config: %w", err)
+		}
+		*dst = v
+	}
 	return c, nil
 }
 

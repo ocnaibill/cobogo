@@ -162,7 +162,13 @@ type Release struct {
 	OperationalState string    `json:"operational_state"`
 	Health           string    `json:"health"`
 	HostPort         int       `json:"host_port"`
-	CreatedAt        time.Time `json:"created_at"`
+	// URL é o endereço público com que a release foi roteada (DEC-31); vazio
+	// quando não havia domínio configurado.
+	URL string `json:"url,omitempty"`
+	// RouteHost e RouteTarget são o que o Traefik lê (DEC-31); não saem pela API.
+	RouteHost   string    `json:"-"`
+	RouteTarget string    `json:"-"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // EnvSource diz de onde veio o valor de uma variável.
@@ -209,4 +215,12 @@ type AuditEvent struct {
 	Target  string
 	IP      string
 	Outcome string
+}
+
+// Route é uma linha da tabela de rotas do Traefik: o host público de um
+// projeto e o destino interno da sua release ativa (DEC-31).
+type Route struct {
+	Slug   string
+	Host   string
+	Target string
 }
