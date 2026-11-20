@@ -1,0 +1,153 @@
+# Instalação do Cobogó na VM
+
+Roteiro para colocar o Cobogó (D0) numa VM Linux do homelab, acessível pelo túnel da Cloudflare, sem abrir nenhuma porta de entrada. As decisões por trás estão nas [DEC-31](../docs/decisoes/DEC-31-roteamento-por-hostname-redes-e-url-da-release.md), [DEC-32](../docs/decisoes/DEC-32-implantacao-da-d0-em-conteineres.md) e [DEC-33](../docs/decisoes/DEC-33-roles-do-postgresql-e-migrations-em-passo-proprio.md).
+
+```
+Internet ── Cloudflare ── túnel ── cloudflared ── Traefik ─┬─ API (painel, rede cobogo-routing)
+                                                           └─ aplicações (rede cobogo-ingress)
+                          API ── PostgreSQL        worker ── proxy do Docker ── socket
+```
+
+Nada é publicado no host. Só o proxy do Docker monta o socket; a API e o Traefik não têm acesso ao Docker.
+
+## 1. Pré-requisitos
+
+- **VM Linux** com Docker Engine e o plugin do Compose v2 (`docker compose version`). O desenvolvimento foi testado com Docker 29. A VM do projeto tem 16 GiB de RAM; 8 GiB é o mínimo razoável para o Cobogó mais algumas aplicações (os limites padrão são 1 GiB por aplicação e 4 GiB por build, DEC-30).
+- **Saída para a internet**: o worker clona repositórios (GitHub, GitLab, etc.) e o Docker baixa imagens do Docker Hub. Nenhuma porta de **entrada** é necessária.
+- **Relógio sincronizado** (`timedatectl status` com `System clock synchronized: yes`): sessões e cookies dependem dele.
+- `git`.
+- Uma conta Cloudflare com as zonas `ocnaibill.dev` (o painel) e `cobogo.dev` (as aplicações).
+
+## 2. Cloudflare
+
+Faça isto antes de subir a pilha: o `cloudflared` precisa do token.
+
+1. **Zona `cobogo.dev`** ativa na sua conta (nameservers apontados para a Cloudflare).
+2. Em **Zero Trust → Networks → Tunnels → Create a tunnel** (tipo *Cloudflared*), dê o nome `cobogo`. **Guarde o token** (`TUNNEL_TOKEN`): ele dá acesso ao túnel, nunca o versione.
+3. Em **Public hostnames** do túnel, adicione dois, ambos com serviço `HTTP` e URL `traefik:8000`:
+
+   | Hostname público | Serviço |
+   | --- | --- |
+   | `cobogo.ocnaibill.dev` | `http://traefik:8000` |
+   | `*.cobogo.dev` | `http://traefik:8000` |
+
+4. **Confira os registros DNS.** O painel da Cloudflare cria, por conta própria, um `CNAME` proxied para `<UUID>.cfargotunnel.com` para cada hostname publicado. Em **DNS → Records** de cada zona, veja se existem `cobogo` (em `ocnaibill.dev`) e `*` (em `cobogo.dev`). Se o curinga `*` não apareceu, crie-o à mão: `CNAME`, nome `*`, destino `<UUID>.cfargotunnel.com`, **Proxied**. (A documentação não deixa claro se o curinga é criado sozinho; confira.)
+5. **Certificado.** `cobogo.ocnaibill.dev` e `*.cobogo.dev` têm **um** nível de subdomínio, então o certificado gratuito da Cloudflare cobre os dois. Um hostname de dois níveis (por exemplo `app.painel.cobogo.dev`) **não** seria coberto sem o Advanced Certificate Manager; por isso o Cobogó gera `<slug>.cobogo.dev` e o painel não fica sob `cobogo.dev`.
+
+## 3. A VM
+
+```bash
+# Docker e o plugin do Compose: siga https://docs.docker.com/engine/install/ para a sua distribuição.
+sudo mkdir -p /opt/cobogo && sudo chown "$USER" /opt/cobogo
+git clone https://github.com/ocnaibill/cobogo.git /opt/cobogo
+cd /opt/cobogo
+```
+
+Quem está no grupo `docker` equivale a root na VM. Use um usuário só para operar o Cobogó.
+
+## 4. Configuração
+
+```bash
+cp deploy/.env.example deploy/.env
+chmod 600 deploy/.env
+```
+
+Preencha o `deploy/.env` (cada linha tem o comando que gera o valor):
+
+| Variável | Valor |
+| --- | --- |
+| `POSTGRES_PASSWORD`, `COBOGO_OWNER_PASSWORD`, `COBOGO_API_PASSWORD`, `COBOGO_WORKER_PASSWORD` | `openssl rand -hex 24` (uma diferente para cada) |
+| `COBOGO_SECRET_KEY` | `openssl rand -base64 32` |
+| `COBOGO_ROUTER_TOKEN` | `openssl rand -hex 32` |
+| `COBOGO_PUBLIC_URL` | `https://cobogo.ocnaibill.dev` |
+| `COBOGO_APPS_DOMAIN` / `COBOGO_APPS_SCHEME` | `cobogo.dev` / `https` |
+| `TUNNEL_TOKEN` | o token do passo 2 |
+
+**Guarde uma cópia do `COBOGO_SECRET_KEY` fora da VM** (gerenciador de senhas). Sem ela, os valores cifrados das variáveis dos projetos não voltam, mesmo com o banco restaurado.
+
+## 5. Subir
+
+```bash
+docker compose --env-file deploy/.env --profile tunnel -f deploy/compose.yml up -d --build
+docker compose --env-file deploy/.env --profile tunnel -f deploy/compose.yml ps
+```
+
+O primeiro `up` constrói as imagens (alguns minutos), cria os roles do banco e roda o serviço `migrate`, que sai com código 0 e fica como `Exited (0)`; a API e o worker só sobem depois dele. Saudável quando `api` mostra `(healthy)` e `cloudflared`, `traefik`, `worker` e `docker-proxy` estão `Up`.
+
+## 6. Primeiro acesso
+
+Sem administrador cadastrado, a API imprime um token de configuração, uma vez, no log:
+
+```bash
+docker compose --env-file deploy/.env -f deploy/compose.yml logs --no-log-prefix api | grep -A3 'token de configuração'
+```
+
+Ainda não há frontend: use a API (o guia é a seção "Como testar (fluxo de deploy)" do [README](../README.md)). O cabeçalho `Origin` precisa ser a URL pública:
+
+```bash
+export API=https://cobogo.ocnaibill.dev
+H=(-H "Origin: $API" -H 'content-type: application/json' -b /tmp/cobogo.cookies -c /tmp/cobogo.cookies)
+curl "${H[@]}" -X POST $API/api/v1/setup -d '{"token": "<token do log>", "login": "admin", "password": "<uma senha longa>"}'
+```
+
+Reinicie a API (`docker compose ... restart api`) se perder o token: um novo é impresso enquanto não houver administrador.
+
+## 7. Verificação
+
+```bash
+curl -s https://cobogo.ocnaibill.dev/healthz                       # {"status":"ok"}
+curl -s https://cobogo.ocnaibill.dev/api/v1/setup/status           # {"needs_setup":false} depois do passo 6
+ss -tlnp | grep -vE 'sshd|systemd|127\.0\.0\.(53|54)'               # nada do Cobogó escutando no host
+docker ps --format '{{.Names}} {{.Ports}}' | grep -- '->'          # nenhuma linha: nada do Cobogó está publicado no host
+```
+
+Crie um projeto e faça um deploy (README, passos 1 a 5). Ao concluir, a `release` traz a `url` (`https://<slug>.cobogo.dev/`) e ela responde pelo túnel.
+
+## 8. Operação
+
+- **Logs:** `docker compose --env-file deploy/.env -f deploy/compose.yml logs -f api worker traefik`.
+- **Atualizar:** `git pull` e repita o `up -d --build` do passo 5. O `migrate` roda sozinho antes da API e do worker; se faltar uma migration, eles recusam subir com uma mensagem clara.
+- **Reiniciar a VM:** a pilha do Cobogó volta sozinha (`restart: unless-stopped`), mas **as aplicações publicadas não**: elas não têm política de reinício (DEC-29/DEC-32), então as rotas apontam para contêineres parados até um novo deploy de cada projeto. Evite reiniciar a VM perto de uma demonstração.
+- **Parar:** `docker compose ... down` (mantém o banco). Com `-v` apaga o volume do PostgreSQL.
+- **Backup do banco:** `docker compose --env-file deploy/.env -f deploy/compose.yml exec -T postgres pg_dump -U cobogo_owner -d cobogo_core | gzip > cobogo-$(date +%F).sql.gz` (a conexão local dentro do contêiner não pede senha). Guarde fora da VM, junto da `COBOGO_SECRET_KEY`.
+- **Restaurar** (por exemplo numa VM nova): com o `.env` e a `COBOGO_SECRET_KEY` de antes, suba **só** o `postgres` (`up -d postgres`, que cria os roles e um banco vazio), restaure com `gunzip -c backup.sql.gz | docker compose ... exec -T postgres psql -U cobogo_owner -d cobogo_core` e então suba o resto (`up -d --build`); o `migrate` encontra o esquema já completo. O dump leva os privilégios junto.
+- **Trocar uma senha do banco:** edite o `.env` e rode `docker compose ... exec postgres sh /docker-entrypoint-initdb.d/10-roles.sh` (idempotente), depois `up -d` para recriar os contêineres com a senha nova.
+- **Trocar o token das rotas:** edite `COBOGO_ROUTER_TOKEN` e rode `up -d` (recria a API e o Traefik).
+- **Esquecer a senha do administrador:** `docker compose --env-file deploy/.env -f deploy/compose.yml run --rm --no-deps api admin reset-password --login admin` (pede a nova senha no terminal; encerra as sessões do administrador). Rode em contêiner próprio (`run`), não com `exec`: o `exec` divide a memória do contêiner da API, e o argon2id usa 64 MiB por verificação.
+
+## 9. Segurança
+
+- Não abra portas de entrada na VM nem no roteador: o acesso é só pelo túnel. Um firewall que bloqueia tudo de entrada exceto SSH (restrito à sua rede) não afeta o Cobogó.
+- `deploy/.env` com permissão `600`, fora do Git (o `.gitignore` já o cobre). Não cole tokens em issues, logs nem mensagens.
+- O proxy do Docker é o ponto mais sensível: quem controla o worker controla o daemon (DEC-19). O desenho garante que a API, o Traefik e as aplicações não chegam a ele.
+- Aplicações de terceiros rodam na mesma VM: o nível de confiança da D0 é o do operador e do corpus escolhido (DEC-20), não o de usuários desconhecidos.
+
+## 10. Quando algo falha
+
+| Sintoma | Causa provável | O que fazer |
+| --- | --- | --- |
+| `cobogo.ocnaibill.dev` responde erro 1033 ou `Bad gateway` da Cloudflare | `cloudflared` fora do ar ou token errado | `logs cloudflared`; recrie o token no painel e atualize o `.env` |
+| Certificado inválido em `app.algo.cobogo.dev` | Hostname com dois níveis | O Cobogó só gera `<slug>.cobogo.dev`; confira `COBOGO_APPS_DOMAIN` |
+| `*.cobogo.dev` não resolve | Faltou o registro `*` na zona `cobogo.dev` | Passo 2.4 |
+| Painel responde `404` do Traefik | O Traefik não leu a tabela de rotas | `logs traefik`: procure `cannot fetch configuration`; confira `COBOGO_ROUTER_TOKEN` igual nos dois e que a API está `healthy` |
+| `migrate` termina com erro `tabelas fora da matriz` | Uma migration nova sem decisão de privilégio | É um erro de versão do código: avise quem mantém o Cobogó (DEC-33 item 4) |
+| API ou worker reiniciando com `banco atrasado` | O `migrate` não rodou | `up -d` de novo; veja `logs migrate` |
+| Deploy falha em `STARTING` com erro de rede | O worker não alcança o proxy do Docker | `logs docker-proxy`; confira que o worker está na rede `cobogo-control` |
+| Aplicação some depois de reiniciar a VM | Aplicações não reiniciam sozinhas | Novo deploy do projeto |
+
+## Ambiente atual do projeto (homelab)
+
+- **Proxmox** `192.168.1.30`, VM **107 `cobogo`**: Debian 13, 4 vCPUs, 6 GiB de RAM, 40 GiB, IP fixo `192.168.1.27`, usuário `cobogo` (SSH só por chave, `sudo` sem senha), `ufw` negando toda entrada exceto SSH da LAN. Docker Engine 29 e Compose pelo repositório oficial da Docker; o código em `/opt/cobogo`.
+- Criada com a imagem `debian-13-genericcloud-amd64.qcow2` e cloud-init (usuário, chave e IP). A pilha sobe sem o perfil `tunnel` até o token da Cloudflare estar no `deploy/.env`.
+- **Colocar o token do túnel sem expô-lo.** O script `deploy/set-tunnel-token.sh` pede o token em um prompt que não ecoa, confere o formato (recusa texto que não pareça um token e, se você colar o comando inteiro da Cloudflare, usa só o último campo) e grava no `deploy/.env`, imprimindo apenas o tamanho:
+
+```bash
+ssh -t cobogo@192.168.1.27 /opt/cobogo/deploy/set-tunnel-token.sh
+ssh cobogo@192.168.1.27 'cd /opt/cobogo && docker compose --env-file deploy/.env --profile tunnel -f deploy/compose.yml up -d cloudflared'
+```
+
+  Não escreva o token dentro de um comando (ele ficaria no histórico do shell e na lista de processos).
+
+## Limites desta versão
+
+Não há frontend (a operação é pela API), backup automático nem coleta de métricas; a atualização de uma aplicação mantém a release anterior no ar e sem rota até a parte 5c a retirar; reiniciar a VM não religa as aplicações. Está tudo registrado nas DEC-29 a DEC-33.

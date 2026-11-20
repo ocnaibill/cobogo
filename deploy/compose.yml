@@ -116,7 +116,11 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-    mem_limit: 256m
+    # O argon2id usa 64 MiB por verificação de senha (até 2 ao mesmo tempo, DEC-27);
+    # 256 MiB bastou até um login concorrente com o `admin reset-password` ser
+    # morto pelo kernel (verificado na VM). O comando de administração deve rodar
+    # em contêiner próprio (`docker compose run --rm api admin ...`).
+    mem_limit: 512m
     networks: [control, routing]
 
   worker:
