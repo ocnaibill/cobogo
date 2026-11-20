@@ -92,3 +92,13 @@ describe("estados", () => {
     expect(stateTone("NEEDS_INPUT")).toBe("warning");
   });
 });
+
+describe("profileLabel", () => {
+  it("names the profiles regardless of case", async () => {
+    const { profileLabel } = await import("./deploy");
+    expect(profileLabel("P-NODE")).toBe("Node.js");
+    expect(profileLabel("P-BUN")).toBe("Bun");
+    expect(profileLabel("P-PY")).toBe("PY");
+    expect(profileLabel(undefined)).toBeUndefined();
+  });
+});

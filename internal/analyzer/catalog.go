@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -32,6 +33,10 @@ type RuleMeta struct {
 type RuleInput struct {
 	Evidence []domain.Evidence
 	Coverage domain.Coverage
+	// Overrides são os overrides válidos do deploy. Uma regra só os lê quando
+	// a resposta do usuário muda o que ela faz (a escolha do gerenciador muda
+	// o perfil; DEC-36); o valor final de cada campo continua sendo do resolve.
+	Overrides map[string]string
 }
 
 func (in RuleInput) Of(kind string) []domain.Evidence {
@@ -89,7 +94,8 @@ type Catalog struct {
 	Fields     []FieldSpec
 }
 
-const nodeCatalogVersion = "p-node-0.4"
+// O catálogo JavaScript cobre os perfis P-NODE (npm) e P-BUN (DEC-36).
+const nodeCatalogVersion = "p-js-0.5"
 
 func NodeCatalog() Catalog {
 	return Catalog{
@@ -99,18 +105,37 @@ func NodeCatalog() Catalog {
 			{ID: extractorEnvFiles, Extract: extractEnvFiles},
 			{ID: extractorSource, Extract: extractSource},
 		},
-		Rules: []Rule{ruleHEU01(), ruleHEU02(), ruleHEU05(), ruleHEU09(), ruleHEU10()},
+		Rules: []Rule{ruleHEU01(), ruleHEU02(), ruleHEU05(), ruleHEU09(), ruleHEU10(), ruleHEU11()},
 		Fields: []FieldSpec{
 			{Name: domain.FieldProfile, Required: true},
-			{Name: domain.FieldPackageManager, Required: true},
+			{Name: domain.FieldPackageManager, Required: true, Overridable: true, Validate: validatePackageManager},
 			{Name: domain.FieldStartCommand, Required: true, Overridable: true, Validate: validateCommand},
 			{Name: domain.FieldBuildCommand, Overridable: true, Validate: validateCommand},
 			{Name: domain.FieldExecutionMode, Overridable: true, Validate: validateExecutionMode},
 			{Name: domain.FieldNodeVersion, Overridable: true, Validate: validateNodeVersion},
+			{Name: domain.FieldBunVersion, Overridable: true, Validate: validateBunVersion},
 			{Name: domain.FieldPort, Required: true, Overridable: true, Validate: validatePort},
 			{Name: domain.FieldHealthPath, Overridable: true, Validate: validateHealthPath},
 		},
 	}
+}
+
+func validatePackageManager(v string) error {
+	if v != domain.ManagerNPM && v != domain.ManagerBun {
+		return fmt.Errorf("%q não é um gerenciador suportado (npm ou bun)", v)
+	}
+	return nil
+}
+
+var bunVersionPattern = regexp.MustCompile(`^1(\.\d{1,3}){0,2}$`)
+
+// validateBunVersion aceita uma tag da imagem oven/bun da major 1: "1",
+// "1.2" ou "1.2.3" (DEC-36).
+func validateBunVersion(v string) error {
+	if !bunVersionPattern.MatchString(v) {
+		return fmt.Errorf("%q não é uma versão do Bun 1 (use 1, 1.Y ou 1.Y.Z)", v)
+	}
+	return nil
 }
 
 func validatePort(v string) error {

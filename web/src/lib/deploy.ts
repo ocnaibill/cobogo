@@ -128,7 +128,9 @@ export function eventToLines(e: DeploymentEvent): LogLine[] {
     case "completed": {
       const extra =
         e.stage === "fetching" && p.commit_sha ? ` (commit ${str(p.commit_sha).slice(0, 7)})` :
-        e.stage === "generating" && p.start_command ? ` (Node ${str(p.node_version)}, porta ${str(p.port)}, \`${str(p.start_command)}\`)` :
+        e.stage === "generating" && p.start_command
+          ? ` (${p.bun_version ? `Bun ${str(p.bun_version)}` : `Node ${str(p.node_version)}`}, porta ${str(p.port)}, \`${str(p.start_command)}\`)`
+          :
         e.stage === "starting" && Array.isArray(p.env) ? ` (${p.env.length} variável(is) entregue(s))` : "";
       return [{ ...base, kind: "step", text: `✓ ${stage}: concluído${extra}` }];
     }
@@ -184,6 +186,7 @@ export const FIELD_LABEL: Record<string, string> = {
   build_command: "Comando de build",
   execution_mode: "Modo de execução",
   node_version: "Versão do Node",
+  bun_version: "Versão do Bun",
   health_path: "Caminho da verificação",
   port: "Porta",
 };
@@ -191,8 +194,8 @@ export const FIELD_LABEL: Record<string, string> = {
 /** Nome legível de um perfil do analisador (`p-node` → `Node.js`). */
 export function profileLabel(id?: string): string | undefined {
   if (!id) return undefined;
-  const known: Record<string, string> = { "p-node": "Node.js" };
-  return known[id] ?? id.replace(/^p-/, "");
+  const known: Record<string, string> = { "p-node": "Node.js", "p-bun": "Bun" };
+  return known[id.toLowerCase()] ?? id.replace(/^p-/i, "");
 }
 
 export const ORIGIN_LABEL: Record<string, string> = {

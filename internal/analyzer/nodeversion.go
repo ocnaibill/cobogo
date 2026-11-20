@@ -53,6 +53,11 @@ func ruleHEU10() Rule {
 			Fields:   []string{domain.FieldNodeVersion},
 		},
 		Apply: func(in RuleInput) RuleOutput {
+			// A versão do Node só vale para o perfil P-NODE; o P-BUN tem a
+			// HEU-11 (DEC-36).
+			if manager, _ := jsManager(in); manager != domain.ManagerNPM {
+				return RuleOutput{}
+			}
 			out := RuleOutput{Proposals: []domain.Proposal{
 				{Field: domain.FieldNodeVersion, Value: domain.DefaultNodeVersion, Origin: domain.OriginDefault},
 			}}

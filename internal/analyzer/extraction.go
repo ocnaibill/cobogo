@@ -22,6 +22,13 @@ const (
 	kindNvmrc           = "runtime.nvmrc"
 	kindEnvDeclared     = "env.declared"
 	kindEnvReference    = "env.reference"
+	// kindEntryField: campo module ou main do package.json (DEC-36).
+	kindEntryField = "manifest.entry"
+	// kindPackageManagerField: campo packageManager ("bun@1.1.38").
+	kindPackageManagerField = "manifest.package_manager"
+	// kindBunDefaultPort: servidor do Bun sem porta, que lê PORT sozinho
+	// (Bun.serve sem port, ou export default do arquivo de entrada; DEC-36).
+	kindBunDefaultPort = "bun.default_port"
 )
 
 const maxFileSize = 1 << 20 // 1 MiB; arquivos maiores viram lacuna de cobertura
@@ -112,4 +119,17 @@ func readSmallFile(fsys fs.FS, name string) ([]byte, fileState, error) {
 		return nil, fileMissing, err
 	}
 	return data, fileOK, nil
+}
+
+// of devolve as evidências já emitidas de um tipo, em ordem estável. Serve a
+// extratores que dependem de outros (o de código usa os scripts do manifesto).
+func (x *Extraction) of(kind string) []domain.Evidence {
+	var out []domain.Evidence
+	for _, e := range x.evidence {
+		if e.Kind == kind {
+			out = append(out, e)
+		}
+	}
+	slices.SortFunc(out, func(a, b domain.Evidence) int { return cmp.Compare(a.ID, b.ID) })
+	return out
 }

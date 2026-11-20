@@ -38,7 +38,7 @@ func analyzeWith(cat Catalog, fsys fs.FS, in Input) (domain.AnalysisResult, erro
 		}
 	}
 	evidence, coverage := x.finish()
-	ruleInput := RuleInput{Evidence: evidence, Coverage: coverage}
+	ruleInput := RuleInput{Evidence: evidence, Coverage: coverage, Overrides: overrides}
 
 	res := domain.AnalysisResult{
 		CatalogVersion:  cat.Version,
@@ -230,12 +230,22 @@ func resolve(cat Catalog, proposals []domain.Proposal, pending, conflicts []doma
 	}
 
 	if fillRequired {
-		open := map[string]bool{}
+		// Um campo obrigatório sem valor não ganha pendência genérica quando a
+		// regra dona dele já perguntou outra coisa: o perfil sai da escolha
+		// do gerenciador, por exemplo (DEC-36).
+		open, asked := map[string]bool{}, map[string]bool{}
 		for _, f := range slices.Concat(kept, conflicts) {
 			open[f.Field] = true
+			asked[f.Rule] = true
+		}
+		owner := map[string]string{}
+		for _, r := range cat.Rules {
+			for _, field := range r.Meta.Fields {
+				owner[field] = r.Meta.ID
+			}
 		}
 		for _, spec := range cat.Fields {
-			if _, ok := fields[spec.Name]; !ok && spec.Required && !open[spec.Name] {
+			if _, ok := fields[spec.Name]; !ok && spec.Required && !open[spec.Name] && !asked[owner[spec.Name]] {
 				kept = append(kept, domain.Finding{Field: spec.Name, Message: "nenhuma regra resolveu o campo obrigatório " + spec.Name})
 			}
 		}

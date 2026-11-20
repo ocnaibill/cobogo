@@ -27,17 +27,26 @@ var testDirs = map[string]bool{
 }
 
 var (
-	envAssignment  = regexp.MustCompile(`^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=`)
-	envDotAccess   = regexp.MustCompile(`process\.env\.([A-Za-z_][A-Za-z0-9_]*)`)
-	envDestructure = regexp.MustCompile(`\{([^{}]*)\}\s*=\s*process\.env\b`)
-	envDynamic     = regexp.MustCompile(`process\.env\[`)
-	identifier     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	envAssignment = regexp.MustCompile(`^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=`)
+	// process.env e Bun.env (DEC-36), com ou sem encadeamento opcional.
+	envDotAccess   = regexp.MustCompile(`(?:process|Bun)\.env(?:\?\.|\.)([A-Za-z_][A-Za-z0-9_]*)`)
+	envLiteralKey  = regexp.MustCompile("(?:process|Bun)\\.env(?:\\?\\.)?\\[\\s*[\"'`]([A-Za-z_][A-Za-z0-9_]*)[\"'`]\\s*\\]")
+	envDestructure = regexp.MustCompile(`\{([^{}]*)\}\s*=\s*(?:process|Bun)\.env\b`)
+	// Acesso por chave que não é um nome literal: só executando para saber.
+	envDynamic = regexp.MustCompile("(?:process|Bun)\\.env(?:\\?\\.)?\\[\\s*[^\"'`\\s]")
+
+	// Servidor do Bun sem porta explícita (DEC-36 item 5).
+	bunServeCall  = regexp.MustCompile(`\bBun\.serve\s*\(`)
+	defaultExport = regexp.MustCompile(`(?m)^\s*export\s+default\b`)
+	portWord      = regexp.MustCompile(`\bport\b`)
+	identifier    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
 
 // extractSource procura referências a variáveis de ambiente no código. Acesso
 // dinâmico (`process.env[x]`) não pode ser resolvido sem executar o código e
 // vira lacuna de cobertura.
 func extractSource(fsys fs.FS, x *Extraction) error {
+	entries := entryFiles(x)
 	return fs.WalkDir(fsys, ".", func(name string, d fs.DirEntry, err error) error {
 		if err != nil {
 			x.gap(name, "unreadable")
@@ -82,6 +91,14 @@ func extractSource(fsys fs.FS, x *Extraction) error {
 		for varName, line := range envReferences(data) {
 			x.emit(extractorSource, domain.Evidence{Kind: kindEnvReference, Name: varName, Source: name, Line: line, Scope: scope})
 		}
+		if scope == domain.ScopeRuntime && !portWord.Match(data) {
+			if loc := bunServeCall.FindIndex(data); loc != nil {
+				x.emit(extractorSource, domain.Evidence{Kind: kindBunDefaultPort, Name: "Bun.serve", Source: name, Line: lineAt(data, loc[0]), Scope: scope})
+			}
+			if loc := defaultExport.FindIndex(data); loc != nil && entries[name] {
+				x.emit(extractorSource, domain.Evidence{Kind: kindBunDefaultPort, Name: "export default", Source: name, Line: lineAt(data, loc[0]), Scope: scope})
+			}
+		}
 		return nil
 	})
 }
@@ -96,8 +113,10 @@ func envReferences(data []byte) map[string]int {
 			refs[name] = line
 		}
 	}
-	for _, m := range envDotAccess.FindAllSubmatchIndex(data, -1) {
-		add(string(data[m[2]:m[3]]), m[0])
+	for _, re := range []*regexp.Regexp{envDotAccess, envLiteralKey} {
+		for _, m := range re.FindAllSubmatchIndex(data, -1) {
+			add(string(data[m[2]:m[3]]), m[0])
+		}
 	}
 	for _, m := range envDestructure.FindAllSubmatchIndex(data, -1) {
 		for _, name := range destructuredNames(string(data[m[2]:m[3]])) {
@@ -143,4 +162,53 @@ func classifyScope(name string) domain.Scope {
 		return domain.ScopeBuild
 	}
 	return domain.ScopeRuntime
+}
+
+func lineAt(data []byte, offset int) int { return 1 + bytes.Count(data[:offset], []byte{'\n'}) }
+
+// entryFiles devolve os arquivos que o Bun executaria: o do scripts.start
+// (`bun [run] [opções] arquivo`) e os campos module e main. O export default
+// de um deles é servido pelo próprio Bun (DEC-36 item 5).
+func entryFiles(x *Extraction) map[string]bool {
+	entries := map[string]bool{}
+	addPath := func(p string) {
+		p = path.Clean(strings.TrimPrefix(p, "./"))
+		if sourceExtensions[strings.ToLower(path.Ext(p))] && !strings.HasPrefix(p, "../") {
+			entries[p] = true
+		}
+	}
+	for _, e := range x.of(kindEntryField) {
+		addPath(e.Value)
+	}
+	for _, e := range x.of(kindScript) {
+		if e.Name == "start" {
+			if file := bunEntry(e.Value); file != "" {
+				addPath(file)
+			}
+		}
+	}
+	return entries
+}
+
+// bunEntry acha o arquivo de `bun [run] [--opções] arquivo`, ignorando
+// atribuições de ambiente na frente (NODE_ENV=production bun run x.ts).
+func bunEntry(command string) string {
+	tokens := strings.Fields(command)
+	for len(tokens) > 0 && strings.Contains(tokens[0], "=") {
+		tokens = tokens[1:]
+	}
+	if len(tokens) < 2 || tokens[0] != "bun" {
+		return ""
+	}
+	for _, t := range tokens[1:] {
+		switch {
+		case t == "run" || strings.HasPrefix(t, "-"):
+			continue
+		case sourceExtensions[strings.ToLower(path.Ext(t))]:
+			return t
+		default:
+			return ""
+		}
+	}
+	return ""
 }

@@ -33,7 +33,7 @@ A ideia central: **cobertura ampla cedo mata o prazo.** Cada perfil, banco ou in
 
 ### MVP do TCC — depois da D0
 
-- Perfis Node.js/npm, Python/pip e frontend estático.
+- Perfis Node.js/npm, Bun (DEC-36, trazido para o MVP em 20/11/2026), Python/pip e frontend estático.
 - Variáveis de ambiente com descoberta guiada, overrides explícitos, histórico de planos.
 - PostgreSQL auxiliar opcional por projeto, com rede e volume próprios.
 - Diagnóstico de falhas, preservar release anterior até validar a candidata, recuperação após reinício do worker.

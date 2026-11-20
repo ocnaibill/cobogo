@@ -1,5 +1,5 @@
 // Package planner resolve o plano final e gera o Dockerfile por perfil
-// (§11.3 do mestre). Em M1 só existe o template do perfil P-NODE.
+// (§11.3 do mestre): P-NODE (DEC-25) e P-BUN (DEC-36).
 package planner
 
 import (
@@ -22,8 +22,23 @@ import (
 func nodeBuildImage(version string) string   { return "node:" + version }
 func nodeRuntimeImage(version string) string { return "node:" + version + "-slim" }
 
+// dropPrepare diz se o scripts.prepare do projeto só instala ganchos do Git:
+// ele roda no install, mas no contêiner não há repositório e a ferramenta
+// costuma ser dependência de desenvolvimento, então o build o remove do
+// package.json da imagem (DEC-36). A análise avisa disso.
+func dropPrepare(res domain.AnalysisResult) bool {
+	for _, e := range res.Evidences {
+		if e.Kind == "npm.script" && e.Name == "prepare" {
+			return domain.GitHookOnly(e.Value)
+		}
+	}
+	return false
+}
+
 // NodePlanInput são os campos já resolvidos pelo analisador para P-NODE.
 type NodePlanInput struct {
+	// DropPrepare remove o scripts.prepare antes do install (dropPrepare).
+	DropPrepare  bool
 	StartCommand string
 	BuildCommand string
 	// Mode é domain.ModeProduction (padrão) ou domain.ModeDevelopment.
@@ -43,7 +58,8 @@ func FromAnalysis(res domain.AnalysisResult) (domain.Plan, error) {
 	if res.Outcome != domain.AnalysisReady {
 		return domain.Plan{}, fmt.Errorf("planner: análise %s não pode gerar plano", res.Outcome)
 	}
-	if profile := res.Fields[domain.FieldProfile].Value; profile != "P-NODE" {
+	profile := res.Fields[domain.FieldProfile].Value
+	if profile != domain.ProfileNode && profile != domain.ProfileBun {
 		return domain.Plan{}, fmt.Errorf("planner: perfil %q sem template", profile)
 	}
 	portField := res.Fields[domain.FieldPort]
@@ -58,6 +74,23 @@ func FromAnalysis(res domain.AnalysisResult) (domain.Plan, error) {
 	if mode != domain.ModeProduction && mode != domain.ModeDevelopment {
 		return domain.Plan{}, fmt.Errorf("planner: modo de execução %q desconhecido", mode)
 	}
+	if profile == domain.ProfileBun {
+		bunVersion := res.Fields[domain.FieldBunVersion].Value
+		if bunVersion == "" {
+			bunVersion = domain.DefaultBunVersion
+		}
+		return BuildBunPlan(BunPlanInput{
+			DropPrepare:  dropPrepare(res),
+			StartCommand: res.Fields[domain.FieldStartCommand].Value,
+			BuildCommand: res.Fields[domain.FieldBuildCommand].Value,
+			Mode:         mode,
+			BunVersion:   bunVersion,
+			Lockfile:     bunLockfile(res),
+			HealthPath:   res.Fields[domain.FieldHealthPath].Value,
+			Port:         port,
+			PortOrigin:   string(portField.Origin),
+		}), nil
+	}
 	version := res.Fields[domain.FieldNodeVersion].Value
 	if version == "" {
 		version = domain.DefaultNodeVersion
@@ -66,6 +99,7 @@ func FromAnalysis(res domain.AnalysisResult) (domain.Plan, error) {
 		return domain.Plan{}, fmt.Errorf("planner: versão de Node %q não suportada", version)
 	}
 	return BuildNodePlan(NodePlanInput{
+		DropPrepare:  dropPrepare(res),
 		StartCommand: res.Fields[domain.FieldStartCommand].Value,
 		BuildCommand: res.Fields[domain.FieldBuildCommand].Value,
 		Mode:         mode,
@@ -128,6 +162,9 @@ func renderNodeDockerfile(in NodePlanInput, install string) string {
 	fmt.Fprintf(&b, "FROM %s AS build\n", nodeBuildImage(in.NodeVersion))
 	b.WriteString(common)
 	b.WriteString("COPY package.json package-lock.json ./\n")
+	if in.DropPrepare {
+		b.WriteString("RUN npm pkg delete scripts.prepare\n")
+	}
 	// Com NODE_ENV=production o npm omite devDependencies por padrão, então
 	// a instalação para build ou desenvolvimento as inclui explicitamente.
 	fmt.Fprintf(&b, "RUN %s\n", install)
@@ -139,6 +176,9 @@ func renderNodeDockerfile(in NodePlanInput, install string) string {
 
 	fmt.Fprintf(&b, "\nFROM %s\n", nodeRuntimeImage(in.NodeVersion))
 	b.WriteString(common)
+	// O WORKDIR cria /app como root; o app precisa poder criar arquivos no
+	// próprio diretório (um SQLite em data/, por exemplo; DEC-36).
+	b.WriteString("RUN chown node:node /app\n")
 	b.WriteString("COPY --from=build --chown=node:node /app /app\n")
 	b.WriteString("USER node\n")
 	fmt.Fprintf(&b, "EXPOSE %d\n", in.Port)
@@ -158,11 +198,11 @@ func jsonString(s string) string {
 
 // CatalogImages lista as imagens que o catálogo pode usar (todas as versões
 // suportadas, de build e de execução), para o worker baixá-las antes do
-// primeiro build.
+// primeiro build. Uma versão do Bun fixada pelo projeto é baixada no build.
 func CatalogImages() []string {
 	var images []string
 	for _, v := range domain.SupportedNodeVersions {
 		images = append(images, nodeBuildImage(v), nodeRuntimeImage(v))
 	}
-	return images
+	return append(images, bunBuildImage(domain.DefaultBunVersion), bunRuntimeImage(domain.DefaultBunVersion))
 }

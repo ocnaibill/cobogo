@@ -742,7 +742,9 @@ function PlanView({ deploymentId, hasAnalysis }: { deploymentId: string; hasAnal
   if (plan.isError) return <ErrorBox error={plan.error} />;
   const p = plan.data!;
   const rows: [string, string][] = [
-    ["Perfil", p.profile],
+    ["Perfil", `${profileLabel(p.profile) ?? p.profile} (${p.profile})`],
+    ["Gerenciador", p.package_manager],
+    ["Versão", p.bun_version ? `Bun ${p.bun_version}` : `Node ${p.node_version ?? "—"}`],
     ["Imagem de build", p.build_image],
     ["Imagem de execução", p.runtime],
     ["Instalação", p.install_command],
@@ -792,7 +794,7 @@ export function AnalysisDetail({ analysis }: { analysis: Analysis }) {
         <div className="stack">
           <div className="profile-head">
             <span className="profile-mark" aria-hidden="true">
-              {profile === "Node.js" ? "JS" : (profile ?? "?").slice(0, 2).toUpperCase()}
+              {profile === "Node.js" ? "JS" : profile === "Bun" ? "BUN" : (profile ?? "?").slice(0, 2).toUpperCase()}
             </span>
             <div className="stack-sm">
               <h2>{profile ?? "Perfil não decidido"}</h2>

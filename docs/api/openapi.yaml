@@ -1152,7 +1152,9 @@ components:
       description: |
         Valores explícitos por campo do plano. Campos aceitos: `start_command`,
         `build_command`, `port`, `execution_mode` (`production` ou
-        `development`), `node_version` (`22`, `24` ou `26`) e `health_path`.
+        `development`), `node_version` (`22`, `24` ou `26`), `health_path`,
+        `package_manager` (`npm` ou `bun`, quando o repositório tem os dois
+        lockfiles) e `bun_version` (`1`, `1.Y` ou `1.Y.Z`; DEC-36).
         Valores de variáveis de ambiente nunca passam por aqui.
       additionalProperties:
         type: string
@@ -1278,19 +1280,24 @@ components:
               description: Um deploy em execução continua com o valor antigo até um novo deploy.
     Plan:
       type: object
-      required: [profile, runtime, build_image, node_version, package_manager, install_command, start_command, execution_mode, port, port_origin, health_path, dockerfile]
+      required: [profile, runtime, build_image, package_manager, install_command, start_command, execution_mode, port, port_origin, health_path, dockerfile]
       properties:
         profile:
           type: string
-          example: P-NODE
+          enum: [P-NODE, P-BUN]
         runtime:
           type: string
         build_image:
           type: string
         node_version:
           type: string
+          description: Só no perfil P-NODE.
+        bun_version:
+          type: string
+          description: Tag da imagem oven/bun; só no perfil P-BUN (DEC-36).
         package_manager:
           type: string
+          enum: [npm, bun]
         install_command:
           type: string
         build_command:

@@ -15,6 +15,8 @@ var lockfiles = []struct{ file, manager string }{
 	{"package-lock.json", "npm"},
 	{"yarn.lock", "yarn"},
 	{"pnpm-lock.yaml", "pnpm"},
+	{"bun.lock", "bun"},
+	{"bun.lockb", "bun"},
 }
 
 // extractManifest lê package.json e detecta os lockfiles. Emite todos os
@@ -47,9 +49,12 @@ func extractManifest(fsys fs.FS, x *Extraction) error {
 	x.filesRead++
 
 	var pkg struct {
-		Scripts    map[string]string `json:"scripts"`
-		Workspaces json.RawMessage   `json:"workspaces"`
-		Engines    map[string]any    `json:"engines"`
+		Scripts        map[string]string `json:"scripts"`
+		Workspaces     json.RawMessage   `json:"workspaces"`
+		Engines        map[string]any    `json:"engines"`
+		Module         any               `json:"module"`
+		Main           any               `json:"main"`
+		PackageManager any               `json:"packageManager"`
 	}
 	if err := json.Unmarshal(data, &pkg); err != nil {
 		invalid(err.Error())
@@ -75,8 +80,23 @@ func extractManifest(fsys fs.FS, x *Extraction) error {
 		x.emit(extractorManifest, domain.Evidence{Kind: kindScript, Name: name, Value: cmd, Source: "package.json#scripts." + name, Scope: scope})
 	}
 
-	if node, ok := pkg.Engines["node"].(string); ok && strings.TrimSpace(node) != "" {
-		x.emit(extractorManifest, domain.Evidence{Kind: kindEngines, Name: "node", Value: strings.TrimSpace(node), Source: "package.json#engines.node", Scope: domain.ScopeBuild})
+	for _, runtime := range []string{"node", "bun"} {
+		if v, ok := pkg.Engines[runtime].(string); ok && strings.TrimSpace(v) != "" {
+			x.emit(extractorManifest, domain.Evidence{Kind: kindEngines, Name: runtime, Value: strings.TrimSpace(v), Source: "package.json#engines." + runtime, Scope: domain.ScopeBuild})
+		}
+	}
+	// module e main apontam o arquivo de entrada (o bun init cria só module);
+	// viram opção de comando, nunca comando escolhido sozinho (DEC-36).
+	for _, field := range []struct {
+		name  string
+		value any
+	}{{"module", pkg.Module}, {"main", pkg.Main}} {
+		if v, ok := field.value.(string); ok && strings.TrimSpace(v) != "" {
+			x.emit(extractorManifest, domain.Evidence{Kind: kindEntryField, Name: field.name, Value: strings.TrimSpace(v), Source: "package.json#" + field.name, Scope: domain.ScopeRuntime})
+		}
+	}
+	if v, ok := pkg.PackageManager.(string); ok && strings.TrimSpace(v) != "" {
+		x.emit(extractorManifest, domain.Evidence{Kind: kindPackageManagerField, Name: "packageManager", Value: strings.TrimSpace(v), Source: "package.json#packageManager", Scope: domain.ScopeBuild})
 	}
 	return extractNvmrc(fsys, x)
 }

@@ -23,11 +23,45 @@ func finding(field, message string, evidence ...domain.Evidence) domain.Finding 
 	return domain.Finding{Field: field, Message: message, EvidenceIDs: evidenceIDs(evidence)}
 }
 
-// HEU-01: package.json e lockfile npm coerentes definem o perfil P-NODE.
+// jsManager diz qual gerenciador vale para o projeto: npm (package-lock.json)
+// ou bun (bun.lock, ou bun.lockb), com o lockfile que o comprova. Com os dois
+// lockfiles, vale a resposta do usuário (override de package_manager); sem
+// ela, devolve "" e a HEU-01 pergunta (DEC-36).
+func jsManager(in RuleInput) (string, domain.Evidence) {
+	locks := map[string]domain.Evidence{}
+	for _, e := range in.Of(kindLockfile) {
+		// bun.lock (texto) prevalece sobre bun.lockb quando os dois existem.
+		if prev, ok := locks[e.Name]; ok && prev.Source == "bun.lock" {
+			continue
+		}
+		locks[e.Name] = e
+	}
+	npm, hasNPM := locks[domain.ManagerNPM]
+	bun, hasBun := locks[domain.ManagerBun]
+	switch {
+	case hasNPM && hasBun:
+		switch in.Overrides[domain.FieldPackageManager] {
+		case domain.ManagerNPM:
+			return domain.ManagerNPM, npm
+		case domain.ManagerBun:
+			return domain.ManagerBun, bun
+		}
+		return "", domain.Evidence{}
+	case hasNPM:
+		return domain.ManagerNPM, npm
+	case hasBun:
+		return domain.ManagerBun, bun
+	}
+	return "", domain.Evidence{}
+}
+
+// HEU-01: package.json e um lockfile coerente definem o perfil: npm → P-NODE,
+// Bun → P-BUN (DEC-36). npm e Bun juntos viram pergunta; yarn, pnpm e
+// workspaces seguem fora.
 func ruleHEU01() Rule {
 	return Rule{
 		Meta: RuleMeta{
-			ID: "HEU-01", Version: ruleVersion, State: RuleProposed,
+			ID: "HEU-01", Version: "0.3", State: RuleProposed,
 			Fields: []string{domain.FieldProfile, domain.FieldPackageManager},
 		},
 		Apply: func(in RuleInput) RuleOutput {
@@ -42,41 +76,55 @@ func ruleHEU01() Rule {
 				return out
 			}
 			if len(manifest) == 0 {
-				unsupported("package.json ausente no diretório raiz; perfil P-NODE não se aplica")
+				unsupported("package.json ausente no diretório raiz; os perfis JavaScript (P-NODE, P-BUN) não se aplicam")
 				return out
 			}
 
-			locks := map[string]domain.Evidence{}
-			for _, e := range in.Of(kindLockfile) {
-				locks[e.Name] = e
-			}
-			npm, hasNPM := locks["npm"]
 			var others []domain.Evidence
 			var otherNames []string
 			for _, manager := range []string{"yarn", "pnpm"} {
-				if e, ok := locks[manager]; ok {
-					others = append(others, e)
+				if e := in.Named(kindLockfile, manager); len(e) > 0 {
+					others = append(others, e[0])
 					otherNames = append(otherNames, manager)
 				}
 			}
+			npm := in.Named(kindLockfile, domain.ManagerNPM)
+			bun := in.Named(kindLockfile, domain.ManagerBun)
 			switch {
-			case !hasNPM && len(others) > 0:
-				unsupported(fmt.Sprintf("package-lock.json ausente e lockfile de outro gerenciador encontrado (%s); o perfil P-NODE exige npm", strings.Join(otherNames, ", ")), others...)
-			case !hasNPM:
-				unsupported("package-lock.json ausente; sem lockfile npm coerente não é possível fixar dependências", manifest...)
+			case len(others) > 0 && len(npm)+len(bun) == 0:
+				unsupported(fmt.Sprintf("lockfile de gerenciador não suportado (%s); o Cobogó aceita npm (package-lock.json) e Bun (bun.lock)", strings.Join(otherNames, ", ")), others...)
 			case len(others) > 0:
-				unsupported(fmt.Sprintf("múltiplos lockfiles (npm e %s); o perfil P-NODE exige um único gerenciador", strings.Join(otherNames, ", ")), append([]domain.Evidence{npm}, others...)...)
+				unsupported(fmt.Sprintf("múltiplos lockfiles, incluindo de gerenciador não suportado (%s); deixe só o do npm ou o do Bun", strings.Join(otherNames, ", ")), others...)
+			case len(npm)+len(bun) == 0:
+				unsupported("nenhum lockfile (package-lock.json ou bun.lock); sem ele não é possível fixar as dependências", manifest...)
 			}
 			if ws := in.Of(kindWorkspaces); len(ws) > 0 {
-				unsupported("workspaces declarado; monorepos ficam fora do perfil P-NODE do D0", ws...)
+				unsupported("workspaces declarado; monorepos ficam fora dos perfis JavaScript", ws...)
 			}
 			if len(out.Unsupported) > 0 {
 				return out
 			}
 
+			manager, lock := jsManager(in)
+			if manager == "" {
+				f := finding(domain.FieldPackageManager,
+					"HEU-01: o repositório tem lockfile do npm e do Bun; escolha qual gerenciador usar (o outro lockfile é ignorado)",
+					npm[0], bun[0])
+				f.Options = []domain.Option{
+					{Value: domain.ManagerNPM, Kind: domain.OptionProduction, Note: "usa package-lock.json e o runtime Node"},
+					{Value: domain.ManagerBun, Kind: domain.OptionProduction, Note: "usa " + bun[0].Source + " e o runtime Bun"},
+				}
+				out.Pending = append(out.Pending, f)
+				return out
+			}
+
+			profile := domain.ProfileNode
+			if manager == domain.ManagerBun {
+				profile = domain.ProfileBun
+			}
 			out.Proposals = []domain.Proposal{
-				{Field: domain.FieldProfile, Value: "P-NODE", Origin: domain.OriginInference, EvidenceIDs: evidenceIDs(append(slices.Clone(manifest), npm))},
-				{Field: domain.FieldPackageManager, Value: "npm", Origin: domain.OriginInference, EvidenceIDs: evidenceIDs([]domain.Evidence{npm})},
+				{Field: domain.FieldProfile, Value: profile, Origin: domain.OriginInference, EvidenceIDs: evidenceIDs(append(slices.Clone(manifest), lock))},
+				{Field: domain.FieldPackageManager, Value: manager, Origin: domain.OriginInference, EvidenceIDs: evidenceIDs([]domain.Evidence{lock})},
 			}
 			return out
 		},
@@ -99,7 +147,11 @@ func ruleHEU02() Rule {
 				{Field: domain.FieldExecutionMode, Value: domain.ModeProduction, Origin: domain.OriginDefault},
 			}}
 			start := in.Named(kindScript, "start")
-			options, omitted := startOptions(in.Of(kindScript))
+			manager, _ := jsManager(in)
+			options, omitted := startOptions(in.Of(kindScript), manager)
+			if manager == domain.ManagerBun {
+				options = append(options, entryOptions(in.Of(kindEntryField), options)...)
+			}
 			switch {
 			case len(start) == 0:
 				f := finding(domain.FieldStartCommand,
@@ -116,6 +168,11 @@ func ruleHEU02() Rule {
 				out.Proposals = append(out.Proposals, domain.Proposal{
 					Field: domain.FieldStartCommand, Value: start[0].Value, Origin: domain.OriginDeclaration, EvidenceIDs: evidenceIDs(start),
 				})
+			}
+			if prepare := in.Named(kindScript, "prepare"); len(prepare) > 0 && domain.GitHookOnly(prepare[0].Value) {
+				out.Warnings = append(out.Warnings, finding("", fmt.Sprintf(
+					"HEU-02: scripts.prepare (%q) só instala ganchos do Git; no contêiner não há repositório Git e a ferramenta costuma ser dependência de desenvolvimento, então o Cobogó o remove do package.json da imagem antes de instalar",
+					prepare[0].Value), prepare[0]))
 			}
 			if build := in.Named(kindScript, "build"); len(build) > 0 {
 				out.Proposals = append(out.Proposals, domain.Proposal{
@@ -148,6 +205,11 @@ func ruleHEU05() Rule {
 				if e.Scope == domain.ScopeRuntime {
 					runtime = append(runtime, e)
 				}
+			}
+			// No Bun, Bun.serve sem port e o export default do arquivo de
+			// entrada leem PORT sozinhos: contrato do runtime (DEC-36 item 5).
+			if manager, _ := jsManager(in); manager == domain.ManagerBun {
+				runtime = append(runtime, in.Of(kindBunDefaultPort)...)
 			}
 
 			if len(runtime) > 0 {
@@ -306,7 +368,11 @@ var developmentName = []string{"dev", "watch"}
 // sem o usuário escolher. O que não é oferecido volta em omitted, com o nome do
 // script: scripts de teste/lint/build, ganchos pre/post de outro script e
 // nomes que não são seguros para um `sh -c`.
-func startOptions(scripts []domain.Evidence) (options []domain.Option, omitted []string) {
+func startOptions(scripts []domain.Evidence, manager string) (options []domain.Option, omitted []string) {
+	runner := "npm run "
+	if manager == domain.ManagerBun {
+		runner = "bun run "
+	}
 	names := map[string]bool{}
 	for _, e := range scripts {
 		names[e.Name] = true
@@ -320,7 +386,7 @@ func startOptions(scripts []domain.Evidence) (options []domain.Option, omitted [
 			omitted = append(omitted, name)
 			continue
 		}
-		opt := domain.Option{Value: "npm run " + name, Kind: domain.OptionProduction}
+		opt := domain.Option{Value: runner + name, Kind: domain.OptionProduction}
 		switch tool := devServerTool(e.Value); {
 		case tool != "":
 			opt.Kind = domain.OptionDevelopment
@@ -374,7 +440,7 @@ func devServerTool(command string) string {
 	separators := strings.NewReplacer("&&", "\n", "||", "\n", ";", "\n", "|", "\n")
 	for _, segment := range strings.Split(separators.Replace(command), "\n") {
 		tokens := strings.Fields(segment)
-		for len(tokens) > 0 && (strings.Contains(tokens[0], "=") || tokens[0] == "npx") {
+		for len(tokens) > 0 && (strings.Contains(tokens[0], "=") || tokens[0] == "npx" || tokens[0] == "bunx") {
 			tokens = tokens[1:]
 		}
 		if len(tokens) == 0 {
@@ -382,6 +448,9 @@ func devServerTool(command string) string {
 		}
 		if slices.Contains(tokens, "--watch") {
 			return "--watch"
+		}
+		if slices.Contains(tokens, "--hot") {
+			return "--hot"
 		}
 		first, second := tokens[0], ""
 		if len(tokens) > 1 {
@@ -413,4 +482,25 @@ func devServerTool(command string) string {
 		}
 	}
 	return ""
+}
+
+// entryOptions oferece `bun run <arquivo>` para os campos module e main do
+// package.json, que o bun init usa como entrada (DEC-36 item 4). É opção, não
+// escolha: a HEU-02 não assume entrypoint.
+func entryOptions(entries []domain.Evidence, existing []domain.Option) []domain.Option {
+	var out []domain.Option
+	seen := map[string]bool{}
+	for _, o := range existing {
+		seen[o.Value] = true
+	}
+	slices.SortFunc(entries, func(a, b domain.Evidence) int { return strings.Compare(a.Name, b.Name) })
+	for _, e := range entries {
+		value := "bun run " + e.Value
+		if seen[value] || strings.ContainsAny(e.Value, " \t'\"$`;&|") {
+			continue
+		}
+		seen[value] = true
+		out = append(out, domain.Option{Value: value, Kind: domain.OptionProduction, Note: "arquivo do campo " + e.Name + " do package.json"})
+	}
+	return out
 }

@@ -577,7 +577,9 @@ export interface components {
         /**
          * @description Valores explícitos por campo do plano. Campos aceitos: `start_command`,
          *     `build_command`, `port`, `execution_mode` (`production` ou
-         *     `development`), `node_version` (`22`, `24` ou `26`) e `health_path`.
+         *     `development`), `node_version` (`22`, `24` ou `26`), `health_path`,
+         *     `package_manager` (`npm` ou `bun`, quando o repositório tem os dois
+         *     lockfiles) e `bun_version` (`1`, `1.Y` ou `1.Y.Z`; DEC-36).
          *     Valores de variáveis de ambiente nunca passam por aqui.
          */
         Overrides: {
@@ -664,12 +666,16 @@ export interface components {
             redeploy_required: boolean;
         };
         Plan: {
-            /** @example P-NODE */
-            profile: string;
+            /** @enum {string} */
+            profile: "P-NODE" | "P-BUN";
             runtime: string;
             build_image: string;
-            node_version: string;
-            package_manager: string;
+            /** @description Só no perfil P-NODE. */
+            node_version?: string;
+            /** @description Tag da imagem oven/bun; só no perfil P-BUN (DEC-36). */
+            bun_version?: string;
+            /** @enum {string} */
+            package_manager: "npm" | "bun";
             install_command: string;
             build_command?: string;
             start_command: string;

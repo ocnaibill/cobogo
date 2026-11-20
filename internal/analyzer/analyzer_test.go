@@ -72,7 +72,7 @@ func fixtures() []fixture {
 	unsupportedByHEU01 := want{
 		outcome:     domain.AnalysisUnsupported,
 		unsupported: []string{"HEU-01"},
-		skipped:     []string{"HEU-02", "HEU-05", "HEU-09", "HEU-10"},
+		skipped:     []string{"HEU-02", "HEU-05", "HEU-09", "HEU-10", "HEU-11"},
 	}
 	portRepo := nodeRepo(startIndex, map[string]string{
 		"index.js": "const port = process.env.PORT || 3000;",
@@ -806,7 +806,7 @@ func TestStartOptions(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			options, omitted := startOptions(tt.scripts)
+			options, omitted := startOptions(tt.scripts, domain.ManagerNPM)
 			assertStrings(t, "options", optionValues(options), tt.wantOptions)
 			assertStrings(t, "omitted", omitted, tt.wantOmitted)
 		})
@@ -821,7 +821,7 @@ func TestStartOptionKinds(t *testing.T) {
 		"devish", "node index.js", // sem nome nem ferramenta: produção
 		"develop", "node index.js", // o nome sozinho só sugere
 		"start", "vite",
-	))
+	), domain.ManagerNPM)
 	byValue := map[string]domain.Option{}
 	for _, o := range options {
 		byValue[o.Value] = o
@@ -851,7 +851,7 @@ func TestStartOptionKinds(t *testing.T) {
 
 	// Só o nome "dev", sem ferramenta reconhecida: desenvolvimento, mas o
 	// motivo diz que é só o nome.
-	options, _ = startOptions(scriptEvidence("dev", "node index.js"))
+	options, _ = startOptions(scriptEvidence("dev", "node index.js"), domain.ManagerNPM)
 	if len(options) != 1 || options[0].Kind != domain.OptionDevelopment || !strings.Contains(options[0].Note, "nome") {
 		t.Errorf("name-only classification must be flagged as such, got %+v", options)
 	}

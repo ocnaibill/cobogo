@@ -11,7 +11,8 @@ const (
 	AnalysisUnsupported AnalysisOutcome = "UNSUPPORTED"
 )
 
-// Campos do plano que o analisador resolve para o perfil P-NODE.
+// Campos do plano que o analisador resolve para os perfis JavaScript
+// (P-NODE e P-BUN).
 const (
 	FieldProfile        = "profile"
 	FieldPackageManager = "package_manager"
@@ -19,9 +20,22 @@ const (
 	FieldBuildCommand   = "build_command"
 	FieldExecutionMode  = "execution_mode"
 	FieldNodeVersion    = "node_version"
+	FieldBunVersion     = "bun_version"
 	FieldHealthPath     = "health_path"
 	FieldPort           = "port"
 )
+
+// Perfis e gerenciadores do catálogo JavaScript (DEC-25, DEC-36).
+const (
+	ProfileNode = "P-NODE"
+	ProfileBun  = "P-BUN"
+	ManagerNPM  = "npm"
+	ManagerBun  = "bun"
+)
+
+// DefaultBunVersion é a tag da imagem oven/bun quando o projeto não fixa uma
+// versão exata: a linha mais recente da major 1 (DEC-36).
+const DefaultBunVersion = "1"
 
 // Modos de execução (DEC-25). production é o padrão; development só por
 // escolha explícita do usuário.

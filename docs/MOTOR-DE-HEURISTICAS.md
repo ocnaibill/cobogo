@@ -145,16 +145,17 @@ Cada regra terá: ID estável, versão, estado proposto/validado/retirado, objet
 
 | Família do mestre | Aprofundamento para a primeira versão | Exemplo que obriga limitar a conclusão |
 | --- | --- | --- |
-| HEU-01 — Node/npm | Validar manifesto, lock coerente, alvo e versão suportada | Dependência Node em uma pasta não escolhe a aplicação de outra pasta |
+| HEU-01 — Node/npm e Bun | Validar manifesto e lock coerente; `package-lock.json` escolhe P-NODE e `bun.lock`/`bun.lockb` escolhem P-BUN; os dois juntos viram pergunta (DEC-36) | Dependência Node em uma pasta não escolhe a aplicação de outra pasta; yarn, pnpm e workspaces seguem fora |
 | HEU-02 — Execução | Extrair `scripts.start`, distinguir produção e desenvolvimento por contrato do perfil; quando o comando fica pendente, oferecer os scripts como opções classificadas (DEC-24) | `start` pode invocar ferramenta de desenvolvimento; nome do script não basta, só reforça. Scripts de teste, lint e build não são oferecidos, mas voltam como omitidos |
 | HEU-03 — Estático | Verificar contrato de build, saída e modo de renderização | React também pode integrar SSR; dependência não determina hospedagem estática |
 | HEU-04 — Python | Reconhecer dependências e alvos ASGI/WSGI dentro de formatos delimitados | Importar módulo para descobrir `app` pode executar código e não é permitido na análise |
-| HEU-05 — Rede | Usar configuração reconhecida para porta/bind e validar intervalo. Se o código de execução lê `PORT`, a plataforma escolhe a porta (8080, origem `platform`) e a entrega nessa variável (DEC-35) | Porta encontrada em teste não define porta pública nem porta de produção; o valor de reserva escrito no código (`PORT \|\| 5006`) nunca é adotado |
+| HEU-05 — Rede | Usar configuração reconhecida para porta/bind e validar intervalo. Se o código de execução lê `PORT`, a plataforma escolhe a porta (8080, origem `platform`) e a entrega nessa variável (DEC-35); no P-BUN, `Bun.serve` sem `port` e o `export default` do arquivo de entrada também leem `PORT` (DEC-36) | Porta encontrada em teste não define porta pública nem porta de produção; o valor de reserva escrito no código (`PORT \|\| 5006`) nunca é adotado |
 | HEU-06 — Serviços | Separar detecção, escopo, necessidade, destino e vínculo | Driver PostgreSQL não cria serviço |
 | HEU-07 — Go | Registrar candidato e suporte disponível | Reconhecer `go.mod` não torna implementado o perfil opcional |
 | HEU-08 — Artefatos existentes | Informar Dockerfile/Compose e solicitar modo suportado | Compose de desenvolvimento não é autorização para replicá-lo em produção |
-| HEU-09 — Configuração | Descobrir nomes, origem, exposição e obrigatoriedade declarada | Nome `DATABASE_URL` não determina fornecedor, necessidade ou destino |
+| HEU-09 — Configuração | Descobrir nomes, origem, exposição e obrigatoriedade declarada; lê `process.env.X`, `process.env?.X`, `process.env["X"]` e `Bun.env.X` (DEC-36) | Nome `DATABASE_URL` não determina fornecedor, necessidade ou destino |
 | HEU-10 — Versão do runtime | Escolher a major do Node a partir de `engines.node` ou `.nvmrc` entre as versões suportadas (DEC-25); declaração inadmissível vira aviso | `engines` não é imposto pelo npm: pedir `20.x` não prova que o projeto quebra em uma versão mais nova |
+| HEU-11 — Versão do Bun | No P-BUN, fixar a imagem `oven/bun` na versão exata de `packageManager` ou `engines.bun`; faixa ou nada usam a linha mais recente da major 1 (DEC-36) | Uma faixa não fixa versão; `bun.lock` em texto exige Bun 1.2+ e uma versão fixada abaixo disso vira aviso |
 
 ### 6.1 Desdobramento de HEU-06
 
