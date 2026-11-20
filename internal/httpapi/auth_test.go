@@ -773,3 +773,25 @@ func TestRouterRefusesToStartWithoutWhatSecurityNeeds(t *testing.T) {
 		}
 	}
 }
+
+// O painel é servido pela API no mesmo domínio (DEC-34): só scripts e estilos
+// do próprio domínio, sem nada inline.
+func TestContentSecurityPolicyIsStrict(t *testing.T) {
+	h := newHarness(t)
+	rec := h.serve(h.newReq("GET", "/healthz", ""))
+	csp := rec.Header().Get("Content-Security-Policy")
+	for _, want := range []string{"default-src 'self'", "script-src 'self'", "frame-ancestors 'none'", "object-src 'none'", "base-uri 'none'"} {
+		if !strings.Contains(csp, want) {
+			t.Errorf("CSP %q lacks %q", csp, want)
+		}
+	}
+	if strings.Contains(csp, "unsafe-inline") || strings.Contains(csp, "unsafe-eval") || strings.Contains(csp, "*") {
+		t.Errorf("CSP must not allow inline, eval or wildcards: %q", csp)
+	}
+	// Rotas da API desconhecidas continuam em JSON, mesmo vindo de um navegador.
+	r := h.newReq("GET", "/api/v1/nao-existe", "")
+	r.Header.Set("Accept", "text/html")
+	if rec := h.serve(r); rec.Code != 404 || !strings.Contains(rec.Body.String(), `"code":"not_found"`) {
+		t.Errorf("unknown API route from a browser: %d %q", rec.Code, rec.Body)
+	}
+}

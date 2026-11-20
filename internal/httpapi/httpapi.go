@@ -24,6 +24,7 @@ import (
 	"github.com/ocnaibill/cobogo/internal/settings"
 	"github.com/ocnaibill/cobogo/internal/store"
 	"github.com/ocnaibill/cobogo/internal/validate"
+	"github.com/ocnaibill/cobogo/internal/web"
 )
 
 var slugPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
@@ -96,9 +97,18 @@ func NewRouter(o Options) (http.Handler, error) {
 		mux.HandleFunc(rt.pattern, rt.handler)
 	}
 
-	// O que não existe responde no mesmo formato de erro, em JSON.
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	// O que não é rota da API: o painel (DEC-34) para navegadores; para o
+	// resto, o mesmo formato de erro, em JSON.
+	notFound := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "rota não encontrada")
+	})
+	panel := web.Handler(notFound)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			notFound.ServeHTTP(w, r)
+			return
+		}
+		panel.ServeHTTP(w, r)
 	})
 	return s.wrap(mux), nil
 }

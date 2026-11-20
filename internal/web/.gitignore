@@ -1,0 +1,3 @@
+# Build do painel (web/): gerado por `npm run build`, embutido no binário da API.
+dist/*
+!dist/.gitkeep

@@ -1,0 +1,61 @@
+/* Tokens visuais do painel. O visual das telas do Stitch entra trocando estes
+   valores; os componentes só usam as variáveis. */
+:root {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --bg: #f6f4ef;
+  --surface: #ffffff;
+  --surface-2: #f0ede5;
+  --border: #e2ddd1;
+  --text: #1c1f1d;
+  --text-muted: #5f6661;
+  --brand: #1f5f4a;
+  --brand-strong: #164536;
+  --brand-contrast: #f3efe6;
+  --focus: #2f7dd3;
+
+  --info: #2563a8;
+  --info-bg: #e6eef8;
+  --success: #1e7a4c;
+  --success-bg: #e3f2e9;
+  --warning: #9a5b00;
+  --warning-bg: #fbf0dc;
+  --danger: #b42318;
+  --danger-bg: #fbe7e5;
+  --neutral: #5f6661;
+  --neutral-bg: #eceae4;
+
+  --terminal-bg: #111614;
+  --terminal-text: #d7e0da;
+
+  --radius: 10px;
+  --radius-sm: 6px;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.05), 0 4px 16px rgb(0 0 0 / 0.04);
+  --space: 16px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121513;
+    --surface: #1a1e1c;
+    --surface-2: #222724;
+    --border: #2f3531;
+    --text: #e7ebe8;
+    --text-muted: #9aa49e;
+    --brand: #3f9a78;
+    --brand-strong: #57b28f;
+    --brand-contrast: #0d1311;
+    --info: #7fb2ec;
+    --info-bg: #1b2a3a;
+    --success: #6fcf9a;
+    --success-bg: #17301f;
+    --warning: #f0b45a;
+    --warning-bg: #352812;
+    --danger: #f2877d;
+    --danger-bg: #3a1c19;
+    --neutral: #9aa49e;
+    --neutral-bg: #262b28;
+    --shadow: none;
+  }
+}

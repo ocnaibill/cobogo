@@ -1,5 +1,13 @@
 # API do Cobogó (DEC-32). Contexto de build: a raiz do repositório.
 #   docker build -f deploy/Dockerfile.api -t cobogo-api .
+# O painel (web/) é construído aqui e embutido no binário da API (DEC-34).
+FROM node:22-alpine@sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d73bde88481a AS web
+WORKDIR /src/web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web ./
+RUN mkdir -p ../internal/web/dist && touch ../internal/web/dist/.gitkeep && npm run build
+
 FROM golang:1.26-alpine@sha256:ecb67f987aa1a57794c91d19ade7ae0209f2f0f5496aaef9e6ae85ddf92d02ab AS build
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local GOFLAGS=-mod=readonly
 WORKDIR /src
@@ -7,6 +15,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
+COPY --from=web /src/internal/web/dist ./internal/web/dist
 RUN go build -trimpath -ldflags="-s -w" -o /out/cobogo-api ./cmd/api
 
 FROM alpine:3.22@sha256:49340b346798875b5592e5d420241f2f9cfba5f47e62ebb1446a1b34734e898f

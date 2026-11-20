@@ -15,3 +15,6 @@ AGENTS.md
 CLAUDE.md
 README.md
 **/*_test.go
+web/node_modules
+web/dist
+internal/web/dist
