@@ -30,7 +30,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       try {
         return (await unwrap(api.GET("/auth/me"))).user;
       } catch (e) {
-        if (e instanceof ApiError && e.status === 401) return null;
+        if (e instanceof ApiError && e.status === 401) {
+          // Quem já estava dentro e perdeu a sessão vê o diálogo de revalidação
+          // no mesmo lugar, em vez de ser jogado para a tela de login.
+          const previous = qc.getQueryData<User | null>(["me"]);
+          if (previous) {
+            setExpired(true);
+            return previous;
+          }
+          return null;
+        }
         throw e;
       }
     },

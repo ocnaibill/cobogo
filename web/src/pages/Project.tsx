@@ -4,8 +4,10 @@ import { useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, idempotencyKey, unwrap, type ConfigVariable } from "../api/client";
-import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Notice, StateBadge, When } from "../components/ui";
+import { Badge, Button, Card, CopyButton, Empty, ErrorBox, Field, LinkButton, Loading, Notice, PageHead, StateBadge, Tag, When } from "../components/ui";
+import { Icon, type IconName } from "../components/icons";
 import { duration, repoName, shortSha } from "../lib/format";
+import { profileLabel } from "../lib/deploy";
 
 type Tab = "deploys" | "variaveis" | "limites";
 
@@ -30,11 +32,21 @@ export function ProjectPage() {
     enabled: !!lastOk,
   });
   const latest = deploys.data?.deployments[0];
+  const analysisDeploymentId = latest?.analysis_id ? latest.id : lastOk?.id;
+  const analysis = useQuery({
+    queryKey: ["analysis", analysisDeploymentId],
+    queryFn: () => unwrap(api.GET("/deployments/{id}/analysis", { params: { path: { id: analysisDeploymentId! } } })),
+    enabled: !!analysisDeploymentId,
+    retry: false,
+  });
+  const limits = useQuery({ queryKey: ["limits", id], queryFn: () => unwrap(api.GET("/projects/{id}/limits", { params: { path: { id } } })) });
 
   if (project.isLoading) return <Loading />;
   if (project.isError) return <ErrorBox error={project.error} onRetry={() => project.refetch()} />;
   const p = project.data!;
   const release = lastOkDetail.data?.release;
+  const profile = profileLabel(analysis.data?.result.fields.profile?.value);
+  const port = analysis.data?.result.fields.port?.value;
 
   async function deploy() {
     setBusy(true);
@@ -49,140 +61,235 @@ export function ProjectPage() {
     }
   }
 
+  const candidateFailed = latest && lastOk && latest.id !== lastOk.id && latest.state === "FAILED";
+  const e = limits.data?.effective;
+
   return (
     <div className="page">
-      <nav className="crumbs" aria-label="Você está em">
-        <Link to="/">Visão geral</Link> / <span>{p.slug}</span>
-      </nav>
-      <div className="page-head">
-        <div>
-          <h1>{p.slug}</h1>
-          <p className="muted mono">
-            {repoName(p.repository_url)}
-            {p.root_directory ? ` · ${p.root_directory}` : ""}
-          </p>
-        </div>
-        <div className="row">
-          <Button onClick={deploy} busy={busy}>
-            Novo deploy
-          </Button>
-          {release?.url && (
-            <a className="btn btn-primary" href={release.url} target="_blank" rel="noreferrer noopener">
-              Abrir aplicação ↗
-            </a>
-          )}
-        </div>
-      </div>
+      <PageHead
+        crumbs={
+          <>
+            <Link to="/">Projetos</Link> / <span>{repoName(p.repository_url)}</span> / <strong>resumo</strong>
+          </>
+        }
+        title={
+          <span className="row">
+            {p.slug}
+            {profile && <Tag tone="brand">{profile}</Tag>}
+          </span>
+        }
+        actions={
+          <>
+            <Button variant="primary" icon="rocket" onClick={deploy} busy={busy}>
+              Novo deploy
+            </Button>
+            {latest && (
+              <LinkButton to={`/deploys/${latest.id}`} icon="terminal">
+                Último log
+              </LinkButton>
+            )}
+            <Button icon="key" onClick={() => setParams({ aba: "variaveis" }, { replace: true })}>
+              Variáveis
+            </Button>
+          </>
+        }
+      >
+        {lastOk ? (
+          <Badge tone="success">No ar</Badge>
+        ) : latest ? (
+          <StateBadge state={latest.state} />
+        ) : (
+          <Badge tone="neutral">Sem deploy</Badge>
+        )}
+        <span className="meta row">
+          <Icon name="branch" size={14} /> {repoName(p.repository_url)}
+          {p.root_directory ? ` · ${p.root_directory}` : ""}
+        </span>
+        {lastOk && (
+          <span className="meta row">
+            <Icon name="commit" size={14} /> {shortSha(lastOk.commit_sha)}
+          </span>
+        )}
+      </PageHead>
       {error && <Notice tone="danger">{error}</Notice>}
+      {candidateFailed && (
+        <Notice tone="warning" title="O último deploy falhou, mas a versão anterior continua no ar.">
+          A falha foi só na candidata: o tráfego só troca depois que uma versão passa na verificação. <Link to={`/deploys/${latest!.id}`}>Ver a falha</Link>
+        </Notice>
+      )}
 
-      <div className="grid-3">
-        <Card title="Endereço">
-          {release?.url ? (
-            <a href={release.url} target="_blank" rel="noreferrer noopener" className="mono wrap">
-              {release.url}
-            </a>
-          ) : lastOk ? (
-            <span className="muted">Sem domínio configurado (porta {release?.host_port} no servidor).</span>
-          ) : (
-            <span className="muted">Ainda não publicado.</span>
-          )}
+      <div className="grid-2">
+        <Card title="Roteamento" icon="route" actions={release?.url?.startsWith("https:") ? <Tag tone="brand">HTTPS</Tag> : undefined}>
+          <div className="stack">
+            <div className="inset stack-sm">
+              <span className="label">Endereço público</span>
+              {release?.url ? (
+                <div className="row-between">
+                  <a href={release.url} target="_blank" rel="noreferrer noopener" className="mono wrap strong">
+                    {release.url}
+                  </a>
+                  <span className="row">
+                    <CopyButton text={release.url} />
+                    <LinkButton href={release.url} variant="primary" iconEnd="external">
+                      Abrir
+                    </LinkButton>
+                  </span>
+                </div>
+              ) : lastOk && lastOkDetail.isLoading ? (
+                <span className="muted">…</span>
+              ) : lastOk ? (
+                <span className="muted">Sem domínio configurado: só pela porta {release?.host_port} no servidor.</span>
+              ) : (
+                <span className="muted">Ainda não publicado. O endereço aparece no primeiro deploy concluído.</span>
+              )}
+            </div>
+            <dl className="kv small">
+              <div>
+                <dt>Repositório</dt>
+                <dd className="mono">
+                  <a href={p.repository_url} target="_blank" rel="noreferrer noopener">
+                    {repoName(p.repository_url)}
+                  </a>
+                </dd>
+              </div>
+              <div>
+                <dt>Diretório</dt>
+                <dd className="mono">{p.root_directory || "./ (raiz)"}</dd>
+              </div>
+              <div>
+                <dt>Porta da aplicação</dt>
+                <dd className="mono">{port ?? "—"}</dd>
+              </div>
+              {release && (
+                <div>
+                  <dt>Acesso direto</dt>
+                  <dd className="mono">127.0.0.1:{release.host_port} (no servidor)</dd>
+                </div>
+              )}
+            </dl>
+          </div>
         </Card>
-        <Card title="Release ativa">
+
+        <Card title="Release ativa" icon="layers" actions={lastOk ? <Badge tone="success">no ar</Badge> : undefined}>
           {lastOk ? (
-            <>
-              <Link to={`/deploys/${lastOk.id}`} className="mono">
-                {shortSha(lastOk.commit_sha)}
-              </Link>{" "}
-              · <When iso={lastOk.updated_at} />
-            </>
+            <div className="stack">
+              <div className="inset row-between">
+                <div className="stack-sm">
+                  <strong className="mono">{shortSha(lastOk.commit_sha)}</strong>
+                  <span className="meta">
+                    publicada <When iso={lastOk.updated_at} /> · <Link to={`/deploys/${lastOk.id}`}>deploy {lastOk.id.slice(0, 8)}</Link>
+                  </span>
+                </div>
+                {release && <Tag tone={release.health === "healthy" ? "success" : "neutral"}>{release.operational_state}</Tag>}
+              </div>
+              <div className="tiles">
+                <div className="tile">
+                  <span className="label">Memória</span>
+                  <strong>{e?.app_memory_mb ? `${e.app_memory_mb.value} MiB` : "—"}</strong>
+                </div>
+                <div className="tile">
+                  <span className="label">CPU</span>
+                  <strong>{e?.app_cpus?.value ?? "—"}</strong>
+                </div>
+                <div className="tile">
+                  <span className="label">Processos</span>
+                  <strong>{e?.app_pids?.value ?? "—"}</strong>
+                </div>
+              </div>
+              <p className="small muted">Limites que valem no próximo deploy. Métricas de uso em tempo real entram com o coletor (MVP).</p>
+            </div>
           ) : (
-            <span className="muted">Nenhuma.</span>
-          )}
-        </Card>
-        <Card title="Último deploy">
-          {latest ? (
-            <Link to={`/deploys/${latest.id}`}>
-              <StateBadge state={latest.state} />
-            </Link>
-          ) : (
-            <span className="muted">Nenhum.</span>
-          )}
-          {latest && lastOk && latest.id !== lastOk.id && latest.state === "FAILED" && (
-            <p className="small muted">A release anterior continua no ar: a falha foi só na candidata.</p>
+            <Empty title="Nenhuma release no ar." icon="layers">
+              Peça um deploy para publicar a primeira versão.
+            </Empty>
           )}
         </Card>
       </div>
 
       <div className="tabs" role="tablist" aria-label="Seções do projeto">
-        {(["deploys", "variaveis", "limites"] as Tab[]).map((t) => (
+        {(
+          [
+            ["deploys", "Histórico de deploys", "history"],
+            ["variaveis", "Variáveis e segredos", "key"],
+            ["limites", "Limites", "sliders"],
+          ] as [Tab, string, IconName][]
+        ).map(([t, label, icon]) => (
           <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? "tab active" : "tab"} onClick={() => setParams(t === "deploys" ? {} : { aba: t }, { replace: true })}>
-            {t === "deploys" ? "Deploys" : t === "variaveis" ? "Variáveis" : "Limites"}
+            <Icon name={icon} size={16} />
+            {label}
           </button>
         ))}
       </div>
 
       {tab === "deploys" && (
-        <Card>
+        <section className="card card-flush" aria-label="Histórico de deploys">
           {deploys.isLoading && <Loading />}
           {deploys.isError && <ErrorBox error={deploys.error} />}
-          {deploys.data && deploys.data.deployments.length === 0 && <Empty title="Nenhum deploy ainda." />}
+          {deploys.data && deploys.data.deployments.length === 0 && <Empty title="Nenhum deploy ainda." icon="history" />}
           {deploys.data && deploys.data.deployments.length > 0 && (
-            <table className="table">
-              <thead>
-                <tr>
-                  <th scope="col">Deploy</th>
-                  <th scope="col">Estado</th>
-                  <th scope="col">Commit</th>
-                  <th scope="col">Pedido</th>
-                  <th scope="col">Duração</th>
-                </tr>
-              </thead>
-              <tbody>
-                {deploys.data.deployments.map((d) => (
-                  <tr key={d.id}>
-                    <td>
-                      <Link to={`/deploys/${d.id}`} className="mono">
-                        {d.id.slice(0, 8)}
-                      </Link>
-                    </td>
-                    <td>
-                      <StateBadge state={d.state} />
-                    </td>
-                    <td className="mono">{shortSha(d.commit_sha)}</td>
-                    <td className="muted">
-                      <When iso={d.created_at} />
-                    </td>
-                    <td className="muted">{duration(d.created_at, d.updated_at)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <>
+              <div className="table-wrap">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Deploy</th>
+                      <th scope="col">Commit</th>
+                      <th scope="col">Estado</th>
+                      <th scope="col">Pedido</th>
+                      <th scope="col">Duração</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {deploys.data.deployments.map((d) => (
+                      <tr key={d.id} className={d.id === lastOk?.id ? "row-active" : undefined}>
+                        <td>
+                          <Link to={`/deploys/${d.id}`} className="mono strong">
+                            {d.id.slice(0, 8)}
+                          </Link>
+                        </td>
+                        <td>
+                          <Tag>{shortSha(d.commit_sha)}</Tag>
+                        </td>
+                        <td>
+                          <span className="row">
+                            <StateBadge state={d.state} />
+                            {d.id === lastOk?.id && <Tag tone="success">ativa · 100% do tráfego</Tag>}
+                          </span>
+                        </td>
+                        <td className="meta">
+                          <When iso={d.created_at} />
+                        </td>
+                        <td className="meta">{duration(d.created_at, d.updated_at)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="table-foot">
+                <span>{deploys.data.deployments.length} deploy(s) mais recentes</span>
+                <span>uma versão no ar por projeto; a troca é de uma vez</span>
+              </div>
+            </>
           )}
-        </Card>
+        </section>
       )}
-      {tab === "variaveis" && <VariablesTab projectId={id} analysisDeploymentId={latest?.analysis_id ? latest.id : lastOk?.id} />}
+      {tab === "variaveis" && <VariablesTab projectId={id} discovered={(analysis.data?.result.config_variables ?? []).filter((v) => v.class !== "platform")} />}
       {tab === "limites" && <LimitsTab projectId={id} />}
     </div>
   );
 }
 
-function VariablesTab({ projectId, analysisDeploymentId }: { projectId: string; analysisDeploymentId?: string }) {
+function VariablesTab({ projectId, discovered }: { projectId: string; discovered: ConfigVariable[] }) {
   const qc = useQueryClient();
   const vars = useQuery({ queryKey: ["env", projectId], queryFn: () => unwrap(api.GET("/projects/{id}/env", { params: { path: { id: projectId } } })) });
-  const analysis = useQuery({
-    queryKey: ["analysis", analysisDeploymentId],
-    queryFn: () => unwrap(api.GET("/deployments/{id}/analysis", { params: { path: { id: analysisDeploymentId! } } })),
-    enabled: !!analysisDeploymentId,
-    retry: false,
-  });
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
   const [msg, setMsg] = useState<{ tone: "success" | "danger" | "warning"; text: string } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
   const stored = new Map((vars.data?.variables ?? []).map((v) => [v.name, v]));
-  const discovered: ConfigVariable[] = (analysis.data?.result.config_variables ?? []).filter((v) => v.class !== "platform");
   const extraNames = [...stored.keys()].filter((n) => !discovered.some((d) => d.name === n));
+  const missing = discovered.filter((d) => !stored.has(d.name) && d.hint?.code === "likely_required").length;
 
   const refresh = () => qc.invalidateQueries({ queryKey: ["env", projectId] });
 
@@ -236,58 +343,118 @@ function VariablesTab({ projectId, analysisDeploymentId }: { projectId: string; 
 
   return (
     <div className="stack">
-      <Notice tone="info">Os valores ficam cifrados e nunca voltam para o painel. Uma mudança vale a partir do próximo deploy.</Notice>
+      <Notice tone="info" icon="shield" title="Valores nunca voltam ao painel">
+        Ficam cifrados no banco e só são entregues ao contêiner. A API do painel não consegue nem ler o texto cifrado. Uma mudança vale a partir do próximo deploy.
+      </Notice>
       {msg && <Notice tone={msg.tone}>{msg.text}</Notice>}
-      <Card title="Variáveis do projeto">
+      <section className="card card-flush" aria-label="Variáveis do projeto">
+        <header className="card-head">
+          <h2 className="card-title">
+            <Icon name="key" size={20} className="card-icon" /> Variáveis de ambiente
+          </h2>
+          <span className="row">
+            <Tag>{discovered.length + extraNames.length} variável(is)</Tag>
+            {missing > 0 && <Tag tone="danger">{missing} faltando</Tag>}
+          </span>
+        </header>
         {vars.isLoading && <Loading />}
         {vars.isError && <ErrorBox error={vars.error} />}
-        {(discovered.length > 0 || extraNames.length > 0) ? (
-          <table className="table">
-            <thead>
-              <tr>
-                <th scope="col">Nome</th>
-                <th scope="col">Situação</th>
-                <th scope="col">Observação</th>
-                <th scope="col" className="sr-only">Ações</th>
-              </tr>
-            </thead>
-            <tbody>
-              {discovered.map((d) => {
-                const s = stored.get(d.name);
-                return (
-                  <tr key={d.name}>
-                    <td className="mono">{d.name}</td>
-                    <td>{s ? <Badge tone="success">definida (v{s.version}{s.source === "generated" ? ", gerada" : ""})</Badge> : d.hint?.code === "likely_required" ? <Badge tone="warning">falta</Badge> : <Badge tone="neutral">sem valor</Badge>}</td>
-                    <td className="small muted">{d.hint?.message ?? (d.declared_in_example ? "declarada no exemplo" : "referenciada no código")}</td>
-                    <td className="row-end">
-                      <Button variant="ghost" onClick={() => setName(d.name)}>Definir</Button>
-                      {d.class === "generable" && <Button variant="ghost" busy={busy === `gen-${d.name}`} onClick={() => generate(d.name)}>Gerar</Button>}
-                      {s && <Button variant="ghost" busy={busy === `del-${d.name}`} onClick={() => remove(d.name)}>Remover</Button>}
+        {discovered.length > 0 || extraNames.length > 0 ? (
+          <div className="table-wrap">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th scope="col">Chave</th>
+                  <th scope="col">Situação</th>
+                  <th scope="col">Valor</th>
+                  <th scope="col">Origem</th>
+                  <th scope="col" className="num">
+                    Ações
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {discovered.map((d) => {
+                  const s = stored.get(d.name);
+                  return (
+                    <tr key={d.name}>
+                      <td>
+                        <span className="row mono strong">
+                          <Icon name="lock" size={14} className={s ? "text-success" : "faint"} />
+                          {d.name}
+                        </span>
+                      </td>
+                      <td>
+                        {s ? (
+                          <Badge tone="success">definida · v{s.version}{s.source === "generated" ? " · gerada" : ""}</Badge>
+                        ) : d.hint?.code === "likely_required" ? (
+                          <Badge tone="danger">falta</Badge>
+                        ) : (
+                          <Badge tone="neutral">sem valor</Badge>
+                        )}
+                      </td>
+                      <td className="mono faint">{s ? "••••••••••••" : "—"}</td>
+                      <td className="small muted">{d.hint?.message ?? (d.declared_in_example ? "declarada no exemplo" : "referenciada no código")}</td>
+                      <td>
+                        <div className="row-end">
+                          <Button variant="ghost" onClick={() => setName(d.name)}>
+                            Definir
+                          </Button>
+                          {d.class === "generable" && (
+                            <Button variant="ghost" icon="sparkle" busy={busy === `gen-${d.name}`} onClick={() => generate(d.name)}>
+                              Gerar
+                            </Button>
+                          )}
+                          {s && (
+                            <Button variant="ghost" busy={busy === `del-${d.name}`} onClick={() => remove(d.name)}>
+                              Remover
+                            </Button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {extraNames.map((n) => (
+                  <tr key={n}>
+                    <td>
+                      <span className="row mono strong">
+                        <Icon name="lock" size={14} className="text-success" />
+                        {n}
+                      </span>
+                    </td>
+                    <td>
+                      <Badge tone="success">definida · v{stored.get(n)!.version}</Badge>
+                    </td>
+                    <td className="mono faint">••••••••••••</td>
+                    <td className="small muted">não encontrada na última análise</td>
+                    <td>
+                      <div className="row-end">
+                        <Button variant="ghost" onClick={() => setName(n)}>
+                          Trocar
+                        </Button>
+                        <Button variant="ghost" busy={busy === `del-${n}`} onClick={() => remove(n)}>
+                          Remover
+                        </Button>
+                      </div>
                     </td>
                   </tr>
-                );
-              })}
-              {extraNames.map((n) => (
-                <tr key={n}>
-                  <td className="mono">{n}</td>
-                  <td><Badge tone="success">definida (v{stored.get(n)!.version})</Badge></td>
-                  <td className="small muted">não encontrada na última análise</td>
-                  <td className="row-end">
-                    <Button variant="ghost" onClick={() => setName(n)}>Trocar</Button>
-                    <Button variant="ghost" busy={busy === `del-${n}`} onClick={() => remove(n)}>Remover</Button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                ))}
+              </tbody>
+            </table>
+          </div>
         ) : (
-          !vars.isLoading && <Empty title="Nenhuma variável encontrada nem definida.">A análise lista as variáveis que o código usa; você também pode definir uma pelo nome.</Empty>
+          !vars.isLoading && (
+            <Empty title="Nenhuma variável encontrada nem definida." icon="key">
+              A análise lista as variáveis que o código usa; você também pode definir uma pelo nome.
+            </Empty>
+          )
         )}
-      </Card>
-      <Card title="Definir uma variável">
+      </section>
+      <Card title="Definir uma variável" icon="plus">
         <form className="form-inline" onSubmit={save}>
           <Field label="Nome" htmlFor="env-name">
-            <input id="env-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="DATABASE_URL" spellCheck={false} autoComplete="off" />
+            <input id="env-name" className="mono" value={name} onChange={(e) => setName(e.target.value)} placeholder="DATABASE_URL" spellCheck={false} autoComplete="off" />
           </Field>
           <Field label="Valor" htmlFor="env-value" hint="Não aparece de novo depois de salvo.">
             <input id="env-value" type="password" value={value} onChange={(e) => setValue(e.target.value)} autoComplete="off" />
@@ -327,7 +494,11 @@ function LimitsTab({ projectId }: { projectId: string }) {
     setBusy(true);
     setMsg(null);
     try {
-      const body = Object.fromEntries(Object.entries(values).filter(([, v]) => v.trim() !== "").map(([k, v]) => [k, Number(v)]));
+      const body = Object.fromEntries(
+        Object.entries(values)
+          .filter(([, v]) => v.trim() !== "")
+          .map(([k, v]) => [k, Number(v)]),
+      );
       await unwrap(api.PUT("/projects/{id}/limits", { params: { path: { id: projectId } }, body }));
       setDraft(null);
       setMsg({ tone: "success", text: "Limites salvos. Valem a partir do próximo deploy." });
@@ -340,49 +511,66 @@ function LimitsTab({ projectId }: { projectId: string }) {
   }
 
   return (
-    <Card title="Limites de recursos">
-      <p className="muted small">Campo vazio herda da configuração global. Passar do limite de memória encerra a aplicação, e a falha diz isso.</p>
-      <form className="stack" onSubmit={save}>
-        <table className="table">
-          <thead>
-            <tr>
-              <th scope="col">Recurso</th>
-              <th scope="col">Valor deste projeto</th>
-              <th scope="col">Vale hoje</th>
-            </tr>
-          </thead>
-          <tbody>
-            {LIMIT_FIELDS.map((f) => {
-              const eff = view.effective[f.key];
-              return (
-                <tr key={f.key}>
-                  <td>
-                    <label htmlFor={`lim-${f.key}`}>{f.label}</label>
-                  </td>
-                  <td>
-                    <input id={`lim-${f.key}`} className="input-sm" inputMode="decimal" value={values[f.key] ?? ""} placeholder="herdar" onChange={(e) => setDraft({ ...values, [f.key]: e.target.value })} />
-                  </td>
-                  <td className="small">
-                    {eff ? (
-                      <>
-                        {eff.value} {f.unit} <span className="muted">({SOURCE_LABEL[eff.source] ?? eff.source})</span>
-                      </>
-                    ) : (
-                      "—"
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        {msg && <Notice tone={msg.tone}>{msg.text}</Notice>}
-        <div className="row-end">
+    <section className="card card-flush" aria-label="Limites de recursos">
+      <header className="card-head">
+        <h2 className="card-title">
+          <Icon name="cpu" size={20} className="card-icon" /> Limites de recursos
+        </h2>
+        <span className="meta">vazio herda da configuração global</span>
+      </header>
+      <form onSubmit={save}>
+        <div className="table-wrap">
+          <table className="table">
+            <thead>
+              <tr>
+                <th scope="col">Recurso</th>
+                <th scope="col">Valor deste projeto</th>
+                <th scope="col">Vale hoje</th>
+              </tr>
+            </thead>
+            <tbody>
+              {LIMIT_FIELDS.map((f) => {
+                const eff = view.effective[f.key];
+                return (
+                  <tr key={f.key}>
+                    <td>
+                      <label htmlFor={`lim-${f.key}`} className="strong">
+                        {f.label}
+                      </label>
+                    </td>
+                    <td>
+                      <input id={`lim-${f.key}`} className="input-sm mono" inputMode="decimal" value={values[f.key] ?? ""} placeholder="herdar" onChange={(e) => setDraft({ ...values, [f.key]: e.target.value })} />
+                    </td>
+                    <td className="small">
+                      {eff ? (
+                        <span className="row">
+                          <strong className="mono">
+                            {eff.value} {f.unit}
+                          </strong>
+                          <Tag tone={eff.source === "project" ? "brand" : "neutral"}>{SOURCE_LABEL[eff.source] ?? eff.source}</Tag>
+                        </span>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div className="table-foot">
+          <span>Passar do limite de memória encerra a aplicação, e a falha diz isso.</span>
           <Button type="submit" variant="primary" busy={busy} disabled={!draft}>
             Salvar limites
           </Button>
         </div>
+        {msg && (
+          <div className="card-foot">
+            <Notice tone={msg.tone}>{msg.text}</Notice>
+          </div>
+        )}
       </form>
-    </Card>
+    </section>
   );
 }

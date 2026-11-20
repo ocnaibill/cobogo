@@ -1,14 +1,20 @@
 // TEL-02 — Visão geral: o que está no ar e o que precisa de atenção. Os
 // indicadores contam projetos pelo estado do último deploy, com o denominador
-// explícito (§18.3: nada de "taxa de sucesso" sem janela).
+// explícito (§18.3: nada de "taxa de sucesso" sem janela). A saúde em tempo
+// real de cada aplicação entra com o coletor (MVP); aqui ela não é inventada.
+import { useMemo, useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { Link } from "react-router";
 import { api, unwrap, type ProjectSummary } from "../api/client";
-import { Button, Card, Empty, ErrorBox, Loading, StateBadge, When } from "../components/ui";
+import { Badge, Button, Empty, ErrorBox, LinkButton, Loading, Metric, StateBadge, Tag, When } from "../components/ui";
+import { Icon } from "../components/icons";
 import { isActive } from "../lib/deploy";
 import { repoName } from "../lib/format";
+import { useAppsDomain } from "../hooks/useInstance";
 
-function bucket(p: ProjectSummary): "ok" | "attention" | "running" | "none" {
+type Bucket = "ok" | "attention" | "running" | "none";
+
+function bucket(p: ProjectSummary): Bucket {
   const s = p.last_deployment?.state;
   if (!s) return "none";
   if (s === "SUCCEEDED") return "ok";
@@ -17,7 +23,18 @@ function bucket(p: ProjectSummary): "ok" | "attention" | "running" | "none" {
   return "none";
 }
 
+const FILTERS: { key: Bucket | "all"; label: string; dot?: string }[] = [
+  { key: "all", label: "Todos" },
+  { key: "ok", label: "Publicados", dot: "success" },
+  { key: "attention", label: "Atenção", dot: "danger" },
+  { key: "running", label: "Em andamento", dot: "info" },
+  { key: "none", label: "Sem deploy", dot: "neutral" },
+];
+
 export function OverviewPage() {
+  const [filter, setFilter] = useState<Bucket | "all">("all");
+  const [query, setQuery] = useState("");
+  const apps = useAppsDomain();
   const q = useInfiniteQuery({
     queryKey: ["projects"],
     queryFn: ({ pageParam }) => unwrap(api.GET("/projects", { params: { query: { limit: 50, before: pageParam || undefined } } })),
@@ -26,20 +43,44 @@ export function OverviewPage() {
     refetchInterval: 5000,
   });
 
-  const projects = q.data?.pages.flatMap((p) => p.projects) ?? [];
-  const counts = { ok: 0, attention: 0, running: 0, none: 0 };
+  const projects = useMemo(() => q.data?.pages.flatMap((p) => p.projects) ?? [], [q.data]);
+  const counts: Record<Bucket, number> = { ok: 0, attention: 0, running: 0, none: 0 };
   projects.forEach((p) => counts[bucket(p)]++);
+  const total = projects.length;
+  const needle = query.trim().toLowerCase();
+  const visible = projects.filter(
+    (p) => (filter === "all" || bucket(p) === filter) && (!needle || `${p.slug} ${p.repository_url} ${p.root_directory}`.toLowerCase().includes(needle)),
+  );
+  const checked = q.dataUpdatedAt ? new Date(q.dataUpdatedAt).toLocaleTimeString("pt-BR") : "—";
 
   return (
     <div className="page">
-      <div className="page-head">
-        <div>
-          <h1>Visão geral</h1>
-          <p className="muted">Projetos desta instalação e o resultado do último deploy de cada um.</p>
+      <div className="banner">
+        <div className="banner-main">
+          <span className="banner-icon" aria-hidden="true">
+            <Icon name="terminal" size={22} />
+          </span>
+          <div>
+            <div className="banner-title">
+              Painel do Cobogó
+              <Tag>{window.location.host}</Tag>
+              {apps.domain ? (
+                <Tag tone="brand">aplicações em *.{apps.domain}</Tag>
+              ) : (
+                apps.loaded && <Tag tone="warning">sem domínio para as aplicações</Tag>
+              )}
+            </div>
+            <p className="small">Os indicadores contam o último deploy de cada projeto e se atualizam a cada 5 s. A saúde em tempo real entra com o coletor (MVP).</p>
+          </div>
         </div>
-        <Link to="/importar" className="btn btn-primary">
-          Importar repositório
-        </Link>
+        <div className="row">
+          <span className="meta row">
+            <Icon name="clock" size={14} /> Última checagem: {checked}
+          </span>
+          <Button icon="refresh" onClick={() => q.refetch()} busy={q.isRefetching && !q.isFetchingNextPage}>
+            Sincronizar
+          </Button>
+        </div>
       </div>
 
       {q.isLoading && <Loading />}
@@ -47,43 +88,80 @@ export function OverviewPage() {
 
       {q.isSuccess && (
         <>
-          <div className="stats" role="list" aria-label="Resumo">
-            <Stat label="No ar" value={counts.ok} total={projects.length} tone="success" />
-            <Stat label="Precisam de atenção" value={counts.attention} total={projects.length} tone="danger" hint="falhou, aguarda resposta ou não é suportado" />
-            <Stat label="Em andamento" value={counts.running} total={projects.length} tone="info" />
-            <Stat label="Sem deploy" value={counts.none} total={projects.length} tone="neutral" />
+          <div className="metrics" role="list" aria-label="Resumo">
+            <Metric label="Publicados" value={counts.ok} denominator={`/ ${total} projetos`} tone="success" icon="checkCircle" foot={<span>o último deploy terminou no ar</span>} />
+            <Metric
+              label="Precisam de atenção"
+              value={counts.attention}
+              denominator={`/ ${total}`}
+              tone="danger"
+              icon="alert"
+              foot={<span>último deploy falhou, aguarda resposta ou não é suportado</span>}
+            />
+            <Metric label="Em andamento" value={counts.running} denominator={`/ ${total}`} tone="info" icon="activity" foot={<span>na fila ou no worker agora</span>} />
+            <Metric label="Sem deploy" value={counts.none} denominator={`/ ${total}`} tone="neutral" icon="box" foot={<span>importados, ainda não publicados</span>} />
           </div>
 
-          <Card title="Projetos">
-            {projects.length === 0 ? (
+          <div className="banner banner-white">
+            <div className="banner-main">
+              <span className="banner-icon" aria-hidden="true">
+                <Icon name="sparkle" size={24} />
+              </span>
+              <div>
+                <h2>Do repositório ao ar, com decisões explicáveis</h2>
+                <p>
+                  O Cobogó lê os manifestos (<code>package.json</code>, lockfiles, <code>.env.example</code>) sem executar nada, propõe um plano e pergunta quando falta informação.
+                </p>
+              </div>
+            </div>
+            <LinkButton to="/importar" variant="primary" icon="download">
+              Importar repositório
+            </LinkButton>
+          </div>
+
+          <div className="toolbar">
+            <div className="chips" role="group" aria-label="Filtrar por situação">
+              {FILTERS.map((f) => (
+                <button key={f.key} className="chip" aria-pressed={filter === f.key} onClick={() => setFilter(f.key)}>
+                  {f.dot ? <span className={`dot dot-${f.dot}`} aria-hidden="true" /> : <Icon name="grid" size={14} />}
+                  {f.label} ({f.key === "all" ? total : counts[f.key]})
+                </button>
+              ))}
+            </div>
+            <label className="search">
+              <Icon name="search" size={16} />
+              <span className="sr-only">Filtrar projetos</span>
+              <input type="search" placeholder="Filtrar por nome ou repositório…" value={query} onChange={(e) => setQuery(e.target.value)} />
+            </label>
+          </div>
+
+          <section className="card card-flush" aria-label="Projetos">
+            {total === 0 ? (
               <Empty title="Nenhum projeto ainda.">
                 Importe um repositório público para o Cobogó analisar e publicar. <Link to="/importar">Importar o primeiro</Link>.
               </Empty>
+            ) : visible.length === 0 ? (
+              <Empty title="Nenhum projeto neste filtro." icon="search" />
             ) : (
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th scope="col">Projeto</th>
-                    <th scope="col">Repositório</th>
-                    <th scope="col">Último deploy</th>
-                    <th scope="col">Quando</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {projects.map((p) => (
-                    <tr key={p.id}>
-                      <td>
-                        <Link to={`/projetos/${p.id}`} className="strong">
-                          {p.slug}
-                        </Link>
-                      </td>
-                      <td className="mono muted">{repoName(p.repository_url)}{p.root_directory ? `/${p.root_directory}` : ""}</td>
-                      <td>{p.last_deployment ? <Link to={`/deploys/${p.last_deployment.id}`}><StateBadge state={p.last_deployment.state} /></Link> : <span className="muted">—</span>}</td>
-                      <td className="muted">{p.last_deployment ? <When iso={p.last_deployment.created_at} /> : "—"}</td>
+              <div className="table-wrap">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Projeto e repositório</th>
+                      <th scope="col">Endereço</th>
+                      <th scope="col">Último deploy</th>
+                      <th scope="col" className="num">
+                        Ações
+                      </th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {visible.map((p) => (
+                      <ProjectRow key={p.id} p={p} url={apps.urlFor(p.slug)} />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
             {q.hasNextPage && (
               <div className="card-foot">
@@ -92,20 +170,77 @@ export function OverviewPage() {
                 </Button>
               </div>
             )}
-          </Card>
-          <p className="muted small">Atualizado a cada 5 s. A saúde em tempo real de cada aplicação entra com o coletor (MVP).</p>
+            <div className="table-foot">
+              <span>
+                Total: <strong>{total} projeto(s)</strong> · <span className="text-success">{counts.ok} publicado(s)</span> · {counts.attention} com atenção · {counts.running} em andamento
+              </span>
+              <span className="row">
+                <Icon name="shield" size={14} /> Cada aplicação roda isolada, com limites de memória, CPU e processos
+              </span>
+            </div>
+          </section>
         </>
       )}
     </div>
   );
 }
 
-function Stat({ label, value, total, tone, hint }: { label: string; value: number; total: number; tone: string; hint?: string }) {
+function ProjectRow({ p, url }: { p: ProjectSummary; url: string | null }) {
+  const d = p.last_deployment;
+  const live = d?.state === "SUCCEEDED";
   return (
-    <div className={`stat stat-${tone}`} role="listitem" title={hint}>
-      <span className="stat-value">{value}</span>
-      <span className="stat-label">{label}</span>
-      <span className="stat-total muted">de {total}</span>
-    </div>
+    <tr>
+      <td>
+        <div className="cell-main">
+          <Icon name="box" size={20} />
+          <div className="cell-title">
+            <Link to={`/projetos/${p.id}`}>{p.slug}</Link>
+            <span className="cell-sub" title={p.repository_url}>
+              {repoName(p.repository_url)}
+              {p.root_directory ? ` · ${p.root_directory}` : ""}
+            </span>
+          </div>
+        </div>
+      </td>
+      <td>
+        {url ? (
+          live ? (
+            <a href={url} target="_blank" rel="noreferrer noopener" className="mono small row">
+              {url.replace(/^https?:\/\//, "")} <Icon name="external" size={13} />
+            </a>
+          ) : (
+            <span className="mono small faint">{url.replace(/^https?:\/\//, "")}</span>
+          )
+        ) : (
+          <span className="faint">—</span>
+        )}
+      </td>
+      <td>
+        {d ? (
+          <div className="stack-sm">
+            <Link to={`/deploys/${d.id}`}>
+              <StateBadge state={d.state} />
+            </Link>
+            <span className="meta">
+              <When iso={d.created_at} />
+            </span>
+          </div>
+        ) : (
+          <Badge tone="neutral">sem deploy</Badge>
+        )}
+      </td>
+      <td className="num">
+        <div className="row-end">
+          {d && (
+            <Link className="icon-btn" to={`/deploys/${d.id}`} title="Ver o log do último deploy" aria-label={`Log do último deploy de ${p.slug}`}>
+              <Icon name="terminal" />
+            </Link>
+          )}
+          <Link className="icon-btn" to={`/projetos/${p.id}`} title="Abrir o projeto" aria-label={`Abrir ${p.slug}`}>
+            <Icon name="arrowRight" />
+          </Link>
+        </div>
+      </td>
+    </tr>
   );
 }

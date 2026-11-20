@@ -16,6 +16,11 @@
 6. **Acompanhamento por consulta** a cada 2 s com `after` e `settled` (DEC-28), mais lento quando o deploy assenta, e retomado quando uma pendência é respondida.
 7. **Build:** `npm run build` escreve em `internal/web/dist`; a imagem da API tem um estágio Node que o faz. Num checkout sem build, a API sobe e responde 503 explicando como construir.
 8. **Visual em tokens** (`web/src/styles/tokens.css`): as telas do Stitch são ilustrativas; o painel adota o visual delas sobre o que a API de fato entrega.
+   - Adotado do design system do Stitch: azul de cobogó (`#006194`) sobre superfícies frias, cantos de 2 a 4 px, Inter no texto, Space Grotesk nos títulos e JetBrains Mono nos metadados, navegação lateral por grupos, terminal escuro com etiqueta por etapa. Tema escuro derivado dos mesmos tokens.
+   - As fontes vão empacotadas no painel (`@fontsource-variable`, só o subconjunto latino, ~110 KB) e os ícones são SVG embutido: a CSP continua `font-src 'self'`, sem Google Fonts nem Material Symbols.
+   - Ficou de fora o que as telas mostram e o produto não tem: login por SSH/SSO, métricas de CPU/RAM em tempo real, réplicas, sidecars, "Telemetria" e "Laboratório AST". Onde o design pedia um número que não existe, a tela diz que ele entra com o coletor (MVP) ou mostra um fato verificável (limites efetivos, versão servindo o tráfego, garantias do código).
+   - A marca é a logo do autor (`docs/marca/`): quatro placas C, O, B e O quadrado, com os motivos vazados por máscara, então uma cor só serve nos dois temas. Até 40 px a junta e o traço do C engrossam (ajuste óptico); o favicon usa essa versão.
+   - A sessão expirada abre o diálogo de revalidação no mesmo lugar, mesmo quando o `/auth/me` também volta 401.
 
 ## Limites
 

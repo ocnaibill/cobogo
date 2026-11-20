@@ -91,6 +91,8 @@ export interface LogLine {
   seq: number;
   at: string;
   kind: "output" | "step" | "warning" | "error" | "success";
+  /** A etapa, curta, para a etiqueta do terminal. */
+  tag: string;
   text: string;
 }
 
@@ -114,8 +116,8 @@ function str(v: unknown): string {
 /** Traduz um evento em linha(s) do terminal. Valores de variáveis nunca chegam aqui (RN-11). */
 export function eventToLines(e: DeploymentEvent): LogLine[] {
   const p = (e.payload ?? {}) as Record<string, unknown>;
-  const base = { seq: e.sequence, at: e.occurred_at };
   const stage = STAGE_NAME[e.stage.toLowerCase()] ?? e.stage.toLowerCase();
+  const base = { seq: e.sequence, at: e.occurred_at, tag: stage };
   switch (e.event_type) {
     case "log":
       return [{ ...base, kind: "output", text: str(p.line) }];
@@ -184,6 +186,13 @@ export const FIELD_LABEL: Record<string, string> = {
   health_path: "Caminho da verificação",
   port: "Porta",
 };
+
+/** Nome legível de um perfil do analisador (`p-node` → `Node.js`). */
+export function profileLabel(id?: string): string | undefined {
+  if (!id) return undefined;
+  const known: Record<string, string> = { "p-node": "Node.js" };
+  return known[id] ?? id.replace(/^p-/, "");
+}
 
 export const ORIGIN_LABEL: Record<string, string> = {
   override: "informado por você",

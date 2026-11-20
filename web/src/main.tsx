@@ -11,6 +11,7 @@ import { ImportPage } from "./pages/Import";
 import { ProjectPage } from "./pages/Project";
 import { DeploymentPage } from "./pages/Deployment";
 import { Empty } from "./components/ui";
+import "./styles/fonts.css";
 import "./styles/tokens.css";
 import "./styles/app.css";
 

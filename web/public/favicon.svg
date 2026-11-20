@@ -1,1 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#1f5f4a"/><g fill="none" stroke="#f3efe6" stroke-width="2.2"><circle cx="11" cy="11" r="5"/><circle cx="21" cy="11" r="5"/><circle cx="11" cy="21" r="5"/><circle cx="21" cy="21" r="5"/></g></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 210 210" fill="currentColor">
+  <title>Cobogó</title>
+  <style>.placas{fill:#006194}@media (prefers-color-scheme: dark){.placas{fill:#93ccff}}</style>
+  <mask id="vazados" maskUnits="userSpaceOnUse" x="0" y="0" width="210" height="210">
+    <rect width="210" height="210" fill="#fff"/>
+    <g fill="none" stroke="#000" stroke-width="10"><path d="M32.6496 20.3113C38.2336 49.4226 46.438 62.1237 71.5613 77.2927"/><path d="M70.8374 37.2212 31.1981 64.2902"/></g><circle cx="160" cy="50" r="33" fill="#000"/><path d="M67 143.5 39.25 159.522V127.478ZM67 175.5 39.25 191.522V159.478Z" fill="#000"/><rect x="132" y="132" width="56" height="56" fill="#000"/>
+  </mask>
+  <g class="placas" mask="url(#vazados)"><rect width="100" height="100"/><rect x="110" width="100" height="100"/><rect y="110" width="100" height="100"/><rect x="110" y="110" width="100" height="100"/></g>
+</svg>

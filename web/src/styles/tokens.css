@@ -1,61 +1,97 @@
-/* Tokens visuais do painel. O visual das telas do Stitch entra trocando estes
-   valores; os componentes só usam as variáveis. */
+/* Tokens visuais do painel, a partir do design system das telas do Stitch
+   (azul de cobogó sobre superfícies frias, cantos quase retos, três fontes:
+   Inter no texto, Space Grotesk nos títulos, JetBrains Mono nos metadados).
+   Os componentes só usam estas variáveis. */
 :root {
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-display: "Space Grotesk Variable", "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
-  --bg: #f6f4ef;
+  --bg: #f8f9ff;
   --surface: #ffffff;
-  --surface-2: #f0ede5;
-  --border: #e2ddd1;
-  --text: #1c1f1d;
-  --text-muted: #5f6661;
-  --brand: #1f5f4a;
-  --brand-strong: #164536;
-  --brand-contrast: #f3efe6;
-  --focus: #2f7dd3;
+  --surface-low: #eff4ff;
+  --surface-2: #e5eeff;
+  --surface-high: #dce9ff;
+  --surface-highest: #d3e4fe;
+  --border: #e1e8f2;
+  --border-strong: #bfc7d2;
+  --text: #0b1c30;
+  --text-muted: #3f4850;
+  --text-faint: #6b7580;
 
-  --info: #2563a8;
-  --info-bg: #e6eef8;
-  --success: #1e7a4c;
-  --success-bg: #e3f2e9;
-  --warning: #9a5b00;
-  --warning-bg: #fbf0dc;
-  --danger: #b42318;
-  --danger-bg: #fbe7e5;
-  --neutral: #5f6661;
-  --neutral-bg: #eceae4;
+  --brand: #006194;
+  --brand-strong: #004b73;
+  --brand-container: #007bb9;
+  --brand-soft: #cce5ff;
+  --brand-contrast: #ffffff;
+  --focus: #007bb9;
 
-  --terminal-bg: #111614;
-  --terminal-text: #d7e0da;
+  --info: #006194;
+  --info-bg: #e5eeff;
+  --success: #0b7a4b;
+  --success-bg: #d8f3e4;
+  --warning: #4648d4;
+  --warning-bg: #e1e0ff;
+  --danger: #ba1a1a;
+  --danger-bg: #ffdad6;
+  --danger-strong: #93000a;
+  --neutral: #565e74;
+  --neutral-bg: #e7ebf3;
 
-  --radius: 10px;
-  --radius-sm: 6px;
-  --shadow: 0 1px 2px rgb(0 0 0 / 0.05), 0 4px 16px rgb(0 0 0 / 0.04);
-  --space: 16px;
+  --pattern: #dfe9f8;
+
+  --terminal-bg: #0f1b2b;
+  --terminal-chrome: #172639;
+  --terminal-text: #d5e1ef;
+  --terminal-faint: #7f8ea3;
+
+  --radius: 4px;
+  --radius-sm: 2px;
+  --shadow: 0 1px 2px rgb(11 28 48 / 0.05), 0 1px 10px rgb(11 28 48 / 0.04);
+  --shadow-lg: 0 24px 64px rgb(11 28 48 / 0.18);
+  --topbar-h: 60px;
+  --sidebar-w: 252px;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #121513;
-    --surface: #1a1e1c;
-    --surface-2: #222724;
-    --border: #2f3531;
-    --text: #e7ebe8;
-    --text-muted: #9aa49e;
-    --brand: #3f9a78;
-    --brand-strong: #57b28f;
-    --brand-contrast: #0d1311;
-    --info: #7fb2ec;
-    --info-bg: #1b2a3a;
-    --success: #6fcf9a;
-    --success-bg: #17301f;
-    --warning: #f0b45a;
-    --warning-bg: #352812;
-    --danger: #f2877d;
-    --danger-bg: #3a1c19;
-    --neutral: #9aa49e;
-    --neutral-bg: #262b28;
-    --shadow: none;
+    --bg: #0a1520;
+    --surface: #101e2d;
+    --surface-low: #142537;
+    --surface-2: #1a2e44;
+    --surface-high: #213750;
+    --surface-highest: #29425f;
+    --border: #213448;
+    --border-strong: #3a5068;
+    --text: #e3ecf8;
+    --text-muted: #a9b6c6;
+    --text-faint: #7f8c9c;
+
+    --brand: #93ccff;
+    --brand-strong: #b9ddff;
+    --brand-container: #5fb2ee;
+    --brand-soft: #0f3554;
+    --brand-contrast: #002136;
+    --focus: #93ccff;
+
+    --info: #93ccff;
+    --info-bg: #15304a;
+    --success: #7fdcaa;
+    --success-bg: #12382a;
+    --warning: #c0c1ff;
+    --warning-bg: #27285e;
+    --danger: #ffb4ab;
+    --danger-bg: #4a1612;
+    --danger-strong: #ffdad6;
+    --neutral: #a9b6c6;
+    --neutral-bg: #1e2b3b;
+
+    --pattern: #15263a;
+
+    --terminal-bg: #07111c;
+    --terminal-chrome: #0d1a29;
+
+    --shadow: 0 0 0 1px rgb(0 0 0 / 0.2);
+    --shadow-lg: 0 24px 64px rgb(0 0 0 / 0.5);
   }
 }
