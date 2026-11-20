@@ -188,3 +188,30 @@ func TestLoadRouterSettings(t *testing.T) {
 		t.Errorf("a short token must be refused, naming the variable: %v", err)
 	}
 }
+
+func TestLoadProbeAndPanelSettings(t *testing.T) {
+	base := map[string]string{"DATABASE_URL": "postgres://x", "COBOGO_SECRET_KEY": goodKey}
+	load := func(probe, panel string) (Config, error) {
+		setEnv(t, base)
+		t.Setenv("COBOGO_PROBE", probe)
+		t.Setenv("COBOGO_PANEL_TARGET", panel)
+		return Load()
+	}
+
+	c, err := load("", "")
+	if err != nil || c.ProbeMode != "host" || c.PanelTarget != "" {
+		t.Fatalf("defaults = %q %q, %v", c.ProbeMode, c.PanelTarget, err)
+	}
+	c, err = load(" Network ", "http://api:8080/")
+	if err != nil || c.ProbeMode != "network" || c.PanelTarget != "http://api:8080" {
+		t.Errorf("set = %q %q, %v", c.ProbeMode, c.PanelTarget, err)
+	}
+	if _, err := load("rede", ""); err == nil || !strings.Contains(err.Error(), "COBOGO_PROBE") {
+		t.Errorf("an unknown probe mode must be refused: %v", err)
+	}
+	for _, bad := range []string{"https://api:8080", "api:8080", "http://api:8080/painel", "http://u:p@api:8080", "http://"} {
+		if _, err := load("", bad); err == nil || !strings.Contains(err.Error(), "COBOGO_PANEL_TARGET") {
+			t.Errorf("panel target %q must be refused: %v", bad, err)
+		}
+	}
+}

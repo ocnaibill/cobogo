@@ -55,15 +55,28 @@ type traefikConfig struct {
 	HTTP *traefikHTTP `json:"http,omitempty"`
 }
 
+// PanelRoute leva o host do painel ao destino da API (DEC-32 item 6).
+type PanelRoute struct {
+	Host   string
+	Target string
+}
+
+// panelRouterName tem um sublinhado, que um slug não pode ter: nenhum projeto
+// colide com o roteador do painel.
+const panelRouterName = "cobogo_panel"
+
 // NewRoutingHandler monta o endpoint de rotas do Traefik (DEC-31 itens 7 a 9).
 // Ele é servido por um listener interno próprio, nunca pela API pública, e
 // exige o token no cabeçalho Authorization. Não usa sessão nem CSRF.
-func NewRoutingHandler(st *store.Store, token string, log *slog.Logger) (http.Handler, error) {
+func NewRoutingHandler(st *store.Store, token string, log *slog.Logger, panel *PanelRoute) (http.Handler, error) {
 	if st == nil || log == nil {
 		return nil, errors.New("httpapi: store e log são obrigatórios")
 	}
 	if len(token) < MinRouterTokenLen {
 		return nil, fmt.Errorf("httpapi: o token das rotas precisa ter ao menos %d caracteres", MinRouterTokenLen)
+	}
+	if panel != nil && (!routeHostPattern.MatchString(panel.Host) || !validRouteTarget(panel.Target)) {
+		return nil, fmt.Errorf("httpapi: rota do painel inválida (host %q, destino %q)", panel.Host, panel.Target)
 	}
 	// Compara os hashes: tempo constante e sem revelar o tamanho do token.
 	want := sha256.Sum256([]byte(token))
@@ -83,7 +96,7 @@ func NewRoutingHandler(st *store.Store, token string, log *slog.Logger) (http.Ha
 			writeError(w, http.StatusInternalServerError, "erro interno")
 			return
 		}
-		cfg := buildTraefikConfig(routes, log)
+		cfg := buildTraefikConfig(routes, panel, log)
 		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, http.StatusOK, cfg)
 	})
@@ -97,10 +110,23 @@ func NewRoutingHandler(st *store.Store, token string, log *slog.Logger) (http.Ha
 // valor é conferido contra um padrão fechado: o host entra numa regra textual
 // do Traefik, então um valor estranho (que deveria ter sido barrado antes) é
 // omitido e registrado, nunca emitido.
-func buildTraefikConfig(routes []domain.Route, log *slog.Logger) traefikConfig {
+func buildTraefikConfig(routes []domain.Route, panel *PanelRoute, log *slog.Logger) traefikConfig {
 	routers := map[string]traefikRouter{}
 	services := map[string]traefikService{}
+	if panel != nil {
+		routers[panelRouterName] = traefikRouter{
+			Rule: "Host(`" + panel.Host + "`)", EntryPoints: []string{traefikEntrypoint}, Service: panelRouterName,
+		}
+		var svc traefikService
+		svc.LoadBalancer.Servers = []traefikServer{{URL: panel.Target}}
+		services[panelRouterName] = svc
+	}
 	for _, rt := range routes {
+		// O painel nunca é sobrescrito por um projeto (DEC-32 item 6).
+		if panel != nil && rt.Host == panel.Host {
+			log.Warn("rota de aplicação com o host do painel omitida", "slug", rt.Slug)
+			continue
+		}
 		if !slugPattern.MatchString(rt.Slug) || !routeHostPattern.MatchString(rt.Host) || !validRouteTarget(rt.Target) {
 			log.Warn("rota fora do padrão omitida", "slug", rt.Slug)
 			continue

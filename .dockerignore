@@ -1,0 +1,17 @@
+# O contexto de build das imagens do Cobogó é a raiz do repositório; só o código Go entra.
+.git
+.gitignore
+.dockerignore
+.DS_Store
+.aider*
+.commandcode
+.claude
+.codex
+docs
+infra
+deploy
+todas_as_issues.md
+AGENTS.md
+CLAUDE.md
+README.md
+**/*_test.go

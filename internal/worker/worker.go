@@ -50,7 +50,14 @@ type Worker struct {
 	// settings resolve a política operacional (limites e hosts de repositório)
 	// a cada deploy, então uma mudança no painel vale sem reiniciar (DEC-30).
 	settings *settings.Resolver
+	// probeNetwork faz a sonda falar com o contêiner pelo nome, na rede do
+	// projeto, em vez da porta publicada no loopback (DEC-32 item 5).
+	probeNetwork bool
 }
+
+// SetProbeMode escolhe como a sonda alcança a aplicação: "host" (padrão) ou
+// "network". Em "network" o worker se conecta à rede do projeto durante o deploy.
+func (w *Worker) SetProbeMode(mode string) { w.probeNetwork = mode == "network" }
 
 // New monta o worker. O resolvedor de configurações pode ser nil: sem ele só
 // valem o ambiente vazio e os padrões de fábrica.
@@ -533,6 +540,23 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 			return at("STARTING", err)
 		}
 	}
+	if w.probeNetwork {
+		// O worker só fica ligado à rede do projeto enquanto dura o deploy.
+		self, err := dockerrt.SelfID()
+		if err != nil {
+			return at("STARTING", fmt.Errorf("identificar o contêiner do worker: %w", err))
+		}
+		if err := rt.ConnectContainer(ctx, self, projectNet); err != nil {
+			return at("STARTING", err)
+		}
+		defer func() {
+			cleanup, done := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
+			defer done()
+			if err := rt.DisconnectContainer(cleanup, self, projectNet); err != nil {
+				w.log.Warn("desconectar o worker da rede do projeto", "rede", projectNet, "erro", err)
+			}
+		}()
+	}
 	runResult, err := rt.Run(ctx, imageTag, containerName, plan.Port, envValues, dep.ID.String(),
 		dockerrt.WithNetwork(projectNet), dockerrt.WithLabels(map[string]string{dockerrt.LabelProject: project.ID.String()}))
 
@@ -567,9 +591,15 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 	if err := o.Transition(ctx, dep.ID, domain.DeploymentVerifying, ""); err != nil {
 		return at("VERIFYING", err)
 	}
-	probe, err := dockerrt.ProbeReady(ctx, runResult.HostPort, plan.HealthPath, readinessTimeout, func(c context.Context) (bool, int, error) {
+	alive := func(c context.Context) (bool, int, error) {
 		return w.runtime.State(c, runResult.ContainerID)
-	})
+	}
+	var probe dockerrt.ProbeResult
+	if w.probeNetwork {
+		probe, err = dockerrt.ProbeReadyAt(ctx, containerName, plan.Port, plan.HealthPath, readinessTimeout, alive)
+	} else {
+		probe, err = dockerrt.ProbeReady(ctx, runResult.HostPort, plan.HealthPath, readinessTimeout, alive)
+	}
 	if err != nil {
 		if ctx.Err() == nil {
 			err = &detailedError{err: err, detail: w.investigate(ctx, rt, limits, runResult.ContainerID, err, projectValues, result.ConfigVariables, have)}

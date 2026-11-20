@@ -156,3 +156,15 @@ func TestProbeStopsOnContextCancel(t *testing.T) {
 		t.Errorf("err = %v after %s", err, time.Since(start))
 	}
 }
+
+func TestProbeReadyAtUsesTheGivenHost(t *testing.T) {
+	port := serve(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
+	res, err := ProbeReadyAt(context.Background(), "127.0.0.1", port, "/", 5*time.Second, nil)
+	if err != nil || res.Status != 200 {
+		t.Fatalf("probe = %+v, %v", res, err)
+	}
+	// Um nome que não resolve nunca passa: a sonda tem de falhar, não aprovar.
+	if _, err := ProbeReadyAt(context.Background(), "contêiner-que-nao-existe.invalid", port, "/", 1500*time.Millisecond, nil); err == nil {
+		t.Error("an unresolvable host must not pass the probe")
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
@@ -127,4 +128,40 @@ func (r *Runtime) Demote(ctx context.Context, projectID, exceptContainerID, netw
 		demoted = append(demoted, c.ID)
 	}
 	return demoted, errors.Join(firstErr)
+}
+
+// ConnectContainer conecta um contêiner (por exemplo o próprio worker) a uma
+// rede, e DisconnectContainer o desconecta. Ambos são idempotentes.
+func (r *Runtime) ConnectContainer(ctx context.Context, containerID, networkName string) error {
+	inspect, err := r.cli.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return fmt.Errorf("dockerrt: inspecionar contêiner: %w", err)
+	}
+	if connectedTo(inspect, networkName) {
+		return nil
+	}
+	if err := r.cli.NetworkConnect(ctx, networkName, containerID, &network.EndpointSettings{}); err != nil {
+		return fmt.Errorf("dockerrt: conectar à rede %s: %w", networkName, err)
+	}
+	return nil
+}
+
+func (r *Runtime) DisconnectContainer(ctx context.Context, containerID, networkName string) error {
+	inspect, err := r.cli.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return fmt.Errorf("dockerrt: inspecionar contêiner: %w", err)
+	}
+	if !connectedTo(inspect, networkName) {
+		return nil
+	}
+	if err := r.cli.NetworkDisconnect(ctx, networkName, containerID, false); err != nil {
+		return fmt.Errorf("dockerrt: desconectar da rede %s: %w", networkName, err)
+	}
+	return nil
+}
+
+// SelfID é o ID do contêiner em que este processo roda: o Docker dá ao
+// contêiner um hostname igual ao seu ID curto, salvo se o compose o trocar.
+func SelfID() (string, error) {
+	return os.Hostname()
 }

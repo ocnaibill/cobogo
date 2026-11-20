@@ -35,7 +35,7 @@ type traefikView struct {
 
 func (h *harness) routing() http.Handler {
 	h.t.Helper()
-	handler, err := httpapi.NewRoutingHandler(h.st, routerToken, quietLogger(h))
+	handler, err := httpapi.NewRoutingHandler(h.st, routerToken, quietLogger(h), nil)
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -84,14 +84,14 @@ func (h *harness) promoted(slug, host, container string) {
 func TestRoutingHandlerNeedsAStrongToken(t *testing.T) {
 	h := newHarness(t)
 	for _, token := range []string{"", "curto", strings.Repeat("a", 23)} {
-		if _, err := httpapi.NewRoutingHandler(h.st, token, quietLogger(h)); err == nil {
+		if _, err := httpapi.NewRoutingHandler(h.st, token, quietLogger(h), nil); err == nil {
 			t.Errorf("token %q (%d chars) must be refused", token, len(token))
 		}
 	}
-	if _, err := httpapi.NewRoutingHandler(h.st, strings.Repeat("a", 24), quietLogger(h)); err != nil {
+	if _, err := httpapi.NewRoutingHandler(h.st, strings.Repeat("a", 24), quietLogger(h), nil); err != nil {
 		t.Errorf("a 24-char token must be accepted: %v", err)
 	}
-	if _, err := httpapi.NewRoutingHandler(nil, routerToken, quietLogger(h)); err == nil {
+	if _, err := httpapi.NewRoutingHandler(nil, routerToken, quietLogger(h), nil); err == nil {
 		t.Error("a nil store must be refused")
 	}
 }
@@ -247,4 +247,62 @@ func TestRoutingHandlerOmitsValuesOutsideThePattern(t *testing.T) {
 
 func quietLogger(h *harness) *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.MultiWriter(h.logs, io.Discard), nil))
+}
+
+func TestPanelRouteIsEmittedAndNeverOverridden(t *testing.T) {
+	h := newHarness(t)
+	h.login()
+	panel := &httpapi.PanelRoute{Host: "cobogo.ocnaibill.dev", Target: "http://api:8080"}
+	handler, err := httpapi.NewRoutingHandler(h.st, routerToken, quietLogger(h), panel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := map[string]string{"Authorization": "Bearer " + routerToken}
+
+	// Sem projeto nenhum, a tabela já leva o painel.
+	var got traefikView
+	if err := json.Unmarshal(h.fetchRoutes(handler, auth).Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	r := got.HTTP.Routers["cobogo_panel"]
+	if len(got.HTTP.Routers) != 1 || r.Rule != "Host(`cobogo.ocnaibill.dev`)" || r.Service != "cobogo_panel" || r.EntryPoints[0] != "web" {
+		t.Fatalf("panel router = %+v (all: %+v)", r, got.HTTP.Routers)
+	}
+	if s := got.HTTP.Services["cobogo_panel"].LoadBalancer.Servers; len(s) != 1 || s[0].URL != "http://api:8080" {
+		t.Errorf("panel service = %+v", s)
+	}
+
+	// Um projeto com o mesmo host do painel é omitido; os outros seguem.
+	h.promoted("normal", "normal.cobogo.dev", "cobogo-normal-11111111")
+	h.promoted("intruso", "cobogo.ocnaibill.dev", "cobogo-intruso-22222222")
+	got = traefikView{}
+	if err := json.Unmarshal(h.fetchRoutes(handler, auth).Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if _, has := got.HTTP.Routers["cobogo-intruso"]; has {
+		t.Error("a project must never take the panel's host")
+	}
+	if got.HTTP.Services["cobogo_panel"].LoadBalancer.Servers[0].URL != "http://api:8080" || got.HTTP.Routers["cobogo-normal"].Rule != "Host(`normal.cobogo.dev`)" {
+		t.Errorf("table = %+v", got)
+	}
+	if !strings.Contains(h.logs.b.String(), "host do painel") {
+		t.Error("the omission must be logged")
+	}
+}
+
+func TestPanelRouteIsValidated(t *testing.T) {
+	h := newHarness(t)
+	for name, p := range map[string]httpapi.PanelRoute{
+		"host with a rule closer": {Host: "x.dev`) || Host(`y.dev", Target: "http://api:8080"},
+		"host in capitals":        {Host: "Painel.dev", Target: "http://api:8080"},
+		"empty host":              {Host: "", Target: "http://api:8080"},
+		"target with a path":      {Host: "p.dev", Target: "http://api:8080/x"},
+		"target over https":       {Host: "p.dev", Target: "https://api:8080"},
+		"target without a port":   {Host: "p.dev", Target: "http://api"},
+	} {
+		p := p
+		if _, err := httpapi.NewRoutingHandler(h.st, routerToken, quietLogger(h), &p); err == nil {
+			t.Errorf("%s must be refused", name)
+		}
+	}
 }

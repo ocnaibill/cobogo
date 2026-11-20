@@ -1,0 +1,162 @@
+# Cobogó na VM (DEC-32). Uso:
+#   cp deploy/.env.example deploy/.env   # e preencha
+#   docker compose --env-file deploy/.env -f deploy/compose.yml up -d --build
+#   # com o túnel da Cloudflare:  ... --profile tunnel up -d --build
+#
+# Nada aqui publica porta no host: o acesso vem pelo túnel (ou, nos testes
+# locais, pelo arquivo compose.local.yml). Só o proxy monta o socket do Docker.
+name: cobogo
+
+x-hardened: &hardened
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+
+services:
+  postgres:
+    image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cobogo
+      POSTGRES_DB: cobogo_core
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # O Postgres precisa trocar de dono e de usuário na inicialização.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cobogo -d cobogo_core"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [control]
+
+  # O único serviço com o socket do Docker. Filtra por método e prefixo de
+  # caminho: libera só o que o worker usa (DEC-32 item 2).
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy@sha256:be1ac64f33bd82043beb504822a17ba6b71668ea1ad7cf51a9a01d27bb7ab047
+    <<: *hardened
+    environment:
+      CONTAINERS: 1
+      IMAGES: 1
+      NETWORKS: 1
+      BUILD: 1
+      POST: 1
+      EXEC: 0
+      VOLUMES: 0
+      SERVICES: 0
+      SWARM: 0
+      SECRETS: 0
+      CONFIGS: 0
+      AUTH: 0
+      PLUGINS: 0
+      NODES: 0
+      TASKS: 0
+      SESSION: 0
+      DISTRIBUTION: 0
+      SYSTEM: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    tmpfs: ["/tmp", "/run", "/var/lib/haproxy"]
+    # O haproxy do proxy começa como root para abrir o socket.
+    user: "0:0"
+    cap_drop: [ALL]
+    mem_limit: 128m
+    networks: [control]
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    <<: *hardened
+    environment:
+      DATABASE_URL: postgres://cobogo:${POSTGRES_PASSWORD}@postgres:5432/cobogo_core?sslmode=disable
+      COBOGO_SECRET_KEY: ${COBOGO_SECRET_KEY:?defina COBOGO_SECRET_KEY}
+      COBOGO_PUBLIC_URL: ${COBOGO_PUBLIC_URL:?defina COBOGO_PUBLIC_URL}
+      COBOGO_COOKIE_INSECURE: ${COBOGO_COOKIE_INSECURE:-0}
+      # Só o Traefik, na rede de roteamento, pode informar o IP do cliente.
+      COBOGO_TRUSTED_PROXIES: ${COBOGO_ROUTING_SUBNET:-172.30.20.0/24}
+      COBOGO_ROUTER_TOKEN: ${COBOGO_ROUTER_TOKEN:?defina COBOGO_ROUTER_TOKEN}
+      COBOGO_ROUTER_ADDR: ":8081"
+      COBOGO_PANEL_TARGET: http://api:8080
+      COBOGO_APPS_DOMAIN: ${COBOGO_APPS_DOMAIN:-}
+      COBOGO_APPS_SCHEME: ${COBOGO_APPS_SCHEME:-https}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 256m
+    networks: [control, routing]
+
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.worker
+    <<: *hardened
+    environment:
+      DOCKER_HOST: tcp://docker-proxy:2375
+      DATABASE_URL: postgres://cobogo:${POSTGRES_PASSWORD}@postgres:5432/cobogo_core?sslmode=disable
+      COBOGO_SECRET_KEY: ${COBOGO_SECRET_KEY:?defina COBOGO_SECRET_KEY}
+      # Dentro de um contêiner a porta publicada no host não é alcançável: a
+      # sonda fala com a aplicação pelo nome, na rede do projeto (DEC-32 item 5).
+      COBOGO_PROBE: network
+      COBOGO_APPS_DOMAIN: ${COBOGO_APPS_DOMAIN:-}
+      COBOGO_APPS_SCHEME: ${COBOGO_APPS_SCHEME:-https}
+    # O workspace de clonagem: só aqui o worker escreve.
+    tmpfs: ["/tmp:size=4g,mode=1777"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      docker-proxy:
+        condition: service_started
+    mem_limit: 1g
+    networks: [control]
+
+  traefik:
+    image: traefik@sha256:31267173a15b4944e797a76ffd9c419707c8d8b32fe5b610f80cd0cfa05f372d
+    <<: *hardened
+    # Sem root e sem capacidades: escuta em 8000, acima das portas privilegiadas.
+    user: "65532:65532"
+    command:
+      - --providers.http.endpoint=http://api:8081/traefik/config
+      - --providers.http.pollInterval=2s
+      - --providers.http.pollTimeout=5s
+      - --providers.http.headers.Authorization=Bearer ${COBOGO_ROUTER_TOKEN:?defina COBOGO_ROUTER_TOKEN}
+      - --entrypoints.web.address=:8000
+      - --api.dashboard=false
+      - --log.level=INFO
+      - --accesslog=false
+    mem_limit: 256m
+    networks: [routing, ingress]
+
+  cloudflared:
+    image: cloudflare/cloudflared@sha256:e613aadbc2d9511785d2e67a86b0c8ac18dd63a3f9af0d06faf04cbfdcb35f2d
+    profiles: [tunnel]
+    <<: *hardened
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
+    mem_limit: 128m
+    networks: [ingress]
+
+networks:
+  control:
+    name: cobogo-control
+  routing:
+    name: cobogo-routing
+    ipam:
+      config:
+        - subnet: ${COBOGO_ROUTING_SUBNET:-172.30.20.0/24}
+  ingress:
+    name: cobogo-ingress
+
+volumes:
+  postgres_data:

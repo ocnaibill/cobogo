@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -237,7 +238,16 @@ func serveRouting(ctx context.Context, st *store.Store, cfg config.Config, log *
 		log.Info("COBOGO_ROUTER_TOKEN ausente: o endpoint de rotas do Traefik não sobe (roteamento por hostname desligado)")
 		return
 	}
-	handler, err := httpapi.NewRoutingHandler(st, cfg.RouterToken, log)
+	var panel *httpapi.PanelRoute
+	if cfg.PanelTarget != "" {
+		u, err := url.Parse(cfg.PublicURL)
+		if err != nil || u.Hostname() == "" {
+			log.Error("COBOGO_PUBLIC_URL inválida para a rota do painel", "erro", err)
+			os.Exit(1)
+		}
+		panel = &httpapi.PanelRoute{Host: strings.ToLower(u.Hostname()), Target: cfg.PanelTarget}
+	}
+	handler, err := httpapi.NewRoutingHandler(st, cfg.RouterToken, log, panel)
 	if err != nil {
 		log.Error("montar o endpoint de rotas", "erro", err)
 		os.Exit(1)

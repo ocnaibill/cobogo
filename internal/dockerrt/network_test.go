@@ -153,3 +153,46 @@ func TestPromoteAndDemoteMoveTrafficBetweenReleases(t *testing.T) {
 		t.Errorf("second demote = %v, %v", again, err)
 	}
 }
+
+// Conectar e desconectar o worker a uma rede é idempotente (DEC-32 item 5).
+func TestConnectAndDisconnectContainerAreIdempotent(t *testing.T) {
+	rt := dockerForTest(t)
+	tag := idleImage(t, rt)
+	ctx := context.Background()
+	name := "cobogo-test-self-net"
+	if err := rt.EnsureNetwork(ctx, name, nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rt.cli.NetworkRemove(context.Background(), name) })
+	res, err := rt.Run(ctx, tag, "cobogo-test-self", 3000, nil, "deploy-self")
+	t.Cleanup(func() { _ = rt.Remove(context.Background(), res.ContainerID) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	on := func() bool {
+		i, err := rt.cli.ContainerInspect(ctx, res.ContainerID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return connectedTo(i, name)
+	}
+	for i := 0; i < 2; i++ {
+		if err := rt.ConnectContainer(ctx, res.ContainerID, name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !on() {
+		t.Fatal("not connected")
+	}
+	for i := 0; i < 2; i++ {
+		if err := rt.DisconnectContainer(ctx, res.ContainerID, name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if on() {
+		t.Error("still connected")
+	}
+	if id, err := SelfID(); err != nil || id == "" {
+		t.Errorf("SelfID = %q, %v", id, err)
+	}
+}

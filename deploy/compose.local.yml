@@ -1,0 +1,12 @@
+# Sobreposição SÓ para testar a pilha na própria máquina, sem túnel (DEC-32):
+#   docker compose --env-file deploy/.env.local -f deploy/compose.yml -f deploy/compose.local.yml up -d --build
+# Publica o Traefik e a API no loopback e libera o cookie sem HTTPS. Não use na VM.
+services:
+  traefik:
+    ports:
+      - "127.0.0.1:8088:8000"
+  api:
+    ports:
+      - "127.0.0.1:18080:8080"
+    environment:
+      COBOGO_COOKIE_INSECURE: "1"

@@ -55,7 +55,9 @@ func main() {
 	st := store.New(pool).WithCipher(box)
 	w := worker.New(st, rt, log, settings.NewResolver(st, settings.Env{Limits: cfg.Limits, GitHosts: cfg.ExtraGitHosts, AppsDomain: cfg.AppsDomain, AppsScheme: cfg.AppsScheme}))
 
-	log.Info("worker Cobogó no ar")
+	w.SetProbeMode(cfg.ProbeMode)
+
+	log.Info("worker Cobogó no ar", "sonda", cfg.ProbeMode)
 	if err := w.Run(ctx); err != nil && err != context.Canceled {
 		log.Error("worker encerrou com erro", "erro", err)
 		os.Exit(1)

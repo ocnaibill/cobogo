@@ -36,6 +36,14 @@ type Config struct {
 	// listener interno próprio (DEC-31 item 8). Sem token o listener não sobe.
 	RouterAddr  string
 	RouterToken string
+	// ProbeMode escolhe como o worker alcança uma aplicação recém-criada: "host"
+	// (a porta publicada no loopback, para desenvolvimento) ou "network" (o nome
+	// do contêiner na rede do projeto, quando o worker roda em contêiner;
+	// DEC-32 item 5).
+	ProbeMode string
+	// PanelTarget, quando definido, faz a tabela de rotas incluir o painel:
+	// o host de PublicURL leva a este destino (DEC-32 item 6).
+	PanelTarget string
 	// AppsDomain e AppsScheme são o padrão inicial do roteamento das
 	// aplicações (DEC-31); o banco os sobrepõe.
 	AppsDomain, AppsScheme string
@@ -54,6 +62,8 @@ func Load() (Config, error) {
 		APIAddr:        envOr("API_ADDR", ":8080"),
 		RouterAddr:     envOr("COBOGO_ROUTER_ADDR", ":8081"),
 		RouterToken:    strings.TrimSpace(os.Getenv("COBOGO_ROUTER_TOKEN")),
+		ProbeMode:      strings.ToLower(strings.TrimSpace(envOr("COBOGO_PROBE", "host"))),
+		PanelTarget:    strings.TrimRight(strings.TrimSpace(os.Getenv("COBOGO_PANEL_TARGET")), "/"),
 		PublicURL:      strings.TrimRight(strings.TrimSpace(os.Getenv("COBOGO_PUBLIC_URL")), "/"),
 		CookieInsecure: os.Getenv("COBOGO_COOKIE_INSECURE") == "1",
 	}
@@ -76,6 +86,15 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("config: COBOGO_TRUSTED_PROXIES: %w", err)
 		}
 		c.TrustedProxies = append(c.TrustedProxies, prefix)
+	}
+	if c.ProbeMode != "host" && c.ProbeMode != "network" {
+		return Config{}, fmt.Errorf("config: COBOGO_PROBE inválida %q: use host ou network", c.ProbeMode)
+	}
+	if c.PanelTarget != "" {
+		u, err := url.Parse(c.PanelTarget)
+		if err != nil || u.Scheme != "http" || u.Host == "" || u.Path != "" || u.User != nil {
+			return Config{}, fmt.Errorf("config: COBOGO_PANEL_TARGET inválida: use um endereço http://nome:porta sem caminho")
+		}
 	}
 	if c.RouterToken != "" && len(c.RouterToken) < 24 {
 		return Config{}, fmt.Errorf("config: COBOGO_ROUTER_TOKEN precisa ter ao menos 24 caracteres (gere com `openssl rand -hex 32`)")

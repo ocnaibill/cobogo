@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -516,10 +517,16 @@ var (
 // alive, quando não nulo, é consultado a cada rodada; se o contêiner terminou,
 // a sonda falha na hora com *ExitedError em vez de esperar o prazo.
 func ProbeReady(ctx context.Context, hostPort int, path string, timeout time.Duration, alive func(context.Context) (bool, int, error)) (ProbeResult, error) {
+	return ProbeReadyAt(ctx, "127.0.0.1", hostPort, path, timeout, alive)
+}
+
+// ProbeReadyAt é ProbeReady para um endereço qualquer: o loopback do host (a
+// porta publicada) ou o nome do contêiner na rede do projeto (DEC-32 item 5).
+func ProbeReadyAt(ctx context.Context, host string, port int, path string, timeout time.Duration, alive func(context.Context) (bool, int, error)) (ProbeResult, error) {
 	if path == "" {
 		path = "/"
 	}
-	url := fmt.Sprintf("http://127.0.0.1:%d%s", hostPort, path)
+	url := fmt.Sprintf("http://%s%s", net.JoinHostPort(host, strconv.Itoa(port)), path)
 	client := &http.Client{
 		Timeout:       probeRequestTime,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },

@@ -214,6 +214,18 @@ curl "${H[@]}" -X PUT $API/api/v1/settings/apps_scheme -d '{"value": "http"}'
 
 A partir do próximo deploy, a aplicação do projeto `meu-app` responde em `http://meu-app.localhost:8088/` e a `release` traz essa `url`. A rota muda até 2 s depois de o deploy concluir. Os contêineres de releases anteriores continuam rodando, sem receber tráfego, até a atualização com release preservada (parte 5c).
 
+### **8. Pilha completa em contêineres (D0)**
+
+Para testar a pilha inteira na própria máquina, sem túnel (DEC-32): API, worker, PostgreSQL, Traefik e o proxy do Docker, cada um no seu contêiner, só o proxy com o socket:
+
+```bash
+cp deploy/.env.example deploy/.env.local     # e preencha; o Git ignora este arquivo
+# em .env.local: COBOGO_PUBLIC_URL=http://localhost:8088  COBOGO_APPS_DOMAIN=localhost:8088  COBOGO_APPS_SCHEME=http
+docker compose --env-file deploy/.env.local -f deploy/compose.yml -f deploy/compose.local.yml up -d --build
+```
+
+O painel responde em `http://localhost:8088` (pelo Traefik) e a API também em `127.0.0.1:18080`. Na VM, use só `deploy/compose.yml`, que não publica porta nenhuma, e o perfil `tunnel` para o `cloudflared`. O roteiro de instalação na VM e os roles do banco vêm nas próximas partes.
+
 ## Testes automatizados
 
 ```bash
