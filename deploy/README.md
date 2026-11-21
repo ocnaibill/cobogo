@@ -106,6 +106,8 @@ Crie um projeto e faça um deploy (README, passos 1 a 5). Ao concluir, a `releas
 ## 8. Operação
 
 - **Logs:** `docker compose --env-file deploy/.env -f deploy/compose.yml logs -f api worker traefik`.
+- **Releases antigas:** depois de uma release nova entrar no ar, a anterior sai sozinha (para, é removida e as imagens além das 2 mais recentes são podadas) depois do período de espera, que é de 30 s e se edita pela API de configurações (`PUT /api/v1/settings/retire_grace_seconds` e `release_images_kept`; o painel ainda não tem tela para elas). O worker também varre, a cada 5 minutos, os contêineres do Cobogó que sobraram (DEC-38); ele só toca em contêiner com os labels do Cobogó e nunca na release ativa. O que ele fez aparece como operação "Faxina" no banco (`operations`).
+- **Excluir um projeto** pelo painel tira o endereço do ar na hora, apaga as variáveis cifradas e remove contêineres, rede e imagens do projeto; **o histórico de deploys fica** e volumes nunca são tocados. Apagar o histórico de vez é a issue #36.
 - **Atualizar:** `git pull` e repita o `up -d --build` do passo 5. O `migrate` roda sozinho antes da API e do worker; se faltar uma migration, eles recusam subir com uma mensagem clara.
 - **Reiniciar a VM:** a pilha do Cobogó volta sozinha (`restart: unless-stopped`), mas **as aplicações publicadas não**: elas não têm política de reinício (DEC-29/DEC-32), então as rotas apontam para contêineres parados até um novo deploy de cada projeto. Evite reiniciar a VM perto de uma demonstração.
 - **Parar:** `docker compose ... down` (mantém o banco). Com `-v` apaga o volume do PostgreSQL.
