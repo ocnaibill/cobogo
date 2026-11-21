@@ -35,6 +35,9 @@ var (
 	// Acesso por chave que não é um nome literal: só executando para saber.
 	envDynamic = regexp.MustCompile("(?:process|Bun)\\.env(?:\\?\\.)?\\[\\s*[^\"'`\\s]")
 
+	// import.meta.env.X: configuração de build no Vite e afins (DEC-37).
+	importMetaEnv = regexp.MustCompile(`import\.meta\.env\.([A-Za-z_][A-Za-z0-9_]*)`)
+
 	// Servidor do Bun sem porta explícita (DEC-36 item 5).
 	bunServeCall  = regexp.MustCompile(`\bBun\.serve\s*\(`)
 	defaultExport = regexp.MustCompile(`(?m)^\s*export\s+default\b`)
@@ -90,6 +93,14 @@ func extractSource(fsys fs.FS, x *Extraction) error {
 		scope := classifyScope(name)
 		for varName, line := range envReferences(data) {
 			x.emit(extractorSource, domain.Evidence{Kind: kindEnvReference, Name: varName, Source: name, Line: line, Scope: scope})
+		}
+		// import.meta.env é resolvido no build, não na execução; os nomes
+		// embutidos do Vite não são configuração do projeto.
+		for _, m := range importMetaEnv.FindAllSubmatchIndex(data, -1) {
+			varName := string(data[m[2]:m[3]])
+			if !viteBuiltins[varName] && scope != domain.ScopeTest {
+				x.emit(extractorSource, domain.Evidence{Kind: kindEnvReference, Name: varName, Source: name, Line: lineAt(data, m[0]), Scope: domain.ScopeBuild})
+			}
 		}
 		if scope == domain.ScopeRuntime && !portWord.Match(data) {
 			if loc := bunServeCall.FindIndex(data); loc != nil {
@@ -212,3 +223,5 @@ func bunEntry(command string) string {
 	}
 	return ""
 }
+
+var viteBuiltins = map[string]bool{"MODE": true, "DEV": true, "PROD": true, "SSR": true, "BASE_URL": true}

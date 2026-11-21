@@ -21,16 +21,21 @@ const (
 	FieldExecutionMode  = "execution_mode"
 	FieldNodeVersion    = "node_version"
 	FieldBunVersion     = "bun_version"
+	FieldOutputDir      = "output_dir"
+	FieldSPAFallback    = "spa_fallback"
 	FieldHealthPath     = "health_path"
 	FieldPort           = "port"
 )
 
 // Perfis e gerenciadores do catálogo JavaScript (DEC-25, DEC-36).
 const (
-	ProfileNode = "P-NODE"
-	ProfileBun  = "P-BUN"
-	ManagerNPM  = "npm"
-	ManagerBun  = "bun"
+	ProfileNode   = "P-NODE"
+	ProfileBun    = "P-BUN"
+	ProfileStatic = "P-STATIC"
+	ManagerNPM    = "npm"
+	ManagerBun    = "bun"
+	// ManagerNone: site estático sem build, nada a instalar (DEC-37).
+	ManagerNone = "none"
 )
 
 // DefaultBunVersion é a tag da imagem oven/bun quando o projeto não fixa uma
@@ -173,6 +178,9 @@ const (
 	ClassGenerable VarClass = "generable"
 	// ClassUser: o usuário informa.
 	ClassUser VarClass = "user"
+	// ClassPublic: configuração pública de build (VITE_, REACT_APP_...): vai
+	// para o JavaScript entregue ao navegador; nunca é segredo (DEC-15, DEC-37).
+	ClassPublic VarClass = "public"
 )
 
 // ExampleState descreve como a variável aparece nos arquivos de exemplo

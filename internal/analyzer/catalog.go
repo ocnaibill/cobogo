@@ -80,6 +80,9 @@ type FieldSpec struct {
 	Required    bool
 	Overridable bool
 	Validate    func(string) error
+	// OptionalFor lista os perfis em que o campo obrigatório não é exigido
+	// (o site estático não tem comando de execução; DEC-37).
+	OptionalFor []string
 }
 
 type Extractor struct {
@@ -104,20 +107,46 @@ func NodeCatalog() Catalog {
 			{ID: extractorManifest, Extract: extractManifest},
 			{ID: extractorEnvFiles, Extract: extractEnvFiles},
 			{ID: extractorSource, Extract: extractSource},
+			{ID: extractorStatic, Extract: extractStatic},
 		},
-		Rules: []Rule{ruleHEU01(), ruleHEU02(), ruleHEU05(), ruleHEU09(), ruleHEU10(), ruleHEU11()},
+		Rules: []Rule{ruleHEU01(), ruleHEU02(), ruleHEU03(), ruleHEU05(), ruleHEU08(), ruleHEU09(), ruleHEU10(), ruleHEU11()},
 		Fields: []FieldSpec{
-			{Name: domain.FieldProfile, Required: true},
+			{Name: domain.FieldProfile, Required: true, Overridable: true, Validate: validateProfile},
 			{Name: domain.FieldPackageManager, Required: true, Overridable: true, Validate: validatePackageManager},
-			{Name: domain.FieldStartCommand, Required: true, Overridable: true, Validate: validateCommand},
+			{Name: domain.FieldStartCommand, Required: true, OptionalFor: []string{domain.ProfileStatic}, Overridable: true, Validate: validateCommand},
 			{Name: domain.FieldBuildCommand, Overridable: true, Validate: validateCommand},
 			{Name: domain.FieldExecutionMode, Overridable: true, Validate: validateExecutionMode},
 			{Name: domain.FieldNodeVersion, Overridable: true, Validate: validateNodeVersion},
 			{Name: domain.FieldBunVersion, Overridable: true, Validate: validateBunVersion},
+			{Name: domain.FieldOutputDir, Overridable: true, Validate: validateOutputDir},
+			{Name: domain.FieldSPAFallback, Overridable: true, Validate: validateBool},
 			{Name: domain.FieldPort, Required: true, Overridable: true, Validate: validatePort},
 			{Name: domain.FieldHealthPath, Overridable: true, Validate: validateHealthPath},
 		},
 	}
+}
+
+func validateProfile(v string) error {
+	switch v {
+	case domain.ProfileNode, domain.ProfileBun, domain.ProfileStatic:
+		return nil
+	}
+	return fmt.Errorf("%q não é um perfil (P-NODE, P-BUN ou P-STATIC)", v)
+}
+
+// validateOutputDir aceita um caminho relativo dentro do projeto.
+func validateOutputDir(v string) error {
+	if v == "." || cleanOutDir(v) != "" {
+		return nil
+	}
+	return fmt.Errorf("%q não é um diretório relativo dentro do projeto", v)
+}
+
+func validateBool(v string) error {
+	if v != "true" && v != "false" {
+		return fmt.Errorf("%q não é true nem false", v)
+	}
+	return nil
 }
 
 func validatePackageManager(v string) error {

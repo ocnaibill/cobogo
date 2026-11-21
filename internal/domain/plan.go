@@ -19,6 +19,11 @@ type Plan struct {
 	PortOrigin     string `json:"port_origin"`
 	HealthPath     string `json:"health_path"`
 	Dockerfile     string `json:"dockerfile"`
+	// Perfil estático (DEC-37): diretório servido, fallback de SPA e as
+	// variáveis públicas que entram no build como argumentos.
+	OutputDir   string   `json:"output_dir,omitempty"`
+	SPAFallback bool     `json:"spa_fallback,omitempty"`
+	BuildArgs   []string `json:"build_args,omitempty"`
 }
 
 // gitHookTools são ferramentas que só instalam ganchos do Git; num contêiner

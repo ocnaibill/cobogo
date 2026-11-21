@@ -579,7 +579,9 @@ export interface components {
          *     `build_command`, `port`, `execution_mode` (`production` ou
          *     `development`), `node_version` (`22`, `24` ou `26`), `health_path`,
          *     `package_manager` (`npm` ou `bun`, quando o repositório tem os dois
-         *     lockfiles) e `bun_version` (`1`, `1.Y` ou `1.Y.Z`; DEC-36).
+         *     lockfiles), `bun_version` (`1`, `1.Y` ou `1.Y.Z`; DEC-36), `profile`
+         *     (`P-NODE`, `P-BUN` ou `P-STATIC`), `output_dir` e `spa_fallback`
+         *     (`true` ou `false`; DEC-37).
          *     Valores de variáveis de ambiente nunca passam por aqui.
          */
         Overrides: {
@@ -667,15 +669,27 @@ export interface components {
         };
         Plan: {
             /** @enum {string} */
-            profile: "P-NODE" | "P-BUN";
+            profile: "P-NODE" | "P-BUN" | "P-STATIC";
             runtime: string;
             build_image: string;
             /** @description Só no perfil P-NODE. */
             node_version?: string;
             /** @description Tag da imagem oven/bun; só no perfil P-BUN (DEC-36). */
             bun_version?: string;
-            /** @enum {string} */
-            package_manager: "npm" | "bun";
+            /** @description Diretório servido; só no perfil P-STATIC (DEC-37). */
+            output_dir?: string;
+            /** @description Rota desconhecida devolve index.html; só no perfil P-STATIC. */
+            spa_fallback?: boolean;
+            /**
+             * @description Variáveis públicas (VITE_, REACT_APP_...) entregues ao build do site
+             *     estático. Vão para o JavaScript do navegador; nunca segredos.
+             */
+            build_args?: string[];
+            /**
+             * @description `none` é site estático sem build, nada a instalar (DEC-37).
+             * @enum {string}
+             */
+            package_manager: "npm" | "bun" | "none";
             install_command: string;
             build_command?: string;
             start_command: string;
@@ -781,7 +795,7 @@ export interface components {
              *     inventa; pode ser gerado sob ação do usuário) ou `user`.
              * @enum {string}
              */
-            class: "platform" | "generable" | "user";
+            class: "platform" | "generable" | "user" | "public";
             /**
              * @description Como aparece no arquivo de exemplo.
              * @enum {string}

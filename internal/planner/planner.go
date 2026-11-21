@@ -59,6 +59,9 @@ func FromAnalysis(res domain.AnalysisResult) (domain.Plan, error) {
 		return domain.Plan{}, fmt.Errorf("planner: análise %s não pode gerar plano", res.Outcome)
 	}
 	profile := res.Fields[domain.FieldProfile].Value
+	if profile == domain.ProfileStatic {
+		return staticFromAnalysis(res)
+	}
 	if profile != domain.ProfileNode && profile != domain.ProfileBun {
 		return domain.Plan{}, fmt.Errorf("planner: perfil %q sem template", profile)
 	}
@@ -204,5 +207,5 @@ func CatalogImages() []string {
 	for _, v := range domain.SupportedNodeVersions {
 		images = append(images, nodeBuildImage(v), nodeRuntimeImage(v))
 	}
-	return append(images, bunBuildImage(domain.DefaultBunVersion), bunRuntimeImage(domain.DefaultBunVersion))
+	return append(images, bunBuildImage(domain.DefaultBunVersion), bunRuntimeImage(domain.DefaultBunVersion), staticServerImage)
 }

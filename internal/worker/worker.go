@@ -443,6 +443,9 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 		"build_image":     plan.BuildImage,
 		"node_version":    plan.NodeVersion,
 		"bun_version":     plan.BunVersion,
+		"output_dir":      plan.OutputDir,
+		"spa_fallback":    plan.SPAFallback,
+		"build_args":      plan.BuildArgs,
 		"install_command": plan.InstallCommand,
 		"build_command":   plan.BuildCommand,
 		"start_command":   plan.StartCommand,
@@ -473,7 +476,23 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 			return at("BUILDING", err)
 		}
 	}
-	buildResult, err := rt.Build(buildCtx, rootDir, plan.Dockerfile, imageTag, plan.Runtime, func(line string) {
+	// Configuração pública de build do site estático (DEC-37): só as variáveis
+	// públicas que a análise encontrou e o projeto definiu.
+	var buildArgs map[string]*string
+	if len(plan.BuildArgs) > 0 {
+		values, _, err := w.store.RevealEnvValues(buildCtx, project.ID)
+		if err != nil {
+			cancelBuild()
+			return at("BUILDING", fmt.Errorf("carregar variáveis públicas do build: %w", err))
+		}
+		buildArgs = map[string]*string{}
+		for _, name := range plan.BuildArgs {
+			if v, ok := values[name]; ok {
+				buildArgs[name] = &v
+			}
+		}
+	}
+	buildResult, err := rt.BuildWithArgs(buildCtx, rootDir, plan.Dockerfile, imageTag, plan.Runtime, buildArgs, func(line string) {
 		_ = w.emit(ctx, o, dep.ID, "building", "log", map[string]any{"line": line})
 	})
 	cancelBuild()
@@ -505,6 +524,11 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 	envValues, envMeta, err := w.store.RevealEnvValues(ctx, project.ID)
 	if err != nil {
 		return at("STARTING", fmt.Errorf("carregar variáveis do projeto: %w", err))
+	}
+	// O site estático é servido pelo nginx da plataforma: não há processo do
+	// projeto que use variáveis, então nenhuma é entregue (DEC-37).
+	if plan.Profile == domain.ProfileStatic {
+		envValues, envMeta = map[string]string{}, nil
 	}
 	// Valores que um log de falha precisa redigir: os do projeto, sem PORT
 	// (da plataforma, não é segredo e aparece em qualquer log).

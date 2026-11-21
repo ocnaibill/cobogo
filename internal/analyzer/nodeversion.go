@@ -61,6 +61,13 @@ func ruleHEU10() Rule {
 			out := RuleOutput{Proposals: []domain.Proposal{
 				{Field: domain.FieldNodeVersion, Value: domain.DefaultNodeVersion, Origin: domain.OriginDefault},
 			}}
+			// node-sass compila código nativo contra a API do V8 e está
+			// descontinuado: não funciona nas versões do catálogo.
+			for _, dep := range in.Named(kindDependency, "node-sass") {
+				out.Warnings = append(out.Warnings, finding("", fmt.Sprintf(
+					"HEU-10: %s depende de node-sass, descontinuado e que compila código nativo: ele não funciona nas versões de Node do catálogo (%s) e o build tende a falhar. O substituto recomendado é o pacote sass (Dart Sass). Suporte a versões antigas do Node é a issue #32.",
+					dep.Source, supportedNodeVersions()), dep))
+			}
 			warn := func(e domain.Evidence, why string) {
 				out.Warnings = append(out.Warnings, finding("", fmt.Sprintf(
 					"HEU-10: %s declara %q, %s; a imagem usará o Node %s (versões suportadas: %s). Se a aplicação falhar, a versão do Node pode ser o motivo; você pode escolher outra.",

@@ -72,7 +72,7 @@ func fixtures() []fixture {
 	unsupportedByHEU01 := want{
 		outcome:     domain.AnalysisUnsupported,
 		unsupported: []string{"HEU-01"},
-		skipped:     []string{"HEU-02", "HEU-05", "HEU-09", "HEU-10", "HEU-11"},
+		skipped:     []string{"HEU-02", "HEU-03", "HEU-05", "HEU-09", "HEU-10", "HEU-11"},
 	}
 	portRepo := nodeRepo(startIndex, map[string]string{
 		"index.js": "const port = process.env.PORT || 3000;",
@@ -743,7 +743,8 @@ func TestCheckOverrides(t *testing.T) {
 
 	invalid := map[string]map[string]string{
 		"unknown field":          {"dockerfile": "FROM scratch"},
-		"field without override": {"profile": "P-NODE"},
+		"unknown profile":        {"profile": "P-PY"},
+		"field without override": {"package_manager_x": "npm"},
 		"port out of range":      {"port": "70000"},
 		"port not a number":      {"port": "exemplo"},
 		"empty command":          {"start_command": "   "},

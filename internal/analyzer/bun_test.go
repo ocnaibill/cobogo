@@ -110,7 +110,7 @@ func TestBunFixtures(t *testing.T) {
 		{
 			name:  "yarn next to bun is unsupported",
 			files: map[string]string{"package.json": startServer, "bun.lock": "{}", "yarn.lock": ""},
-			want:  want{outcome: domain.AnalysisUnsupported, unsupported: []string{"HEU-01"}, skipped: []string{"HEU-02", "HEU-05", "HEU-09", "HEU-10", "HEU-11"}},
+			want:  want{outcome: domain.AnalysisUnsupported, unsupported: []string{"HEU-01"}, skipped: []string{"HEU-02", "HEU-03", "HEU-05", "HEU-09", "HEU-10", "HEU-11"}},
 		},
 		{
 			name:  "packageManager pins an exact Bun version",

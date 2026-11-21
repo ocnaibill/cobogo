@@ -394,7 +394,10 @@ function VariablesTab({ projectId, discovered }: { projectId: string; discovered
                         )}
                       </td>
                       <td className="mono faint">{s ? "••••••••••••" : "—"}</td>
-                      <td className="small muted">{d.hint?.message ?? (d.declared_in_example ? "declarada no exemplo" : "referenciada no código")}</td>
+                      <td className="small muted">
+                        {d.class === "public" && <Tag tone="info">pública: vai para o JavaScript do navegador</Tag>}{" "}
+                        {d.hint?.message ?? (d.declared_in_example ? "declarada no exemplo" : "referenciada no código")}
+                      </td>
                       <td>
                         <div className="row-end">
                           <Button variant="ghost" onClick={() => setName(d.name)}>

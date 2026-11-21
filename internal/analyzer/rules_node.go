@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/ocnaibill/cobogo/internal/domain"
@@ -56,12 +57,13 @@ func jsManager(in RuleInput) (string, domain.Evidence) {
 }
 
 // HEU-01: package.json e um lockfile coerente definem o perfil: npm → P-NODE,
-// Bun → P-BUN (DEC-36). npm e Bun juntos viram pergunta; yarn, pnpm e
-// workspaces seguem fora.
+// Bun → P-BUN (DEC-36), ou P-STATIC quando o build gera um site estático
+// (DEC-37). Um index.html na raiz sem build é site estático sem instalação.
+// npm e Bun juntos viram pergunta; yarn, pnpm e workspaces seguem fora.
 func ruleHEU01() Rule {
 	return Rule{
 		Meta: RuleMeta{
-			ID: "HEU-01", Version: "0.3", State: RuleProposed,
+			ID: "HEU-01", Version: "0.4", State: RuleProposed,
 			Fields: []string{domain.FieldProfile, domain.FieldPackageManager},
 		},
 		Apply: func(in RuleInput) RuleOutput {
@@ -75,8 +77,17 @@ func ruleHEU01() Rule {
 				unsupported("package.json inválido: "+invalid[0].Value, invalid[0])
 				return out
 			}
+			profile, manager, sd := jsProfile(in)
+			// Site estático sem build: nada a instalar, lockfile dispensável.
+			if profile == domain.ProfileStatic && sd.NoBuild {
+				out.Proposals = []domain.Proposal{
+					{Field: domain.FieldProfile, Value: domain.ProfileStatic, Origin: domain.OriginInference, EvidenceIDs: evidenceIDs(sd.Evidence)},
+					{Field: domain.FieldPackageManager, Value: domain.ManagerNone, Origin: domain.OriginInference, EvidenceIDs: evidenceIDs(sd.Evidence)},
+				}
+				return out
+			}
 			if len(manifest) == 0 {
-				unsupported("package.json ausente no diretório raiz; os perfis JavaScript (P-NODE, P-BUN) não se aplicam")
+				unsupported("package.json ausente e nenhum index.html na raiz; nenhum perfil (P-NODE, P-BUN, P-STATIC) se aplica")
 				return out
 			}
 
@@ -105,7 +116,7 @@ func ruleHEU01() Rule {
 				return out
 			}
 
-			manager, lock := jsManager(in)
+			_, lock := jsManager(in)
 			if manager == "" {
 				f := finding(domain.FieldPackageManager,
 					"HEU-01: o repositório tem lockfile do npm e do Bun; escolha qual gerenciador usar (o outro lockfile é ignorado)",
@@ -118,12 +129,14 @@ func ruleHEU01() Rule {
 				return out
 			}
 
-			profile := domain.ProfileNode
-			if manager == domain.ManagerBun {
-				profile = domain.ProfileBun
+			// Um override de perfil de servidor precisa casar com o gerenciador.
+			if want := in.Overrides[domain.FieldProfile]; want != "" && want != domain.ProfileStatic && want != profile {
+				out.Conflicts = append(out.Conflicts, finding(domain.FieldProfile, fmt.Sprintf(
+					"HEU-01: o perfil %s não combina com o gerenciador %s deste repositório; use %s ou %s", want, manager, profile, domain.ProfileStatic), lock))
+				return out
 			}
 			out.Proposals = []domain.Proposal{
-				{Field: domain.FieldProfile, Value: profile, Origin: domain.OriginInference, EvidenceIDs: evidenceIDs(append(slices.Clone(manifest), lock))},
+				{Field: domain.FieldProfile, Value: profile, Origin: domain.OriginInference, EvidenceIDs: evidenceIDs(slices.Concat(manifest, []domain.Evidence{lock}, sd.Evidence))},
 				{Field: domain.FieldPackageManager, Value: manager, Origin: domain.OriginInference, EvidenceIDs: evidenceIDs([]domain.Evidence{lock})},
 			}
 			return out
@@ -147,12 +160,16 @@ func ruleHEU02() Rule {
 				{Field: domain.FieldExecutionMode, Value: domain.ModeProduction, Origin: domain.OriginDefault},
 			}}
 			start := in.Named(kindScript, "start")
+			profile, _, _ := jsProfile(in)
 			manager, _ := jsManager(in)
 			options, omitted := startOptions(in.Of(kindScript), manager)
 			if manager == domain.ManagerBun {
 				options = append(options, entryOptions(in.Of(kindEntryField), options)...)
 			}
 			switch {
+			case profile == domain.ProfileStatic:
+				// O site estático é servido pela plataforma: não há comando de
+				// execução a pedir (DEC-37).
 			case len(start) == 0:
 				f := finding(domain.FieldStartCommand,
 					"HEU-02: scripts.start ausente; não é permitido assumir um entrypoint arbitrário")
@@ -199,6 +216,13 @@ func ruleHEU05() Rule {
 			// Caminho da sonda de readiness: o padrão é a raiz; só um override
 			// o muda (DEC-26).
 			defaultHealth := domain.Proposal{Field: domain.FieldHealthPath, Value: "/", Origin: domain.OriginDefault}
+			// O site estático é servido pelo nginx da plataforma, na porta dela.
+			if profile, _, sd := jsProfile(in); profile == domain.ProfileStatic {
+				return RuleOutput{Proposals: []domain.Proposal{
+					defaultHealth,
+					{Field: domain.FieldPort, Value: domain.PlatformPort, Origin: domain.OriginPlatform, EvidenceIDs: evidenceIDs(sd.Evidence)},
+				}}
+			}
 			refs := in.Named(kindEnvReference, "PORT")
 			var runtime []domain.Evidence
 			for _, e := range refs {
@@ -295,6 +319,19 @@ func ruleHEU09() Rule {
 
 			for _, e := range in.Of(kindEnvExposure) {
 				out.Warnings = append(out.Warnings, exposureWarning(e))
+			}
+			// Nome de segredo com prefixo público: o valor vai para o
+			// JavaScript do navegador, onde qualquer visitante o lê (DEC-15).
+			var exposed []string
+			for _, v := range byName {
+				if v.Class == domain.ClassPublic && secretLikeName(v.Name) {
+					exposed = append(exposed, v.Name)
+				}
+			}
+			slices.Sort(exposed)
+			for _, name := range exposed {
+				out.Warnings = append(out.Warnings, finding("", fmt.Sprintf(
+					"HEU-09: %s tem nome de segredo, mas o prefixo a torna pública: o valor vai para o JavaScript entregue ao navegador e qualquer visitante pode lê-lo. Use um valor que possa ser público, ou mova a chamada para um servidor", name)))
 			}
 			return out
 		},
@@ -503,4 +540,90 @@ func entryOptions(entries []domain.Evidence, existing []domain.Option) []domain.
 		out = append(out, domain.Option{Value: value, Kind: domain.OptionProduction, Note: "arquivo do campo " + e.Name + " do package.json"})
 	}
 	return out
+}
+
+// HEU-03: no perfil estático, o diretório que o build gera (o que será
+// servido) e se rotas desconhecidas devolvem index.html (DEC-37).
+func ruleHEU03() Rule {
+	return Rule{
+		Meta: RuleMeta{
+			ID: "HEU-03", Version: "0.1", State: RuleProposed,
+			Requires: []string{"HEU-01"},
+			Fields:   []string{domain.FieldOutputDir, domain.FieldSPAFallback},
+		},
+		Apply: func(in RuleInput) RuleOutput {
+			profile, _, sd := jsProfile(in)
+			if profile != domain.ProfileStatic {
+				return RuleOutput{Warnings: ssrNotice(in)}
+			}
+			var out RuleOutput
+			if sd.OutDir == "" {
+				out.Pending = append(out.Pending, finding(domain.FieldOutputDir,
+					"HEU-03: não foi possível saber o diretório que o build gera; informe-o (por exemplo dist)", sd.Evidence...))
+			} else {
+				out.Proposals = append(out.Proposals, domain.Proposal{Field: domain.FieldOutputDir, Value: sd.OutDir, Origin: sd.OutOrigin, EvidenceIDs: evidenceIDs(sd.OutEvidence)})
+			}
+			spa := domain.Proposal{Field: domain.FieldSPAFallback, Value: "false", Origin: domain.OriginDefault}
+			if sd.Tool != "" {
+				spa = domain.Proposal{Field: domain.FieldSPAFallback, Value: strconv.FormatBool(sd.SPA), Origin: domain.OriginInference, EvidenceIDs: evidenceIDs(sd.Evidence)}
+			}
+			out.Proposals = append(out.Proposals, spa)
+			return out
+		},
+	}
+}
+
+// ssrNotice explica por que um build de ferramenta estática não virou site
+// estático: o projeto renderiza no servidor e precisa de um start (DEC-37).
+func ssrNotice(in RuleInput) []domain.Finding {
+	build := in.Named(kindScript, "build")
+	if len(build) == 0 {
+		return nil
+	}
+	tool, _ := staticBuild(build[0].Value)
+	if tool == "" {
+		return nil
+	}
+	var cited []domain.Evidence
+	cited = append(cited, in.Of(kindSSRMarker)...)
+	for _, e := range in.Of(kindDependency) {
+		if slices.Contains(ssrDeps, e.Name) {
+			cited = append(cited, e)
+		}
+	}
+	reason := ""
+	switch {
+	case len(cited) > 0:
+		reason = fmt.Sprintf("o projeto renderiza no servidor (%s em %s)", cited[0].Name, cited[0].Source)
+	case tool == "next":
+		reason = "Next.js sem output: 'export' renderiza no servidor"
+	default:
+		return nil
+	}
+	return []domain.Finding{finding("", fmt.Sprintf(
+		"HEU-03: %s; por isso não é publicado como site estático e precisa de um comando de execução de produção", reason), append(cited, build[0])...)}
+}
+
+// HEU-08: Dockerfile e compose que o repositório já traz. O Cobogó não os usa
+// nem os executa: gera o próprio plano a partir dos manifestos, para poder
+// explicar cada decisão e manter os limites e o isolamento (DEC-37). Roda
+// mesmo quando o perfil não é suportado: é informação, não decisão.
+func ruleHEU08() Rule {
+	return Rule{
+		Meta: RuleMeta{ID: "HEU-08", Version: "0.1", State: RuleProposed},
+		Apply: func(in RuleInput) RuleOutput {
+			artifacts := in.Of(kindDockerArtifact)
+			if len(artifacts) == 0 {
+				return RuleOutput{}
+			}
+			names := make([]string, 0, len(artifacts))
+			for _, e := range artifacts {
+				names = append(names, e.Source)
+			}
+			slices.Sort(names)
+			return RuleOutput{Warnings: []domain.Finding{finding("", fmt.Sprintf(
+				"HEU-08: o repositório traz %s. O Cobogó não o usa nem o executa: gera o próprio plano a partir do que lê no repositório, para explicar cada decisão. Um compose costuma descrever o ambiente de desenvolvimento, não a produção.",
+				strings.Join(names, ", ")), artifacts...)}}
+		},
+	}
 }

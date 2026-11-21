@@ -26,6 +26,10 @@ var generableVars = map[string]bool{
 // Cobogó sob ação do usuário (segredos geráveis) ou o usuário.
 func ClassifyVariable(name string) domain.VarClass { return classifyVariable(name) }
 
+// publicPrefixes marcam configuração pública de build: as ferramentas só
+// expõem ao código do navegador variáveis com esses prefixos (DEC-37).
+var publicPrefixes = []string{"VITE_", "REACT_APP_", "VUE_APP_", "PUBLIC_", "NEXT_PUBLIC_"}
+
 func classifyVariable(name string) domain.VarClass {
 	upper := strings.ToUpper(name)
 	switch {
@@ -33,6 +37,11 @@ func classifyVariable(name string) domain.VarClass {
 		return domain.ClassPlatform
 	case generableVars[upper]:
 		return domain.ClassGenerable
+	}
+	for _, prefix := range publicPrefixes {
+		if strings.HasPrefix(upper, prefix) {
+			return domain.ClassPublic
+		}
 	}
 	return domain.ClassUser
 }

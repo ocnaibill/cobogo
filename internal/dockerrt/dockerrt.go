@@ -203,12 +203,21 @@ type BuildResult struct {
 // Build constrói a imagem a partir do workspace e do Dockerfile gerado,
 // registrando logs do stream em logSink (RF-04, RF-07).
 func (r *Runtime) Build(ctx context.Context, workspaceDir, dockerfile, imageTag, baseImage string, logSink func(line string)) (BuildResult, error) {
+	return r.BuildWithArgs(ctx, workspaceDir, dockerfile, imageTag, baseImage, nil, logSink)
+}
+
+// BuildWithArgs é o Build com argumentos de build (ARG): só configuração
+// pública de site estático passa por aqui, porque vai para o bundle de todo
+// jeito (DEC-37). Segredos nunca: um ARG fica no histórico da imagem.
+func (r *Runtime) BuildWithArgs(ctx context.Context, workspaceDir, dockerfile, imageTag, baseImage string, args map[string]*string, logSink func(line string)) (BuildResult, error) {
 	buildCtx, err := buildContext(workspaceDir, dockerfile, logSink)
 	if err != nil {
 		return BuildResult{}, err
 	}
 
-	resp, err := r.cli.ImageBuild(ctx, buildCtx, buildOptions(imageTag, r.limits))
+	opts := buildOptions(imageTag, r.limits)
+	opts.BuildArgs = args
+	resp, err := r.cli.ImageBuild(ctx, buildCtx, opts)
 	if err != nil {
 		return BuildResult{}, fmt.Errorf("dockerrt: iniciar build: %w", err)
 	}

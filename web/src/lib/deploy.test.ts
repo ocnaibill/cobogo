@@ -102,3 +102,12 @@ describe("profileLabel", () => {
     expect(profileLabel(undefined)).toBeUndefined();
   });
 });
+
+describe("static generating line", () => {
+  it("says what is built and served", () => {
+    const line = eventToLines(ev("generating", "completed", { profile: "P-STATIC", build_command: "vite build", output_dir: "dist", port: 8080, start_command: "nginx" }))[0]!.text;
+    expect(line).toContain("site estático");
+    expect(line).toContain("dist/");
+    expect(line).not.toContain("Node");
+  });
+});

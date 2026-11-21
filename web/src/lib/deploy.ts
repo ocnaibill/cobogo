@@ -128,7 +128,9 @@ export function eventToLines(e: DeploymentEvent): LogLine[] {
     case "completed": {
       const extra =
         e.stage === "fetching" && p.commit_sha ? ` (commit ${str(p.commit_sha).slice(0, 7)})` :
-        e.stage === "generating" && p.start_command
+        e.stage === "generating" && p.profile === "P-STATIC"
+          ? ` (site estático: ${p.build_command ? `\`${str(p.build_command)}\` → ` : ""}${str(p.output_dir)}/ servido pelo nginx na porta ${str(p.port)})`
+          : e.stage === "generating" && p.start_command
           ? ` (${p.bun_version ? `Bun ${str(p.bun_version)}` : `Node ${str(p.node_version)}`}, porta ${str(p.port)}, \`${str(p.start_command)}\`)`
           :
         e.stage === "starting" && Array.isArray(p.env) ? ` (${p.env.length} variável(is) entregue(s))` : "";
@@ -187,6 +189,8 @@ export const FIELD_LABEL: Record<string, string> = {
   execution_mode: "Modo de execução",
   node_version: "Versão do Node",
   bun_version: "Versão do Bun",
+  output_dir: "Diretório servido",
+  spa_fallback: "Fallback de SPA",
   health_path: "Caminho da verificação",
   port: "Porta",
 };
@@ -194,7 +198,7 @@ export const FIELD_LABEL: Record<string, string> = {
 /** Nome legível de um perfil do analisador (`p-node` → `Node.js`). */
 export function profileLabel(id?: string): string | undefined {
   if (!id) return undefined;
-  const known: Record<string, string> = { "p-node": "Node.js", "p-bun": "Bun" };
+  const known: Record<string, string> = { "p-node": "Node.js", "p-bun": "Bun", "p-static": "Site estático" };
   return known[id.toLowerCase()] ?? id.replace(/^p-/i, "");
 }
 

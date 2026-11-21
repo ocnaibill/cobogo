@@ -29,6 +29,14 @@ const (
 	// kindBunDefaultPort: servidor do Bun sem porta, que lê PORT sozinho
 	// (Bun.serve sem port, ou export default do arquivo de entrada; DEC-36).
 	kindBunDefaultPort = "bun.default_port"
+	// Perfil estático (DEC-37).
+	kindStaticIndex  = "static.index"        // index.html na raiz
+	kindDependency   = "manifest.dependency" // dependência que decide a forma de publicar
+	kindStaticOutDir = "static.out_dir"      // outDir literal na configuração da ferramenta
+	kindSSRMarker    = "static.ssr"          // sinal de renderização no servidor
+	kindNextExport   = "static.next_export"  // next.config com output: 'export'
+	// kindDockerArtifact: Dockerfile ou compose já presente na raiz (HEU-08).
+	kindDockerArtifact = "artifact.docker"
 )
 
 const maxFileSize = 1 << 20 // 1 MiB; arquivos maiores viram lacuna de cobertura

@@ -1154,7 +1154,9 @@ components:
         `build_command`, `port`, `execution_mode` (`production` ou
         `development`), `node_version` (`22`, `24` ou `26`), `health_path`,
         `package_manager` (`npm` ou `bun`, quando o repositório tem os dois
-        lockfiles) e `bun_version` (`1`, `1.Y` ou `1.Y.Z`; DEC-36).
+        lockfiles), `bun_version` (`1`, `1.Y` ou `1.Y.Z`; DEC-36), `profile`
+        (`P-NODE`, `P-BUN` ou `P-STATIC`), `output_dir` e `spa_fallback`
+        (`true` ou `false`; DEC-37).
         Valores de variáveis de ambiente nunca passam por aqui.
       additionalProperties:
         type: string
@@ -1284,7 +1286,7 @@ components:
       properties:
         profile:
           type: string
-          enum: [P-NODE, P-BUN]
+          enum: [P-NODE, P-BUN, P-STATIC]
         runtime:
           type: string
         build_image:
@@ -1295,9 +1297,23 @@ components:
         bun_version:
           type: string
           description: Tag da imagem oven/bun; só no perfil P-BUN (DEC-36).
+        output_dir:
+          type: string
+          description: Diretório servido; só no perfil P-STATIC (DEC-37).
+        spa_fallback:
+          type: boolean
+          description: Rota desconhecida devolve index.html; só no perfil P-STATIC.
+        build_args:
+          type: array
+          items:
+            type: string
+          description: |
+            Variáveis públicas (VITE_, REACT_APP_...) entregues ao build do site
+            estático. Vão para o JavaScript do navegador; nunca segredos.
         package_manager:
           type: string
-          enum: [npm, bun]
+          enum: [npm, bun, none]
+          description: '`none` é site estático sem build, nada a instalar (DEC-37).'
         install_command:
           type: string
         build_command:
@@ -1502,7 +1518,7 @@ components:
           description: |
             `platform` (fornecida pelo Cobogó), `generable` (segredo que o app
             inventa; pode ser gerado sob ação do usuário) ou `user`.
-          enum: [platform, generable, user]
+          enum: [platform, generable, user, public]
         example:
           type: string
           description: Como aparece no arquivo de exemplo.

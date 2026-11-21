@@ -741,7 +741,27 @@ function PlanView({ deploymentId, hasAnalysis }: { deploymentId: string; hasAnal
     );
   if (plan.isError) return <ErrorBox error={plan.error} />;
   const p = plan.data!;
-  const rows: [string, string][] = [
+  const statik = p.profile === "P-STATIC";
+  const rows: [string, string][] = statik
+    ? [
+        ["Perfil", `${profileLabel(p.profile)} (${p.profile})`],
+        ["Gerenciador", p.package_manager === "none" ? "nenhum: servido como está" : p.package_manager],
+        ...(p.package_manager === "none"
+          ? []
+          : ([
+              ["Versão", p.bun_version ? `Bun ${p.bun_version}` : `Node ${p.node_version ?? "—"}`],
+              ["Imagem de build", p.build_image],
+              ["Instalação", p.install_command],
+              ["Build", p.build_command || "—"],
+            ] as [string, string][])),
+        ["Diretório servido", p.output_dir === "." ? "a raiz do repositório" : `${p.output_dir}/`],
+        ["Fallback de SPA", p.spa_fallback ? "sim: rota desconhecida devolve index.html" : "não: rota desconhecida dá 404"],
+        ["Variáveis públicas no build", p.build_args?.length ? p.build_args.join(", ") : "nenhuma"],
+        ["Servidor", `${p.runtime} (sem root)`],
+        ["Porta", `${p.port} (${ORIGIN_LABEL[p.port_origin] ?? p.port_origin})`],
+        ["Verificação", p.health_path],
+      ]
+    : [
     ["Perfil", `${profileLabel(p.profile) ?? p.profile} (${p.profile})`],
     ["Gerenciador", p.package_manager],
     ["Versão", p.bun_version ? `Bun ${p.bun_version}` : `Node ${p.node_version ?? "—"}`],
@@ -753,7 +773,7 @@ function PlanView({ deploymentId, hasAnalysis }: { deploymentId: string; hasAnal
     ["Modo", p.execution_mode === "production" ? "produção" : "desenvolvimento"],
     ["Porta", `${p.port} (${ORIGIN_LABEL[p.port_origin] ?? p.port_origin})`],
     ["Verificação", p.health_path],
-  ];
+      ];
   return (
     <div className="stack">
       <Card title="O que será executado" icon="terminal">
@@ -794,7 +814,7 @@ export function AnalysisDetail({ analysis }: { analysis: Analysis }) {
         <div className="stack">
           <div className="profile-head">
             <span className="profile-mark" aria-hidden="true">
-              {profile === "Node.js" ? "JS" : profile === "Bun" ? "BUN" : (profile ?? "?").slice(0, 2).toUpperCase()}
+              {profile === "Node.js" ? "JS" : profile === "Bun" ? "BUN" : profile === "Site estático" ? "WWW" : (profile ?? "?").slice(0, 2).toUpperCase()}
             </span>
             <div className="stack-sm">
               <h2>{profile ?? "Perfil não decidido"}</h2>
@@ -869,8 +889,8 @@ export function AnalysisDetail({ analysis }: { analysis: Analysis }) {
                   <tr key={v.name}>
                     <td className="mono">{v.name}</td>
                     <td>
-                      <Tag tone={v.class === "platform" ? "brand" : v.class === "generable" ? "success" : "warning"}>
-                        {v.class === "platform" ? "o Cobogó" : v.class === "generable" ? "pode ser gerada" : "você"}
+                      <Tag tone={v.class === "platform" ? "brand" : v.class === "generable" ? "success" : v.class === "public" ? "info" : "warning"}>
+                        {v.class === "platform" ? "o Cobogó" : v.class === "generable" ? "pode ser gerada" : v.class === "public" ? "você · pública" : "você"}
                       </Tag>
                     </td>
                     <td className="small">{v.example}</td>

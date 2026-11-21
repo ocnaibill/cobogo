@@ -244,7 +244,11 @@ func resolve(cat Catalog, proposals []domain.Proposal, pending, conflicts []doma
 				owner[field] = r.Meta.ID
 			}
 		}
+		profile := fields[domain.FieldProfile].Value
 		for _, spec := range cat.Fields {
+			if slices.Contains(spec.OptionalFor, profile) {
+				continue
+			}
 			if _, ok := fields[spec.Name]; !ok && spec.Required && !open[spec.Name] && !asked[owner[spec.Name]] {
 				kept = append(kept, domain.Finding{Field: spec.Name, Message: "nenhuma regra resolveu o campo obrigatório " + spec.Name})
 			}
