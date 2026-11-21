@@ -57,3 +57,29 @@ export function summarize(op: Operation): string {
   }
   return "";
 }
+
+export type AppTransition = "stopping" | "starting" | "restarting";
+
+const TRANSITION_OF: Partial<Record<Operation["kind"], AppTransition>> = { stop_app: "stopping", start_app: "starting", restart_app: "restarting" };
+
+/** A aplicação está mudando de estado agora? Vem das operações do projeto, então
+ * continua valendo depois de recarregar a página ou de sair e voltar. */
+export function appTransition(ops: Pick<Operation, "kind" | "state">[] | undefined): AppTransition | null {
+  for (const op of ops ?? []) {
+    const t = TRANSITION_OF[op.kind];
+    if (t && (op.state === "PENDING" || op.state === "RUNNING")) return t;
+  }
+  return null;
+}
+
+export const TRANSITION_LABEL: Record<AppTransition, string> = {
+  stopping: "Parando…",
+  starting: "Iniciando…",
+  restarting: "Reiniciando…",
+};
+
+export const TRANSITION_NOTICE: Record<AppTransition, string> = {
+  stopping: "Parando a aplicação… o endereço já mostra a página de projeto inativo.",
+  starting: "Iniciando a aplicação e esperando ela responder…",
+  restarting: "Reiniciando a aplicação…",
+};

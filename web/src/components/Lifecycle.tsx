@@ -1,10 +1,10 @@
 // Ciclo de vida do projeto (DEC-38): operações recentes, aplicar limites na
 // hora e a zona de perigo (excluir). A API só pede; o worker executa.
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, unwrap } from "../api/client";
-import { isSettled, OP_LABEL, OP_STATE_LABEL, summarize, type Operation } from "../lib/operations";
+import { appTransition, isSettled, OP_LABEL, OP_STATE_LABEL, summarize, TRANSITION_NOTICE, type AppTransition, type Operation } from "../lib/operations";
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Notice, Tag, When } from "./ui";
 import { Icon } from "./icons";
 
@@ -215,6 +215,22 @@ export function useAppControl(projectId: string) {
   const [error, setError] = useState<string | null>(null);
   const op = useOperation(pending?.id ?? null);
   const settled = !!op.data && isSettled(op.data);
+  // O que está acontecendo com a aplicação vem das operações do projeto (e não
+  // só do clique desta tela): vale depois de recarregar ou de voltar à página.
+  const ops = useQuery({
+    queryKey: ["operations", projectId],
+    queryFn: () => unwrap(api.GET("/projects/{id}/operations", { params: { path: { id: projectId } } })),
+    refetchInterval: (q) => (appTransition(q.state.data?.operations) ? 1500 : false),
+  });
+  const transition: AppTransition | null = appTransition(ops.data?.operations);
+  const wasChanging = useRef(false);
+  useEffect(() => {
+    // Quando a mudança termina, o estado do projeto e as listas se atualizam.
+    if (wasChanging.current && !transition) {
+      for (const key of [["project", projectId], ["projects"]]) qc.invalidateQueries({ queryKey: key });
+    }
+    wasChanging.current = !!transition;
+  }, [transition, projectId, qc]);
 
   useEffect(() => {
     if (!settled) return;
@@ -229,19 +245,22 @@ export function useAppControl(projectId: string) {
         action === "stop" ? api.POST("/projects/{id}/app/stop", path) : action === "start" ? api.POST("/projects/{id}/app/start", path) : api.POST("/projects/{id}/app/restart", path),
       );
       setPending({ id: created.id, action });
+      // A operação nova entra na lista já, e a lista passa a ser consultada de perto.
+      qc.invalidateQueries({ queryKey: ["operations", projectId] });
     } catch (e) {
       setPending(null);
       setError(e instanceof Error ? e.message : String(e));
     }
   }
 
-  const busy = !!pending && !settled;
+  const busy = (!!pending && !settled) || !!transition;
   let notice: { tone: "success" | "danger" | "info"; text: string } | null = null;
   if (error) notice = { tone: "danger", text: error };
-  else if (pending && busy) notice = { tone: "info", text: pending.action === "stop" ? "Parando a aplicação…" : pending.action === "start" ? "Iniciando a aplicação e esperando ela responder…" : "Reiniciando a aplicação…" };
+  else if (transition) notice = { tone: "info", text: TRANSITION_NOTICE[transition] };
+  else if (pending && !settled) notice = { tone: "info", text: "Enviando o pedido…" };
   else if (pending && op.data?.state === "DONE") notice = { tone: "success", text: APP_DONE[pending.action] };
   else if (pending && op.data?.state === "FAILED") notice = { tone: "danger", text: op.data.error || "A operação falhou." };
-  return { run, busy, notice };
+  return { run, busy, notice, transition };
 }
 
 /** Os botões da aplicação: no ar, para ou reinicia; parada, inicia. */

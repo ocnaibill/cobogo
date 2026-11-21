@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isSettled, summarize, type Operation } from "./operations";
+import { appTransition, isSettled, summarize, type Operation } from "./operations";
 
 const op = (over: Partial<Operation>): Operation => ({
   id: "1", kind: "retire_releases", state: "DONE", params: {}, result: {}, attempts: 1,
@@ -36,5 +36,19 @@ describe("summarize", () => {
     expect(isSettled(op({ state: "DONE" }))).toBe(true);
     expect(isSettled(op({ state: "FAILED" }))).toBe(true);
     expect(isSettled(op({ state: "RUNNING" }))).toBe(false);
+  });
+});
+
+describe("appTransition", () => {
+  it("is null when nothing is changing the application", () => {
+    expect(appTransition(undefined)).toBeNull();
+    expect(appTransition([])).toBeNull();
+    expect(appTransition([{ kind: "stop_app", state: "DONE" }, { kind: "start_app", state: "FAILED" }])).toBeNull();
+  });
+  it("names the change in progress, ignoring other kinds of operation", () => {
+    expect(appTransition([{ kind: "apply_limits", state: "RUNNING" }])).toBeNull();
+    expect(appTransition([{ kind: "stop_app", state: "PENDING" }])).toBe("stopping");
+    expect(appTransition([{ kind: "sweep", state: "DONE" }, { kind: "start_app", state: "RUNNING" }])).toBe("starting");
+    expect(appTransition([{ kind: "restart_app", state: "RUNNING" }])).toBe("restarting");
   });
 });

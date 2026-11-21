@@ -11,6 +11,7 @@ import { AppButtons, ApplyLimits, DangerZone, OperationsTab, useAppControl } fro
 import { profileLabel } from "../lib/deploy";
 import { EnvHistory, ImportEnv, Suggestions } from "../components/Secrets";
 import { missingLikely, withRequired } from "../lib/secrets";
+import { TRANSITION_LABEL } from "../lib/operations";
 
 type Tab = "deploys" | "variaveis" | "limites" | "operacoes";
 
@@ -22,7 +23,13 @@ export function ProjectPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const project = useQuery({ queryKey: ["project", id], queryFn: () => unwrap(api.GET("/projects/{id}", { params: { path: { id } } })) });
+  const appControl = useAppControl(id);
+  const project = useQuery({
+    queryKey: ["project", id],
+    queryFn: () => unwrap(api.GET("/projects/{id}", { params: { path: { id } } })),
+    // Enquanto a aplicação muda de estado, o painel acompanha sem precisar recarregar.
+    refetchInterval: appControl.transition ? 1500 : false,
+  });
   const deploys = useQuery({
     queryKey: ["deployments", id],
     queryFn: () => unwrap(api.GET("/projects/{id}/deployments", { params: { path: { id }, query: { limit: 50 } } })),
@@ -42,7 +49,6 @@ export function ProjectPage() {
     enabled: !!analysisDeploymentId,
     retry: false,
   });
-  const appControl = useAppControl(id);
   const limits = useQuery({ queryKey: ["limits", id], queryFn: () => unwrap(api.GET("/projects/{id}/limits", { params: { path: { id } } })) });
 
   if (project.isLoading) return <Loading />;
@@ -99,7 +105,11 @@ export function ProjectPage() {
           </>
         }
       >
-        {p.app_state === "stopped" ? (
+        {appControl.transition ? (
+          <Badge tone="warning" pulse>
+            {TRANSITION_LABEL[appControl.transition]}
+          </Badge>
+        ) : p.app_state === "stopped" ? (
           <Badge tone="warning">Parado</Badge>
         ) : lastOk ? (
           <Badge tone="success">No ar</Badge>
@@ -120,7 +130,7 @@ export function ProjectPage() {
       </PageHead>
       {error && <Notice tone="danger">{error}</Notice>}
       {appControl.notice && <Notice tone={appControl.notice.tone}>{appControl.notice.text}</Notice>}
-      {p.app_state === "stopped" && !appControl.busy && (
+      {p.app_state === "stopped" && !appControl.transition && (
         <Notice tone="warning" title="A aplicação está parada.">
           <span>O endereço público mostra a página de projeto inativo. Parar não é uma falha: o contêiner foi mantido, e Iniciar o traz de volta. Um novo deploy também o coloca no ar.</span>
         </Notice>
