@@ -160,6 +160,8 @@ Para trocar a chave de cifra (`COBOGO_SECRET_KEYS` e `COBOGO_SECRET_KEY_CURRENT`
 
 **Parar, iniciar e reiniciar (DEC-40).** `POST $API/api/v1/projects/<id>/app/stop|start|restart` enfileira a operação (202) e o worker a executa; acompanhe em `GET /operations/<id>`. Parar **mantém o contêiner** e o endereço do projeto passa a mostrar uma página de "projeto inativo" (503); `app_state` do projeto vira `stopped`, que não é falha. Iniciar espera a aplicação responder antes de a rota voltar; reiniciar não relê variáveis (um novo deploy relê). Parar o que já está parado, ou iniciar o que está no ar, responde 409.
 
+**Dados persistentes (DEC-41).** Para guardar dados entre deploys (o SQLite e as folhas do caderno, por exemplo), **você** declara os caminhos dentro do contêiner: `PUT $API/api/v1/projects/<id>/persistent-paths` com `{"paths": ["/app/data", "/app/content"]}`. Vale a partir do próximo deploy: o Cobogó cria um volume por caminho (na primeira vez ele recebe o conteúdo da imagem; depois o volume prevalece) e, em projeto com volume, **a release anterior para antes de a nova subir** (alguns segundos fora do ar); se a nova falhar, a anterior volta. `GET .../persistent-paths` lista os volumes com o tamanho aproximado. Excluir o projeto **mantém os volumes**, que passam a ser "volumes sem projeto" (`GET /api/v1/volumes/orphans`), a menos que você envie `"delete_data": true`; `DELETE /api/v1/volumes/<nome>` com `{"confirm_name": "<nome>"}` apaga um volume sem projeto (irreversível). Não vale para site estático.
+
 ### **5. Acompanhar o progresso**
 
 O contrato completo está em [`docs/api/openapi.yaml`](docs/api/openapi.yaml) (OpenAPI 3; cole-o no Swagger Editor ou gere um cliente a partir dele). Para acompanhar um deploy:

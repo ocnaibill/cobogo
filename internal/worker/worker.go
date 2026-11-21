@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -605,13 +606,54 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 			}
 		}()
 	}
-	runResult, err := rt.Run(ctx, imageTag, containerName, plan.Port, envValues, dep.ID.String(),
-		dockerrt.WithNetwork(projectNet), dockerrt.WithLabels(map[string]string{dockerrt.LabelProject: project.ID.String()}))
+	// Dados persistentes (DEC-41): os volumes dos caminhos declarados e a troca
+	// de release sem dois processos no mesmo volume. O site estático não usa.
+	succeeded := false
+	runOpts := []dockerrt.RunOption{
+		dockerrt.WithNetwork(projectNet), dockerrt.WithLabels(map[string]string{dockerrt.LabelProject: project.ID.String()}),
+	}
+	if store.HasPersistentPaths(project) && plan.Profile != domain.ProfileStatic {
+		volumes, created, err := w.prepareVolumes(ctx, rt, project, imageTag)
+		if err != nil {
+			return at("STARTING", err)
+		}
+		runOpts = append(runOpts, dockerrt.WithVolumes(volumes))
+		paths := make([]string, 0, len(volumes))
+		for p := range volumes {
+			paths = append(paths, p)
+		}
+		sort.Strings(paths)
+		if err := w.emit(ctx, o, dep.ID, "starting", "volumes", map[string]any{"paths": paths, "created": created}); err != nil {
+			return err
+		}
+		paused, err := w.pauseActive(ctx, project)
+		if err != nil {
+			return at("STARTING", err)
+		}
+		if paused != nil {
+			if err := w.emit(ctx, o, dep.ID, "starting", "previous_paused", map[string]any{"container": shortContainer(paused.release.ContainerID), "reason": "o volume só pode ser usado por uma release por vez"}); err != nil {
+				return err
+			}
+			// Se a candidata não subir, a anterior volta (e o deploy falha sem tirar o projeto do ar).
+			defer func() {
+				if succeeded {
+					return
+				}
+				cleanup, done := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
+				defer done()
+				if err := w.resumeActive(cleanup, paused); err != nil {
+					w.log.Error("reiniciar a release anterior depois de a candidata falhar", "deployment", dep.ID, "erro", err)
+					return
+				}
+				_ = w.emit(cleanup, o, dep.ID, "starting", "previous_restored", map[string]any{"container": shortContainer(paused.release.ContainerID)})
+			}()
+		}
+	}
+	runResult, err := rt.Run(ctx, imageTag, containerName, plan.Port, envValues, dep.ID.String(), runOpts...)
 
 	// A partir do create existe uma candidata: qualquer saída sem sucesso a
 	// remove, pelo ID (se a posse foi perdida, o novo dono pode ter a dele, com
 	// o mesmo label de deploy).
-	succeeded := false
 	if runResult.ContainerID != "" {
 		defer func() {
 			if !succeeded {

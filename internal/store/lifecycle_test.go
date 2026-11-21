@@ -29,7 +29,7 @@ func TestDeleteProjectKeepsHistoryAndRemovesTheRest(t *testing.T) {
 		t.Fatalf("routes before = %v", routes)
 	}
 
-	op, err := st.DeleteProject(ctx, p.ID, own.ID, p.Slug)
+	op, err := st.DeleteProject(ctx, p.ID, own.ID, p.Slug, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestDeleteProjectKeepsHistoryAndRemovesTheRest(t *testing.T) {
 		t.Errorf("worker read = %+v, %v; want the project with deleted_at", got, err)
 	}
 	// Excluir de novo é como excluir o que não existe.
-	if _, err := st.DeleteProject(ctx, p.ID, own.ID, p.Slug); !errors.Is(err, store.ErrNotFound) {
+	if _, err := st.DeleteProject(ctx, p.ID, own.ID, p.Slug, false); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("second delete = %v, want ErrNotFound", err)
 	}
 }
@@ -87,7 +87,7 @@ func TestDeletedSlugCanBeReused(t *testing.T) {
 	if _, err := st.CreateProject(ctx, own.ID, p.Slug, "https://github.com/a/c", ""); err == nil {
 		t.Fatal("a live slug must stay unique")
 	}
-	if _, err := st.DeleteProject(ctx, p.ID, own.ID, p.Slug); err != nil {
+	if _, err := st.DeleteProject(ctx, p.ID, own.ID, p.Slug, false); err != nil {
 		t.Fatal(err)
 	}
 	again, err := st.CreateProject(ctx, own.ID, p.Slug, "https://github.com/a/c", "")
@@ -103,10 +103,10 @@ func TestDeleteProjectNeedsTheRightNameAndTheRightOwner(t *testing.T) {
 	st := storetest.New(t)
 	own := owner(t, st)
 	p := newProject(t, st)
-	if _, err := st.DeleteProject(ctx, p.ID, own.ID, "outro-nome"); !errors.Is(err, store.ErrConfirmationMismatch) {
+	if _, err := st.DeleteProject(ctx, p.ID, own.ID, "outro-nome", false); !errors.Is(err, store.ErrConfirmationMismatch) {
 		t.Errorf("wrong name = %v, want ErrConfirmationMismatch", err)
 	}
-	if _, err := st.DeleteProject(ctx, p.ID, uuid.New(), p.Slug); !errors.Is(err, store.ErrNotFound) {
+	if _, err := st.DeleteProject(ctx, p.ID, uuid.New(), p.Slug, false); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("another owner = %v, want ErrNotFound", err)
 	}
 	if _, err := st.GetProjectFor(ctx, p.ID, own.ID); err != nil {
@@ -121,7 +121,7 @@ func TestDeleteProjectRefusesARunningDeploymentAndCancelsWaitingOnes(t *testing.
 	// Em execução: recusa e não muda nada.
 	running := newProject(t, st)
 	_, _ = verifying(t, st, running)
-	if _, err := st.DeleteProject(ctx, running.ID, own.ID, running.Slug); !errors.Is(err, store.ErrDeploymentInProgress) {
+	if _, err := st.DeleteProject(ctx, running.ID, own.ID, running.Slug, false); !errors.Is(err, store.ErrDeploymentInProgress) {
 		t.Fatalf("running deploy = %v, want ErrDeploymentInProgress", err)
 	}
 	if _, err := st.GetProjectFor(ctx, running.ID, own.ID); err != nil {
@@ -134,7 +134,7 @@ func TestDeleteProjectRefusesARunningDeploymentAndCancelsWaitingOnes(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.DeleteProject(ctx, waiting.ID, own.ID, waiting.Slug); err != nil {
+	if _, err := st.DeleteProject(ctx, waiting.ID, own.ID, waiting.Slug, false); err != nil {
 		t.Fatalf("a queued deploy must be cancelled, not block: %v", err)
 	}
 	got, _ := st.GetDeployment(ctx, queued.ID)
@@ -256,7 +256,7 @@ func TestRequestApplyLimitsNeedsAnActiveRelease(t *testing.T) {
 	if err != nil || op.Kind != domain.OpApplyLimits {
 		t.Fatalf("with a release = %+v, %v", op, err)
 	}
-	if _, err := st.DeleteProject(ctx, p.ID, own.ID, p.Slug); err != nil {
+	if _, err := st.DeleteProject(ctx, p.ID, own.ID, p.Slug, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.RequestApplyLimits(ctx, p.ID, own.ID); !errors.Is(err, store.ErrNotFound) {

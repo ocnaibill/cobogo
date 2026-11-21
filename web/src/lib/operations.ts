@@ -11,6 +11,7 @@ export const OP_LABEL: Record<Operation["kind"], string> = {
   stop_app: "Parar a aplicação",
   start_app: "Iniciar a aplicação",
   restart_app: "Reiniciar a aplicação",
+  delete_volume: "Apagar volume sem projeto",
 };
 
 export const OP_STATE_LABEL: Record<Operation["state"], string> = {
@@ -40,6 +41,8 @@ export function summarize(op: Operation): string {
   switch (op.kind) {
     case "apply_limits":
       return r.changed === false ? `Nada mudou: o contêiner já tinha ${res(r.after)}.` : `De ${res(r.before)} para ${res(r.after)}.`;
+    case "delete_volume":
+      return r.already_gone ? "O volume já não existia." : `Volume apagado${r.path ? ` (${String(r.path)})` : ""}.`;
     case "stop_app":
       return "A aplicação foi parada; o endereço mostra a página de projeto inativo.";
     case "start_app":
@@ -52,7 +55,14 @@ export function summarize(op: Operation): string {
       const i = list(r.images_removed);
       const parts = [`${c.length} contêiner(es) removido(s)`];
       if (op.kind !== "sweep") parts.push(`${i.length} imagem(ns) removida(s)`);
-      return parts.join(", ") + (c.length ? `: ${c.join(", ")}` : "") + ".";
+      let text = parts.join(", ") + (c.length ? `: ${c.join(", ")}` : "") + ".";
+      if (op.kind === "delete_project") {
+        const gone = list(r.volumes_removed);
+        const kept = list(r.volumes_kept);
+        if (gone.length) text += ` ${gone.length} volume(s) de dados apagado(s).`;
+        if (kept.length) text += ` ${kept.length} volume(s) de dados mantido(s), agora sem projeto.`;
+      }
+      return text;
     }
   }
   return "";

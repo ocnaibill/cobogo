@@ -8,6 +8,7 @@ import { Link, useLocation } from "react-router";
 import { api, unwrap, type ProjectSummary } from "../api/client";
 import { Badge, Button, Empty, ErrorBox, LinkButton, Loading, Metric, Notice, StateBadge, Tag, When } from "../components/ui";
 import { Icon } from "../components/icons";
+import { OrphanVolumes } from "../components/Data";
 import { isActive } from "../lib/deploy";
 import { repoName } from "../lib/format";
 import { useAppsDomain } from "../hooks/useInstance";
@@ -91,6 +92,7 @@ export function OverviewPage() {
           O endereço saiu do ar e a limpeza segue em segundo plano. O histórico dos deploys foi preservado.
         </Notice>
       )}
+      <OrphanVolumes />
       {q.isLoading && <Loading />}
       {q.isError && <ErrorBox error={q.error} onRetry={() => q.refetch()} />}
 

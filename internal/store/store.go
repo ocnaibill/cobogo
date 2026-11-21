@@ -74,13 +74,13 @@ func (s *Store) GetProject(ctx context.Context, id uuid.UUID) (domain.Project, e
 	var p domain.Project
 	var limitsRaw string
 	err := s.pool.QueryRow(ctx, `
-		SELECT p.id, p.owner_id, p.slug, p.repository_url, p.root_directory, p.limits, p.created_at, p.deleted_at,
+		SELECT p.id, p.owner_id, p.slug, p.repository_url, p.root_directory, p.limits, p.created_at, p.deleted_at, p.persistent_paths,
 		       COALESCE((SELECT CASE WHEN r.stopped_at IS NULL THEN 'running' ELSE 'stopped' END
 		            FROM releases r JOIN deployments dd ON dd.id = r.deployment_id
 		            WHERE dd.project_id = p.id AND r.operational_state = 'active'
 		            ORDER BY r.created_at DESC LIMIT 1), 'none')
 		FROM projects p WHERE p.id = $1`, id,
-	).Scan(&p.ID, &p.OwnerID, &p.Slug, &p.RepositoryURL, &p.RootDirectory, &limitsRaw, &p.CreatedAt, &p.DeletedAt, &p.AppState)
+	).Scan(&p.ID, &p.OwnerID, &p.Slug, &p.RepositoryURL, &p.RootDirectory, &limitsRaw, &p.CreatedAt, &p.DeletedAt, &p.PersistentPaths, &p.AppState)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Project{}, ErrNotFound
 	}
@@ -89,6 +89,9 @@ func (s *Store) GetProject(ctx context.Context, id uuid.UUID) (domain.Project, e
 	}
 	if p.Limits, err = scanLimits(limitsRaw); err != nil {
 		return domain.Project{}, err
+	}
+	if p.PersistentPaths == nil {
+		p.PersistentPaths = []string{}
 	}
 	return p, nil
 }

@@ -23,6 +23,9 @@ const (
 
 type deleteProjectRequest struct {
 	ConfirmSlug string `json:"confirm_slug"`
+	// DeleteData apaga também os volumes do projeto (DEC-41 item 5). Sem isso,
+	// eles ficam e aparecem como volumes sem projeto.
+	DeleteData bool `json:"delete_data"`
 }
 
 // handleDeleteProject exclui o projeto de forma lógica: some das listas e das
@@ -41,7 +44,7 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request, use
 		writeCode(w, http.StatusBadRequest, codeConfirmationMismatch, "informe confirm_slug com o nome do projeto")
 		return
 	}
-	op, err := s.store.DeleteProject(r.Context(), p.ID, user.ID, req.ConfirmSlug)
+	op, err := s.store.DeleteProject(r.Context(), p.ID, user.ID, req.ConfirmSlug, req.DeleteData)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, "projeto não encontrado")

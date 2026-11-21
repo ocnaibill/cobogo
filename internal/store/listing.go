@@ -66,7 +66,7 @@ func cursorArgs(c *Cursor) (*time.Time, *uuid.UUID) {
 func (s *Store) ListProjectsFor(ctx context.Context, ownerID uuid.UUID, limit int, after *Cursor) ([]domain.ProjectSummary, *Cursor, error) {
 	at, id := cursorArgs(after)
 	rows, err := s.pool.Query(ctx, `
-		SELECT p.id, p.owner_id, p.slug, p.repository_url, p.root_directory, p.limits, p.created_at,
+		SELECT p.id, p.owner_id, p.slug, p.repository_url, p.root_directory, p.limits, p.created_at, p.persistent_paths,
 		       d.id, d.state, d.created_at,
 		       COALESCE((SELECT CASE WHEN r.stopped_at IS NULL THEN 'running' ELSE 'stopped' END
 		            FROM releases r JOIN deployments dd ON dd.id = r.deployment_id
@@ -93,13 +93,16 @@ func (s *Store) ListProjectsFor(ctx context.Context, ownerID uuid.UUID, limit in
 		var depState *domain.DeploymentState
 		var depCreated *time.Time
 		var limitsRaw string
-		if err := rows.Scan(&it.ID, &it.OwnerID, &it.Slug, &it.RepositoryURL, &it.RootDirectory, &limitsRaw, &it.CreatedAt,
+		if err := rows.Scan(&it.ID, &it.OwnerID, &it.Slug, &it.RepositoryURL, &it.RootDirectory, &limitsRaw, &it.CreatedAt, &it.PersistentPaths,
 			&depID, &depState, &depCreated, &it.AppState); err != nil {
 			return nil, nil, fmt.Errorf("store: ler projeto: %w", err)
 		}
 		var lerr error
 		if it.Limits, lerr = scanLimits(limitsRaw); lerr != nil {
 			return nil, nil, lerr
+		}
+		if it.PersistentPaths == nil {
+			it.PersistentPaths = []string{}
 		}
 		if depID != nil {
 			it.LastDeployment = &domain.DeploymentBrief{ID: *depID, State: *depState, CreatedAt: *depCreated}

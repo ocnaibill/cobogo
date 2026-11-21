@@ -364,6 +364,7 @@ func (r *Runtime) Run(ctx context.Context, imageTag, containerName string, conta
 	if spec.network != "" {
 		hostCfg.NetworkMode = container.NetworkMode(spec.network)
 	}
+	hostCfg.Mounts = volumeMounts(spec.volumes)
 
 	created, err := r.cli.ContainerCreate(ctx, cfg, hostCfg, nil, nil, containerName)
 	if err != nil {

@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/url"
 	"path"
+	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -141,4 +143,59 @@ func RepositoryURL(raw string, allowedHosts []string) (string, error) {
 		return "", errors.New("repository_url deve apontar para um repositório (https://host/dono/repositório)")
 	}
 	return "https://" + host + "/" + strings.Join(segments, "/"), nil
+}
+
+// MaxPersistentPaths é o máximo de caminhos persistentes por projeto (DEC-41).
+const MaxPersistentPaths = 8
+
+// persistentPathPattern: caminho absoluto, com letras, números, ponto, hífen,
+// sublinhado e barra. Nada de espaços, `..` nem caracteres de shell.
+var persistentPathPattern = regexp.MustCompile(`^/[A-Za-z0-9._/-]{1,255}$`)
+
+// systemPrefixes são caminhos do sistema do contêiner: montar um volume sobre
+// eles esconderia o que a imagem precisa para rodar (DEC-41 item 1).
+var systemPrefixes = []string{"/proc", "/sys", "/dev", "/etc", "/bin", "/sbin", "/usr", "/lib", "/lib64", "/run", "/boot", "/var/run", "/tmp"}
+
+// PersistentPaths valida e normaliza a lista de caminhos persistentes que o
+// usuário declara: absolutos, limpos, fora do sistema, sem repetição e sem um
+// dentro do outro. Devolve a lista ordenada.
+func PersistentPaths(raw []string) ([]string, error) {
+	if len(raw) > MaxPersistentPaths {
+		return nil, fmt.Errorf("no máximo %d caminhos persistentes", MaxPersistentPaths)
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range raw {
+		p = strings.TrimSpace(p)
+		if p != "/" {
+			p = strings.TrimRight(p, "/")
+		}
+		switch {
+		case p == "" || p == "/":
+			return nil, errors.New("o caminho persistente não pode ser a raiz nem vazio")
+		case !persistentPathPattern.MatchString(p):
+			return nil, fmt.Errorf("caminho persistente inválido %q: use um caminho absoluto com letras, números, ponto, hífen, sublinhado e barra", p)
+		case path.Clean(p) != p || strings.Contains(p, ".."):
+			return nil, fmt.Errorf("caminho persistente %q não pode ter .. nem barras repetidas", p)
+		}
+		for _, sys := range systemPrefixes {
+			if p == sys || strings.HasPrefix(p, sys+"/") {
+				return nil, fmt.Errorf("o caminho %q é do sistema do contêiner; escolha um dentro da aplicação, como /app/data", p)
+			}
+		}
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	for i, a := range out {
+		for _, b := range out[i+1:] {
+			if strings.HasPrefix(b, a+"/") {
+				return nil, fmt.Errorf("%q está dentro de %q: declare só um dos dois", b, a)
+			}
+		}
+	}
+	return out, nil
 }

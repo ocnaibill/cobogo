@@ -385,7 +385,7 @@ func TestTheWholeFlowWorksWithOnlyTheGrantedPrivileges(t *testing.T) {
 		t.Fatalf("worker ActiveRelease: %v", err)
 	}
 	// Excluir o projeto: só a API, e só com as permissões que tem.
-	del, err := api.DeleteProject(ctx, project.ID, admin.ID, "app-roles")
+	del, err := api.DeleteProject(ctx, project.ID, admin.ID, "app-roles", false)
 	if err != nil {
 		t.Fatalf("api DeleteProject: %v", err)
 	}

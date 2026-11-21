@@ -33,6 +33,7 @@ type RunOption func(*runSpec)
 type runSpec struct {
 	network string
 	labels  map[string]string
+	volumes map[string]string
 }
 
 // WithNetwork roda o contêiner na rede indicada, em vez da bridge padrão.

@@ -7,6 +7,8 @@ import { api, ApiError, unwrap } from "../api/client";
 import { appTransition, isSettled, OP_LABEL, OP_STATE_LABEL, summarize, TRANSITION_NOTICE, type AppTransition, type Operation } from "../lib/operations";
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Notice, Tag, When } from "./ui";
 import { Icon } from "./icons";
+import { usePersistent } from "./Data";
+import { bytes } from "../lib/format";
 
 /** Acompanha uma operação até ela terminar (consulta a cada segundo). */
 export function useOperation(id: string | null) {
@@ -128,15 +130,19 @@ export function DangerZone({ projectId, slug }: { projectId: string; slug: strin
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [typed, setTyped] = useState("");
+  const [deleteData, setDeleteData] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Os volumes de dados do projeto: a exclusão pergunta o que fazer com eles (DEC-41).
+  const volumes = usePersistent(projectId).data?.volumes ?? [];
 
   async function remove(ev: FormEvent) {
     ev.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      await unwrap(api.DELETE("/projects/{id}", { params: { path: { id: projectId } }, body: { confirm_slug: typed } }));
+      await unwrap(api.DELETE("/projects/{id}", { params: { path: { id: projectId } }, body: { confirm_slug: typed, delete_data: deleteData } }));
+      qc.invalidateQueries({ queryKey: ["orphan-volumes"] });
       qc.removeQueries({ queryKey: ["project", projectId] });
       qc.invalidateQueries({ queryKey: ["projects"] });
       navigate("/", { replace: true, state: { deleted: slug } });
@@ -158,7 +164,7 @@ export function DangerZone({ projectId, slug }: { projectId: string; slug: strin
       {!open ? (
         <div className="action-bar">
           <span className="small">
-            Excluir tira o endereço do ar, apaga as variáveis cifradas e remove contêineres, rede e imagens. <strong>O histórico de deploys fica</strong>; volumes nunca são tocados.
+            Excluir tira o endereço do ar, apaga as variáveis cifradas e remove contêineres, rede e imagens. <strong>O histórico de deploys fica</strong>. Os dados em volume só saem se você escolher, na confirmação.
           </span>
           <Button variant="danger" icon="x" onClick={() => setOpen(true)}>
             Excluir projeto…
@@ -169,6 +175,26 @@ export function DangerZone({ projectId, slug }: { projectId: string; slug: strin
           <Notice tone="danger" title={`Excluir ${slug}?`}>
             O endereço público sai do ar em segundos e o projeto some da lista. Para confirmar, digite o nome do projeto.
           </Notice>
+          {volumes.length > 0 && (
+            <Notice tone="warning" title="Este projeto tem dados em volume">
+              <ul className="plain">
+                {volumes.map((v) => (
+                  <li key={v.name}>
+                    <span className="mono">{v.path}</span> · {bytes(v.size_bytes)}
+                  </li>
+                ))}
+              </ul>
+              <label className="check">
+                <input type="checkbox" checked={deleteData} onChange={(e) => setDeleteData(e.target.checked)} />
+                <span>
+                  <strong>Apagar também os dados (irreversível)</strong>
+                </span>
+              </label>
+              <span className="small">
+                Sem marcar, os volumes ficam em "Volumes sem projeto" na visão geral, e você pode apagá-los depois. Baixar os dados antes ainda não existe no painel (issue #28).
+              </span>
+            </Notice>
+          )}
           <Field label={`Digite ${slug}`} htmlFor="confirm-slug">
             <input id="confirm-slug" className="mono" value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" spellCheck={false} autoFocus />
           </Field>
@@ -179,6 +205,7 @@ export function DangerZone({ projectId, slug }: { projectId: string; slug: strin
               onClick={() => {
                 setOpen(false);
                 setTyped("");
+                setDeleteData(false);
                 setError(null);
               }}
             >

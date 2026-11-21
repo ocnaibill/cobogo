@@ -170,6 +170,9 @@ func (w *Worker) runOperation(ctx context.Context, op *domain.Operation) {
 		result, err = w.applyLimits(ctx, op)
 		var below *dockerrt.ErrBelowUsage
 		permanent = errors.Is(err, errNoActiveRelease) || errors.As(err, &below)
+	case domain.OpDeleteVolume:
+		result, err = w.deleteVolume(ctx, op)
+		permanent = errors.Is(err, errVolumeInUse)
 	case domain.OpStopApp:
 		result, err = w.stopApp(ctx, op)
 		permanent = errors.Is(err, errNoActiveRelease)
@@ -286,9 +289,19 @@ func (w *Worker) deleteProject(ctx context.Context, op *domain.Operation) (map[s
 	if err := w.store.MarkProjectReleasesRemoved(ctx, projectID); err != nil {
 		errs = append(errs, err)
 	}
+	// Os dados (DEC-41 item 5): só saem se o usuário marcou, na confirmação.
+	volumesRemoved, volumesKept, volumeErrs := w.deleteProjectData(ctx, project, op)
+	errs = append(errs, volumeErrs...)
 	sort.Strings(gone)
 	w.log.Info("projeto excluído: recursos removidos", "projeto", project.Slug, "contêineres", len(gone), "imagens", len(removedImages))
-	return map[string]any{"slug": project.Slug, "containers_removed": gone, "images_removed": removedImages}, errors.Join(errs...)
+	result := map[string]any{"slug": project.Slug, "containers_removed": gone, "images_removed": removedImages}
+	if len(volumesRemoved) > 0 {
+		result["volumes_removed"] = volumesRemoved
+	}
+	if len(volumesKept) > 0 {
+		result["volumes_kept"] = volumesKept
+	}
+	return result, errors.Join(errs...)
 }
 
 // applyLimits aplica os limites efetivos de hoje ao contêiner da release ativa
@@ -333,10 +346,12 @@ func (w *Worker) applyLimits(ctx context.Context, op *domain.Operation) (map[str
 }
 
 // sweepOnce varre os contêineres gerenciados de todos os projetos e remove os
-// elegíveis (DEC-38 item 4). Só grava uma operação quando removeu algo.
+// elegíveis (DEC-38 item 4). Só grava uma operação quando removeu algo. Também
+// mede os volumes (DEC-41).
 func (w *Worker) sweepOnce(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
+	w.measureVolumes(ctx)
 
 	policy, err := w.settings.Lifecycle(ctx)
 	if err != nil {

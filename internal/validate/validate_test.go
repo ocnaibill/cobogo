@@ -135,3 +135,37 @@ func TestRepositoryURLHonorsExtraHosts(t *testing.T) {
 		t.Errorf("extra host = %q, %v", got, err)
 	}
 }
+
+func TestPersistentPaths(t *testing.T) {
+	got, err := PersistentPaths([]string{"/app/data/", " /app/content", "/app/data", "/srv/uploads"})
+	if err != nil || strings.Join(got, ",") != "/app/content,/app/data,/srv/uploads" {
+		t.Fatalf("got %v, %v; want sorted, trimmed and deduplicated", got, err)
+	}
+	if got, err := PersistentPaths(nil); err != nil || len(got) != 0 {
+		t.Errorf("empty list = %v, %v", got, err)
+	}
+	for name, in := range map[string][]string{
+		"relative":           {"app/data"},
+		"root":               {"/"},
+		"empty":              {""},
+		"parent traversal":   {"/app/../etc"},
+		"repeated slash":     {"/app//data"},
+		"dot segment":        {"/app/./data"},
+		"space":              {"/app/my data"},
+		"shell character":    {"/app/$(x)"},
+		"system path":        {"/etc/app"},
+		"system root of dir": {"/usr"},
+		"proc":               {"/proc/1"},
+		"nested":             {"/app", "/app/data"},
+		"too many":           {"/a", "/b", "/c", "/d", "/e", "/f", "/g", "/h", "/i"},
+		"too long":           {"/" + strings.Repeat("a", 300)},
+	} {
+		if got, err := PersistentPaths(in); err == nil {
+			t.Errorf("%s: %v accepted as %v", name, in, got)
+		}
+	}
+	// Um nome parecido com um prefixo do sistema não é do sistema.
+	if _, err := PersistentPaths([]string{"/etcetera/data", "/usrdata"}); err != nil {
+		t.Errorf("lookalike names must be fine: %v", err)
+	}
+}

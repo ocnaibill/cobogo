@@ -183,8 +183,9 @@ export interface paths {
          *     cifradas são apagadas e deploys na fila ou aguardando resposta são
          *     cancelados. Depois, o worker remove contêineres, rede e imagens do
          *     projeto; acompanhe pela operação devolvida. **O histórico fica**
-         *     (deploys, eventos, análises, releases e auditoria) e volumes nunca são
-         *     tocados. Recusado com `deployment_in_progress` se há deploy em execução.
+         *     (deploys, eventos, análises, releases e auditoria). Os **volumes de
+         *     dados** só saem se `delete_data` for `true` (DEC-41); sem isso ficam e
+         *     aparecem em `GET /volumes/orphans`. Recusado com `deployment_in_progress` se há deploy em execução.
          *     O nome do projeto fica livre para reuso.
          */
         delete: operations["deleteProject"];
@@ -318,6 +319,79 @@ export interface paths {
          */
         post: operations["restartProjectApp"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{id}/persistent-paths": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Caminhos persistentes e volumes do projeto
+         * @description Os caminhos que o **usuário** declarou para guardar dados em volume
+         *     nomeado (DEC-41) e os volumes que o worker criou para eles, com o
+         *     tamanho (medido de tempos em tempos; `null` até a primeira medição).
+         */
+        get: operations["getPersistentPaths"];
+        /**
+         * Define os caminhos persistentes do projeto
+         * @description Substitui a lista inteira (`[]` não persiste nada). Caminhos absolutos,
+         *     sem `..`, fora do sistema do contêiner (`/etc`, `/usr`, `/proc`...),
+         *     sem um dentro do outro e no máximo 8. Vale a partir do próximo deploy.
+         *     Um caminho tirado da lista deixa o volume dele como **volume sem
+         *     projeto** (`GET /volumes/orphans`), sem apagar dados. Só o usuário
+         *     declara: nada é inferido nem vem do repositório.
+         */
+        put: operations["putPersistentPaths"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/volumes/orphans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Volumes sem projeto
+         * @description Volumes de projetos excluídos e de caminhos que deixaram de ser
+         *     persistentes. Ocupam disco até serem apagados.
+         */
+        get: operations["listOrphanVolumes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/volumes/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Apaga um volume sem projeto
+         * @description **Irreversível.** Só um volume sem projeto pode ser apagado; a
+         *     confirmação é o nome do volume. O worker executa (`delete_volume`).
+         */
+        delete: operations["deleteVolume"];
         options?: never;
         head?: never;
         patch?: never;
@@ -747,7 +821,7 @@ export interface components {
             /** Format: uuid */
             project_id?: string;
             /** @enum {string} */
-            kind: "retire_releases" | "delete_project" | "apply_limits" | "sweep" | "stop_app" | "start_app" | "restart_app";
+            kind: "retire_releases" | "delete_project" | "apply_limits" | "sweep" | "stop_app" | "start_app" | "restart_app" | "delete_volume";
             /** @enum {string} */
             state: "PENDING" | "RUNNING" | "DONE" | "FAILED";
             params: {
@@ -824,6 +898,8 @@ export interface components {
             max?: number;
         };
         Project: {
+            /** @description Caminhos do contêiner guardados em volume nomeado (DEC-41). */
+            persistent_paths: string[];
             /**
              * @description Estado da release ativa: `none` (nenhuma), `running` ou `stopped`
              *     (parada de propósito, DEC-40; não é uma falha).
@@ -1008,6 +1084,26 @@ export interface components {
         EnvVariableResult: components["schemas"]["EnvVariable"] & {
             /** @description Um deploy em execução continua com o valor antigo até um novo deploy. */
             redeploy_required: boolean;
+        };
+        ProjectVolume: {
+            name: string;
+            /** Format: uuid */
+            project_id: string;
+            project_slug: string;
+            path: string;
+            /** Format: int64 */
+            size_bytes: number | null;
+            /** Format: date-time */
+            measured_at: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** @description Sem projeto vivo, ou o caminho deixou de ser persistente. */
+            orphan: boolean;
+            project_deleted: boolean;
+        };
+        PersistentView: {
+            paths: string[];
+            volumes: components["schemas"]["ProjectVolume"][];
         };
         Plan: {
             /** @enum {string} */
@@ -1556,6 +1652,11 @@ export interface operations {
                 "application/json": {
                     /** @description O nome (slug) do projeto, digitado para confirmar. */
                     confirm_slug: string;
+                    /**
+                     * @description Apaga também os volumes de dados do projeto. **Irreversível.**
+                     * @default false
+                     */
+                    delete_data?: boolean;
                 };
             };
         };
@@ -1770,6 +1871,125 @@ export interface operations {
             401: components["responses"]["Unauthenticated"];
             404: components["responses"]["NotFound"];
             /** @description O projeto não tem release no ar (`no_active_release`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getPersistentPaths: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Caminhos e volumes. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersistentView"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    putPersistentPaths: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    paths: string[];
+                };
+            };
+        };
+        responses: {
+            /** @description Caminhos e volumes, já com a nova lista. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersistentView"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    listOrphanVolumes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Os volumes. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        volumes: components["schemas"]["ProjectVolume"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+        };
+    };
+    deleteVolume: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    confirm_name: string;
+                };
+            };
+        };
+        responses: {
+            /** @description A operação foi enfileirada. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Operation"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+            /** @description O volume ainda é usado por um caminho persistente (`volume_in_use`). */
             409: {
                 headers: {
                     [name: string]: unknown;

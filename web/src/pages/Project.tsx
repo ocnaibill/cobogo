@@ -10,10 +10,11 @@ import { duration, repoName, shortSha } from "../lib/format";
 import { AppButtons, ApplyLimits, DangerZone, OperationsTab, useAppControl } from "../components/Lifecycle";
 import { profileLabel } from "../lib/deploy";
 import { EnvHistory, ImportEnv, Suggestions } from "../components/Secrets";
+import { DataTab } from "../components/Data";
 import { missingLikely, withRequired } from "../lib/secrets";
 import { TRANSITION_LABEL } from "../lib/operations";
 
-type Tab = "deploys" | "variaveis" | "limites" | "operacoes";
+type Tab = "deploys" | "variaveis" | "dados" | "limites" | "operacoes";
 
 export function ProjectPage() {
   const { id = "" } = useParams();
@@ -234,6 +235,7 @@ export function ProjectPage() {
           [
             ["deploys", "Histórico de deploys", "history"],
             ["variaveis", "Variáveis e segredos", "key"],
+            ["dados", "Dados", "server"],
             ["limites", "Limites", "sliders"],
             ["operacoes", "Operações", "activity"],
           ] as [Tab, string, IconName][]
@@ -298,6 +300,7 @@ export function ProjectPage() {
         </section>
       )}
       {tab === "variaveis" && <VariablesTab projectId={id} discovered={(analysis.data?.result.config_variables ?? []).filter((v) => v.class !== "platform")} />}
+      {tab === "dados" && <DataTab projectId={id} />}
       {tab === "limites" && <LimitsTab projectId={id} />}
       {tab === "operacoes" && <OperationsTab projectId={id} />}
       <DangerZone projectId={id} slug={p.slug} />

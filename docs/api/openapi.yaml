@@ -334,8 +334,9 @@ paths:
         cifradas são apagadas e deploys na fila ou aguardando resposta são
         cancelados. Depois, o worker remove contêineres, rede e imagens do
         projeto; acompanhe pela operação devolvida. **O histórico fica**
-        (deploys, eventos, análises, releases e auditoria) e volumes nunca são
-        tocados. Recusado com `deployment_in_progress` se há deploy em execução.
+        (deploys, eventos, análises, releases e auditoria). Os **volumes de
+        dados** só saem se `delete_data` for `true` (DEC-41); sem isso ficam e
+        aparecem em `GET /volumes/orphans`. Recusado com `deployment_in_progress` se há deploy em execução.
         O nome do projeto fica livre para reuso.
       operationId: deleteProject
       parameters:
@@ -351,6 +352,10 @@ paths:
                 confirm_slug:
                   type: string
                   description: O nome (slug) do projeto, digitado para confirmar.
+                delete_data:
+                  type: boolean
+                  default: false
+                  description: Apaga também os volumes de dados do projeto. **Irreversível.**
       responses:
         '202':
           description: A exclusão foi aceita; a limpeza segue pelo worker.
@@ -548,6 +553,135 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           description: O projeto não tem release no ar (`no_active_release`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /projects/{id}/persistent-paths:
+    get:
+      tags: [projects]
+      summary: Caminhos persistentes e volumes do projeto
+      description: |
+        Os caminhos que o **usuário** declarou para guardar dados em volume
+        nomeado (DEC-41) e os volumes que o worker criou para eles, com o
+        tamanho (medido de tempos em tempos; `null` até a primeira medição).
+      operationId: getPersistentPaths
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Caminhos e volumes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersistentView'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [projects]
+      summary: Define os caminhos persistentes do projeto
+      description: |
+        Substitui a lista inteira (`[]` não persiste nada). Caminhos absolutos,
+        sem `..`, fora do sistema do contêiner (`/etc`, `/usr`, `/proc`...),
+        sem um dentro do outro e no máximo 8. Vale a partir do próximo deploy.
+        Um caminho tirado da lista deixa o volume dele como **volume sem
+        projeto** (`GET /volumes/orphans`), sem apagar dados. Só o usuário
+        declara: nada é inferido nem vem do repositório.
+      operationId: putPersistentPaths
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [paths]
+              properties:
+                paths:
+                  type: array
+                  maxItems: 8
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: Caminhos e volumes, já com a nova lista.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersistentView'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /volumes/orphans:
+    get:
+      tags: [operations]
+      summary: Volumes sem projeto
+      description: |
+        Volumes de projetos excluídos e de caminhos que deixaram de ser
+        persistentes. Ocupam disco até serem apagados.
+      operationId: listOrphanVolumes
+      responses:
+        '200':
+          description: Os volumes.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [volumes]
+                properties:
+                  volumes:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProjectVolume'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+  /volumes/{name}:
+    delete:
+      tags: [operations]
+      summary: Apaga um volume sem projeto
+      description: |
+        **Irreversível.** Só um volume sem projeto pode ser apagado; a
+        confirmação é o nome do volume. O worker executa (`delete_volume`).
+      operationId: deleteVolume
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm_name]
+              properties:
+                confirm_name:
+                  type: string
+      responses:
+        '202':
+          description: A operação foi enfileirada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: O volume ainda é usado por um caminho persistente (`volume_in_use`).
           content:
             application/json:
               schema:
@@ -1430,7 +1564,7 @@ components:
           format: uuid
         kind:
           type: string
-          enum: [retire_releases, delete_project, apply_limits, sweep, stop_app, start_app, restart_app]
+          enum: [retire_releases, delete_project, apply_limits, sweep, stop_app, start_app, restart_app, delete_volume]
         state:
           type: string
           enum: [PENDING, RUNNING, DONE, FAILED]
@@ -1552,8 +1686,13 @@ components:
           type: number
     Project:
       type: object
-      required: [id, slug, repository_url, root_directory, limits, created_at, app_state]
+      required: [id, slug, repository_url, root_directory, limits, created_at, app_state, persistent_paths]
       properties:
+        persistent_paths:
+          type: array
+          items:
+            type: string
+          description: Caminhos do contêiner guardados em volume nomeado (DEC-41).
         app_state:
           type: string
           enum: [none, running, stopped]
@@ -1868,6 +2007,47 @@ components:
             redeploy_required:
               type: boolean
               description: Um deploy em execução continua com o valor antigo até um novo deploy.
+    ProjectVolume:
+      type: object
+      required: [name, project_id, project_slug, path, size_bytes, measured_at, created_at, orphan, project_deleted]
+      properties:
+        name:
+          type: string
+        project_id:
+          type: string
+          format: uuid
+        project_slug:
+          type: string
+        path:
+          type: string
+        size_bytes:
+          type: integer
+          format: int64
+          nullable: true
+        measured_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        orphan:
+          type: boolean
+          description: Sem projeto vivo, ou o caminho deixou de ser persistente.
+        project_deleted:
+          type: boolean
+    PersistentView:
+      type: object
+      required: [paths, volumes]
+      properties:
+        paths:
+          type: array
+          items:
+            type: string
+        volumes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectVolume'
     Plan:
       type: object
       required: [profile, runtime, build_image, package_manager, install_command, start_command, execution_mode, port, port_origin, health_path, dockerfile]

@@ -55,7 +55,7 @@ func TestRequiredEnvRoundTripAndScope(t *testing.T) {
 	if _, err := st.RequiredEnv(ctx, uuid.New()); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("unknown project = %v, want ErrNotFound", err)
 	}
-	if _, err := st.DeleteProject(ctx, p.ID, own.ID, p.Slug); err != nil {
+	if _, err := st.DeleteProject(ctx, p.ID, own.ID, p.Slug, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.SetRequiredEnv(ctx, p.ID, own.ID, []string{"X"}); !errors.Is(err, store.ErrNotFound) {

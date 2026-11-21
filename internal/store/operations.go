@@ -211,7 +211,7 @@ func (s *Store) FailOperation(ctx context.Context, id uuid.UUID, cause string, r
 // transação: recusa se há deploy em execução, cancela os que esperam, apaga as
 // variáveis cifradas, marca o projeto como excluído (a rota some e a API o
 // esconde) e enfileira a limpeza. O histórico fica.
-func (s *Store) DeleteProject(ctx context.Context, projectID, ownerID uuid.UUID, confirmSlug string) (domain.Operation, error) {
+func (s *Store) DeleteProject(ctx context.Context, projectID, ownerID uuid.UUID, confirmSlug string, deleteData bool) (domain.Operation, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return domain.Operation{}, fmt.Errorf("store: abrir transação da exclusão: %w", err)
@@ -279,7 +279,7 @@ func (s *Store) DeleteProject(ctx context.Context, projectID, ownerID uuid.UUID,
 	if _, err := tx.Exec(ctx, `UPDATE projects SET deleted_at = now() WHERE id = $1`, projectID); err != nil {
 		return domain.Operation{}, fmt.Errorf("store: marcar projeto excluído: %w", err)
 	}
-	op, err := insertOperationTx(ctx, tx, &projectID, domain.OpDeleteProject, map[string]any{"slug": slug}, time.Now().UTC(), &ownerID)
+	op, err := insertOperationTx(ctx, tx, &projectID, domain.OpDeleteProject, map[string]any{"slug": slug, "delete_data": deleteData}, time.Now().UTC(), &ownerID)
 	if err != nil {
 		return domain.Operation{}, err
 	}

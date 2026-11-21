@@ -24,6 +24,9 @@ type Project struct {
 	DeletedAt *time.Time `json:"-"`
 	// AppState é o estado da release ativa: none, running ou stopped (DEC-40).
 	AppState string `json:"app_state"`
+	// PersistentPaths são os caminhos do contêiner que guardam dados em volume
+	// nomeado (DEC-41). Só o usuário os declara.
+	PersistentPaths []string `json:"persistent_paths"`
 }
 
 // Limits são os tetos de recursos de contêineres de aplicação e de builds
@@ -250,6 +253,9 @@ const (
 	OpStopApp    OperationKind = "stop_app"
 	OpStartApp   OperationKind = "start_app"
 	OpRestartApp OperationKind = "restart_app"
+	// DEC-41: apagar o volume de um caminho que já não é persistente, ou de um
+	// projeto excluído.
+	OpDeleteVolume OperationKind = "delete_volume"
 )
 
 // Estados da aplicação de um projeto (DEC-40): sem release ativa, no ar ou

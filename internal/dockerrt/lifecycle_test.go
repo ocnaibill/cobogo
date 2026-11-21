@@ -9,6 +9,7 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/go-connections/nat"
 
 	"github.com/ocnaibill/cobogo/internal/domain"
@@ -316,5 +317,127 @@ func TestStopKeepsTheContainerAndStartBringsItBack(t *testing.T) {
 	}
 	if _, err := rt.StartContainer(ctx, mine, 8080); err != nil {
 		t.Errorf("starting what is already running is a no-op: %v", err)
+	}
+}
+
+// Volumes de dados (DEC-41): nome derivado, labels do Cobogó, posse do usuário da
+// aplicação, conteúdo inicial da imagem e remoção só do que é do Cobogó.
+func TestVolumesAreNamedLabeledOwnedAndRemovedOnlyWhenTheirs(t *testing.T) {
+	rt := dockerForTest(t)
+	ctx := context.Background()
+	pid := "11111111-2222-3333-4444-555555555555"
+
+	a, b := VolumeName(pid, "/app/data"), VolumeName(pid, "/app/content")
+	if a == b || !strings.HasPrefix(a, "cobogo-vol-111111112222-") || VolumeName(pid, "/app/data") != a {
+		t.Fatalf("names must be derived, stable and distinct per path: %q %q", a, b)
+	}
+
+	// Um volume com o nome derivado, mas sem os labels do Cobogó, é recusado.
+	foreign := VolumeName(pid, "/app/foreign")
+	if _, err := rt.cli.VolumeCreate(ctx, volume.CreateOptions{Name: foreign}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rt.cli.VolumeRemove(ctx, foreign, true) })
+	if _, err := rt.EnsureVolume(ctx, foreign, pid, "/app/foreign"); err == nil {
+		t.Error("a volume the Cobogó did not create must be refused")
+	}
+	if err := rt.RemoveVolume(ctx, foreign); err == nil {
+		t.Error("removing a volume without the Cobogó labels must be refused (RF-18)")
+	}
+
+	// O volume do Cobogó nasce uma vez, com os labels.
+	const dataPath = "/home/node/appdata"
+	name := VolumeName(pid, dataPath)
+	t.Cleanup(func() { _ = rt.cli.VolumeRemove(ctx, name, true) })
+	created, err := rt.EnsureVolume(ctx, name, pid, dataPath)
+	if err != nil || !created {
+		t.Fatalf("first EnsureVolume = %v, %v", created, err)
+	}
+	if created, err := rt.EnsureVolume(ctx, name, pid, dataPath); err != nil || created {
+		t.Errorf("second EnsureVolume = %v, %v; want an existing volume reused", created, err)
+	}
+	v, _ := rt.cli.VolumeInspect(ctx, name)
+	if v.Labels[LabelManaged] != "true" || v.Labels[LabelProject] != pid || v.Labels[LabelVolumePath] != dataPath {
+		t.Errorf("labels = %v", v.Labels)
+	}
+	// Outro projeto não reaproveita o volume.
+	if _, err := rt.EnsureVolume(ctx, name, "outro-projeto", dataPath); err == nil {
+		t.Error("another project must not take over the volume")
+	}
+
+	// Escrever como o usuário da aplicação: sem a posse, o ponto de montagem do
+	// root (o caminho não existe na imagem) recusa; com ela, funciona.
+	writes := func() int64 {
+		c, err := rt.cli.ContainerCreate(ctx, &container.Config{Image: "node:26-slim", User: "node", Cmd: []string{"sh", "-c", "echo oi > " + dataPath + "/arquivo"}},
+			&container.HostConfig{Mounts: volumeMounts(map[string]string{dataPath: name})}, nil, nil, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rt.cli.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true})
+		if err := rt.cli.ContainerStart(ctx, c.ID, container.StartOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		st, errc := rt.cli.ContainerWait(ctx, c.ID, container.WaitConditionNotRunning)
+		select {
+		case s := <-st:
+			return s.StatusCode
+		case err := <-errc:
+			t.Fatal(err)
+		}
+		return -1
+	}
+	if code := writes(); code == 0 {
+		t.Fatal("control: the app user should not be able to write before the ownership step")
+	}
+	user, err := rt.ImageUser(ctx, "node:26-slim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user != "" && user != "root" {
+		t.Logf("image user %q", user)
+	}
+	if err := rt.ChownVolumes(ctx, "node:26-slim", "node", pid, map[string]string{dataPath: name}); err != nil {
+		t.Fatal(err)
+	}
+	if code := writes(); code != 0 {
+		t.Errorf("after ChownVolumes the app user must be able to write (exit %d)", code)
+	}
+
+	// Conteúdo inicial: um volume vazio sobre um caminho que a imagem tem recebe o
+	// conteúdo da imagem na primeira montagem.
+	seed := VolumeName(pid, "/usr/local/include/node")
+	t.Cleanup(func() { _ = rt.cli.VolumeRemove(ctx, seed, true) })
+	if _, err := rt.EnsureVolume(ctx, seed, pid, "/usr/local/include/node"); err != nil {
+		t.Fatal(err)
+	}
+	c, err := rt.cli.ContainerCreate(ctx, &container.Config{Image: "node:26-slim", Cmd: []string{"sh", "-c", "test -f /usr/local/include/node/node.h"}},
+		&container.HostConfig{Mounts: volumeMounts(map[string]string{"/usr/local/include/node": seed})}, nil, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.cli.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true})
+	_ = rt.cli.ContainerStart(ctx, c.ID, container.StartOptions{})
+	st, _ := rt.cli.ContainerWait(ctx, c.ID, container.WaitConditionNotRunning)
+	if s := <-st; s.StatusCode != 0 {
+		t.Errorf("the first mount must bring the image's content (exit %d)", s.StatusCode)
+	}
+
+	// Tamanhos só dos volumes do Cobogó.
+	sizes, err := rt.VolumeSizes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := sizes[name]; !ok {
+		t.Errorf("sizes = %v, want the managed volume", sizes)
+	}
+	if _, ok := sizes[foreign]; ok {
+		t.Error("a volume without the Cobogó labels must not be measured")
+	}
+
+	if err := rt.RemoveVolume(ctx, name); err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.RemoveVolume(ctx, name); err != nil {
+		t.Errorf("removing what is already gone is a no-op: %v", err)
 	}
 }

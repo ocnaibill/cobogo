@@ -55,7 +55,9 @@ services:
       BUILD: 1
       POST: 1
       EXEC: 0
-      VOLUMES: 0
+      # DEC-41: volumes de dados. O worker só cria, mede, monta e remove os que têm
+      # os labels do Cobogó (no código dele; o proxy não filtra por label).
+      VOLUMES: 1
       SERVICES: 0
       SWARM: 0
       SECRETS: 0
@@ -66,7 +68,8 @@ services:
       TASKS: 0
       SESSION: 0
       DISTRIBUTION: 0
-      SYSTEM: 0
+      # Só para medir o tamanho dos volumes (GET /system/df).
+      SYSTEM: 1
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     tmpfs: ["/tmp", "/run", "/var/lib/haproxy"]
