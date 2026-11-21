@@ -10,7 +10,7 @@ import { duration, repoName, shortSha } from "../lib/format";
 import { AppButtons, ApplyLimits, DangerZone, OperationsTab, useAppControl } from "../components/Lifecycle";
 import { profileLabel } from "../lib/deploy";
 import { EnvHistory, ImportEnv, Suggestions } from "../components/Secrets";
-import { DataTab } from "../components/Data";
+import { DataTab, usePersistent, withPath } from "../components/Data";
 import { missingLikely, withRequired } from "../lib/secrets";
 import { TRANSITION_LABEL } from "../lib/operations";
 
@@ -25,6 +25,7 @@ export function ProjectPage() {
   const [error, setError] = useState<string | null>(null);
 
   const appControl = useAppControl(id);
+  const persistent = usePersistent(id);
   const project = useQuery({
     queryKey: ["project", id],
     queryFn: () => unwrap(api.GET("/projects/{id}", { params: { path: { id } } })),
@@ -134,6 +135,14 @@ export function ProjectPage() {
       {p.app_state === "stopped" && !appControl.transition && (
         <Notice tone="warning" title="A aplicação está parada.">
           <span>O endereço público mostra a página de projeto inativo. Parar não é uma falha: o contêiner foi mantido, e Iniciar o traz de volta. Um novo deploy também o coloca no ar.</span>
+        </Notice>
+      )}
+      {tab !== "dados" && persistent.data && persistent.data.paths.length === 0 && withPath(persistent.data.suggestions).length > 0 && (
+        <Notice tone="warning" icon="sparkle" title="O código parece guardar dados em disco">
+          <span>
+            Sem volume, o que for gravado em {withPath(persistent.data.suggestions).map((s) => s.path).join(", ")} some a cada deploy.{" "}
+            <Link to={`/projetos/${id}?aba=dados`}>Ver na aba Dados</Link>.
+          </span>
         </Notice>
       )}
       {candidateFailed && (

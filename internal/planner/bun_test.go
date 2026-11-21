@@ -43,7 +43,7 @@ func TestBunPlanWithoutBuild(t *testing.T) {
 		"COPY --from=build --chown=bun:bun /app /app",
 		"USER bun",
 		"EXPOSE 8080",
-		`CMD ["sh", "-c", "bun run src/server.ts"]`,
+		`CMD ["sh", "-c", "exec bun run src/server.ts"]`,
 	} {
 		if !strings.Contains(plan.Dockerfile, want) {
 			t.Errorf("Dockerfile lacks %q:\n%s", want, plan.Dockerfile)

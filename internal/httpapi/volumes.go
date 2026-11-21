@@ -17,6 +17,41 @@ const codeVolumeInUse = "volume_in_use"
 type persistentView struct {
 	Paths   []string              `json:"paths"`
 	Volumes []store.ProjectVolume `json:"volumes"`
+	// Suggestions são pistas da última análise para caminhos que ainda não foram
+	// declarados (DEC-41). Só sugerem: nada é aplicado sozinho.
+	Suggestions []domain.PersistentSuggestion `json:"suggestions"`
+}
+
+// pendingSuggestions devolve as sugestões da última análise que o projeto ainda
+// não cobre. Sem análise, ou num site estático, não há nenhuma.
+func (s *Server) pendingSuggestions(r *http.Request, p domain.Project) []domain.PersistentSuggestion {
+	out := []domain.PersistentSuggestion{}
+	analysis, err := s.store.LatestAnalysis(r.Context(), p.ID)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			s.log.Error("buscar análise", "erro", err)
+		}
+		return out
+	}
+	if analysis.Result.Fields[domain.FieldProfile].Value == string(domain.ProfileStatic) {
+		return out
+	}
+	for _, sug := range analysis.Result.PersistentSuggestions {
+		covered := false
+		for _, declared := range p.PersistentPaths {
+			if sug.Path != "" && (sug.Path == declared || strings.HasPrefix(sug.Path, declared+"/")) {
+				covered = true
+			}
+		}
+		// Uma nota "usa SQLite, onde?" some quando o projeto já declarou algum caminho.
+		if sug.Path == "" && len(p.PersistentPaths) > 0 {
+			covered = true
+		}
+		if !covered {
+			out = append(out, sug)
+		}
+	}
+	return out
 }
 
 func (s *Server) persistentView(w http.ResponseWriter, r *http.Request, p domain.Project, user domain.User) (persistentView, bool) {
@@ -30,7 +65,7 @@ func (s *Server) persistentView(w http.ResponseWriter, r *http.Request, p domain
 	if paths == nil {
 		paths = []string{}
 	}
-	return persistentView{Paths: paths, Volumes: vols}, true
+	return persistentView{Paths: paths, Volumes: vols, Suggestions: s.pendingSuggestions(r, p)}, true
 }
 
 func (s *Server) handleGetPersistent(w http.ResponseWriter, r *http.Request, user domain.User) {

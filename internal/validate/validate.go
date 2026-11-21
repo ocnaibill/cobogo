@@ -173,6 +173,8 @@ func PersistentPaths(raw []string) ([]string, error) {
 		switch {
 		case p == "" || p == "/":
 			return nil, errors.New("o caminho persistente não pode ser a raiz nem vazio")
+		case p == "/app":
+			return nil, errors.New("o caminho persistente não pode ser o /app inteiro: o volume esconderia o código; escolha uma pasta dentro dele, como /app/data")
 		case !persistentPathPattern.MatchString(p):
 			return nil, fmt.Errorf("caminho persistente inválido %q: use um caminho absoluto com letras, números, ponto, hífen, sublinhado e barra", p)
 		case path.Clean(p) != p || strings.Contains(p, ".."):

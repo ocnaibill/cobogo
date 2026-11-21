@@ -111,6 +111,6 @@ func renderBunDockerfile(in BunPlanInput, install string) string {
 	b.WriteString("COPY --from=build --chown=bun:bun /app /app\n")
 	b.WriteString("USER bun\n")
 	fmt.Fprintf(&b, "EXPOSE %d\n", in.Port)
-	fmt.Fprintf(&b, "CMD [\"sh\", \"-c\", %s]\n", jsonString(in.StartCommand))
+	fmt.Fprintf(&b, "CMD [\"sh\", \"-c\", %s]\n", jsonString(ShellStart(in.StartCommand)))
 	return b.String()
 }

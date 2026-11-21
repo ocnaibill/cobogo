@@ -9,6 +9,10 @@ import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Notice, Tag, When
 import { Icon } from "./icons";
 
 export type ProjectVolume = Schemas["ProjectVolume"];
+export type PersistentSuggestion = Schemas["PersistentSuggestion"];
+
+/** Sugestões que apontam um caminho (as sem caminho são só um aviso). */
+export const withPath = (list: PersistentSuggestion[]) => list.filter((s) => s.path !== "");
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -61,6 +65,7 @@ export function DataTab({ projectId }: { projectId: string }) {
         </span>
       </Notice>
       {msg && <Notice tone={msg.tone}>{msg.text}</Notice>}
+      <Suggestions projectId={projectId} paths={data.paths} suggestions={data.suggestions} onDone={(r) => qc.setQueryData(["persistent", projectId], r)} />
       <Card title="Dados persistentes" icon="server">
         <div className="stack">
           <Field
@@ -231,5 +236,53 @@ export function OrphanVolumes() {
         )}
       </div>
     </Card>
+  );
+}
+
+/** O que a análise achou no código: sugerido, nunca aplicado sem o seu clique. */
+function Suggestions({ projectId, paths, suggestions, onDone }: { projectId: string; paths: string[]; suggestions: PersistentSuggestion[]; onDone: (r: Schemas["PersistentView"]) => void }) {
+  const qc = useQueryClient();
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  if (suggestions.length === 0) return null;
+
+  async function use(path: string) {
+    setBusy(path);
+    setError(null);
+    try {
+      const r = await unwrap(api.PUT("/projects/{id}/persistent-paths", { params: { path: { id: projectId } }, body: { paths: [...paths, path] } }));
+      onDone(r);
+      qc.invalidateQueries({ queryKey: ["project", projectId] });
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <Notice tone="warning" icon="sparkle" title="O código parece guardar dados em disco">
+      <div className="stack-sm">
+        {error && <span className="text-danger">{error}</span>}
+        <span className="small">Sem volume, o que for gravado ali some a cada deploy. É uma leitura do código, então confira antes de usar.</span>
+        {suggestions.map((s, i) => (
+          <div key={`${s.path}-${i}`} className="stack-sm">
+            <div className="row-between">
+              <span>
+                {s.path ? <span className="mono strong">{s.path}</span> : <span className="strong">Caminho não encontrado</span>}{" "}
+                <Badge tone={s.confidence === "strong" ? "success" : "neutral"}>{s.confidence === "strong" ? "provável" : "possível"}</Badge>
+              </span>
+              {s.path && (
+                <Button icon="check" busy={busy === s.path} onClick={() => use(s.path)}>
+                  Usar este caminho
+                </Button>
+              )}
+            </div>
+            <span className="small muted">{s.reason}</span>
+            <span className="small faint mono">{s.evidence.join(" · ")}</span>
+          </div>
+        ))}
+      </div>
+    </Notice>
   );
 }

@@ -185,7 +185,7 @@ func renderNodeDockerfile(in NodePlanInput, install string) string {
 	b.WriteString("COPY --from=build --chown=node:node /app /app\n")
 	b.WriteString("USER node\n")
 	fmt.Fprintf(&b, "EXPOSE %d\n", in.Port)
-	fmt.Fprintf(&b, "CMD [\"sh\", \"-c\", %s]\n", jsonString(in.StartCommand))
+	fmt.Fprintf(&b, "CMD [\"sh\", \"-c\", %s]\n", jsonString(ShellStart(in.StartCommand)))
 	return b.String()
 }
 

@@ -252,7 +252,29 @@ type AnalysisResult struct {
 	ConfigVariables []ConfigVariable `json:"config_variables"`
 	// Warnings são avisos de segurança e de configuração que nunca bloqueiam
 	// a análise (ex.: credencial exposta no repositório).
-	Warnings  []Finding  `json:"warnings"`
-	Evidences []Evidence `json:"evidences"`
-	Coverage  Coverage   `json:"coverage"`
+	Warnings []Finding `json:"warnings"`
+	// PersistentSuggestions são caminhos que o código parece usar para guardar
+	// dados em disco (DEC-41). Só sugerem: quem declara é o usuário.
+	PersistentSuggestions []PersistentSuggestion `json:"persistent_suggestions"`
+	Evidences             []Evidence             `json:"evidences"`
+	Coverage              Coverage               `json:"coverage"`
+}
+
+// Tipos e confianças de uma sugestão de caminho persistente (DEC-41).
+const (
+	SuggestSQLite   = "sqlite"    // arquivo de SQLite
+	SuggestWriteDir = "write_dir" // pasta em que o código escreve arquivos
+	SuggestStrong   = "strong"
+	SuggestWeak     = "weak"
+)
+
+// PersistentSuggestion é uma pista de que um caminho guarda dados que
+// sobreviveriam a um deploy. Path vazio quer dizer "usa disco, mas não achei
+// onde": a pessoa informa. A sugestão nunca é aplicada sozinha.
+type PersistentSuggestion struct {
+	Path       string   `json:"path"`
+	Kind       string   `json:"kind"`
+	Confidence string   `json:"confidence"`
+	Reason     string   `json:"reason"`
+	Evidence   []string `json:"evidence"`
 }

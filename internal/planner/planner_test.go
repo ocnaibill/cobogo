@@ -60,7 +60,7 @@ func TestFromAnalysis(t *testing.T) {
 	for _, want := range []string{
 		"FROM node:26 AS build", "FROM node:26-slim\n", "ENV NODE_ENV=production", "ENV PATH=/app/node_modules/.bin:$PATH",
 		"RUN npm ci --omit=dev", "COPY --from=build --chown=node:node /app /app",
-		"EXPOSE 3000", `CMD ["sh", "-c", "node server.js"]`, "USER node",
+		"EXPOSE 3000", `CMD ["sh", "-c", "exec node server.js"]`, "USER node",
 	} {
 		if !strings.Contains(plan.Dockerfile, want) {
 			t.Errorf("Dockerfile missing %q:\n%s", want, plan.Dockerfile)
@@ -151,7 +151,7 @@ func TestDevelopmentModeInstallsEverythingAndSkipsBuild(t *testing.T) {
 	if plan.ExecutionMode != domain.ModeDevelopment || plan.BuildCommand != "" {
 		t.Errorf("plan = %+v", plan)
 	}
-	for _, want := range []string{"ENV NODE_ENV=development", "RUN npm ci --include=dev", `CMD ["sh", "-c", "npm run dev"]`} {
+	for _, want := range []string{"ENV NODE_ENV=development", "RUN npm ci --include=dev", `CMD ["sh", "-c", "exec npm run dev"]`} {
 		if !strings.Contains(plan.Dockerfile, want) {
 			t.Errorf("Dockerfile missing %q:\n%s", want, plan.Dockerfile)
 		}
@@ -202,8 +202,9 @@ func TestExecutionModeDefaultsToProduction(t *testing.T) {
 	}
 }
 
-// O CMD precisa ser JSON válido e devolver exatamente o comando, qualquer que
-// seja o conteúdo (o %q do Go difere de JSON em alguns caracteres).
+// O CMD precisa ser JSON válido e devolver exatamente o comando (com o `exec`
+// que ShellStart põe quando é seguro), qualquer que seja o conteúdo (o %q do Go
+// difere de JSON em alguns caracteres).
 func TestCmdIsValidJSONForAnyCommand(t *testing.T) {
 	for _, command := range []string{
 		`node server.js`,
@@ -217,7 +218,7 @@ func TestCmdIsValidJSONForAnyCommand(t *testing.T) {
 	} {
 		plan := BuildNodePlan(NodePlanInput{StartCommand: command, Port: 3000})
 		argv := cmdLine(t, plan.Dockerfile)
-		if len(argv) != 3 || argv[0] != "sh" || argv[1] != "-c" || argv[2] != command {
+		if len(argv) != 3 || argv[0] != "sh" || argv[1] != "-c" || argv[2] != ShellStart(command) {
 			t.Errorf("CMD for %q parsed as %q", command, argv)
 		}
 	}

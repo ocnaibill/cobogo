@@ -73,6 +73,9 @@ func TestAppHostConfigIsHardened(t *testing.T) {
 	if hc.RestartPolicy.Name != "" {
 		t.Errorf("RestartPolicy = %+v: a restart would hide the boot failure the probe must see (DEC-29 item 4)", hc.RestartPolicy)
 	}
+	if hc.Init == nil || !*hc.Init {
+		t.Error("the app must run under Docker's init so the stop signal reaches it (otherwise PID 1 ignores it and the stop takes 10 s)")
+	}
 	if hc.ReadonlyRootfs {
 		t.Error("a read-only root filesystem is not a default (DEC-29 item 4)")
 	}

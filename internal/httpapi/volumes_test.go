@@ -124,3 +124,48 @@ func TestDeleteProjectCarriesTheDataChoice(t *testing.T) {
 		t.Errorf("delete_data must reach the operation: %v", op.Params)
 	}
 }
+
+// As sugestões vêm da última análise, só para caminhos ainda não declarados, e
+// nunca são aplicadas sozinhas (DEC-41).
+func TestPersistentSuggestionsComeFromTheAnalysisAndNeverApplyThemselves(t *testing.T) {
+	h := newHarness(t)
+	h.login()
+	p := h.createProject("sugere")
+	base := "/api/v1/projects/" + p.ID.String() + "/persistent-paths"
+
+	if rec := h.do("GET", base, ""); !strings.Contains(rec.Body.String(), `"suggestions":[]`) {
+		t.Fatalf("before any analysis: %s", rec.Body)
+	}
+
+	dep := h.deployment(p.ID.String(), `{"idempotency_key":"s1"}`)
+	result := domain.AnalysisResult{Outcome: domain.AnalysisReady, PersistentSuggestions: []domain.PersistentSuggestion{
+		{Path: "/app/data", Kind: domain.SuggestSQLite, Confidence: domain.SuggestStrong, Reason: "abre data/x.sqlite", Evidence: []string{"src/db.ts:5"}},
+		{Path: "/app/content", Kind: domain.SuggestWriteDir, Confidence: domain.SuggestWeak, Reason: "escreve em content", Evidence: []string{"src/w.ts:9"}},
+		{Path: "/app/data/uploads", Kind: domain.SuggestWriteDir, Confidence: domain.SuggestWeak, Reason: "escreve em data/uploads", Evidence: []string{"src/u.ts:2"}},
+		{Path: "", Kind: domain.SuggestSQLite, Confidence: domain.SuggestWeak, Reason: "usa SQLite, onde?", Evidence: []string{"package.json"}},
+	}}
+	if _, err := h.leased().SaveAnalysis(t.Context(), dep.ID, p.ID, "abc123", result); err != nil {
+		t.Fatal(err)
+	}
+
+	var got struct {
+		Paths       []string                      `json:"paths"`
+		Suggestions []domain.PersistentSuggestion `json:"suggestions"`
+	}
+	json.Unmarshal(h.do("GET", base, "").Body.Bytes(), &got)
+	if len(got.Suggestions) != 4 || len(got.Paths) != 0 {
+		t.Fatalf("suggestions = %+v, paths = %v; a suggestion must never become a path on its own", got.Suggestions, got.Paths)
+	}
+
+	// Declarar um caminho tira a sugestão dele e a nota "onde?".
+	json.Unmarshal(h.do("PUT", base, `{"paths":["/app/data"]}`).Body.Bytes(), &got)
+	if len(got.Suggestions) != 1 || got.Suggestions[0].Path != "/app/content" {
+		t.Errorf("after declaring /app/data: %+v", got.Suggestions)
+	}
+	// /app/data/uploads estava dentro de /app/data: já estava coberta. Declarar
+	// o que sobrou zera a lista.
+	json.Unmarshal(h.do("PUT", base, `{"paths":["/app/data","/app/content"]}`).Body.Bytes(), &got)
+	if len(got.Suggestions) != 0 {
+		t.Errorf("everything is covered now: %+v", got.Suggestions)
+	}
+}

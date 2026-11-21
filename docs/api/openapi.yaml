@@ -2036,10 +2036,40 @@ components:
           description: Sem projeto vivo, ou o caminho deixou de ser persistente.
         project_deleted:
           type: boolean
+    PersistentSuggestion:
+      type: object
+      required: [path, kind, confidence, reason, evidence]
+      properties:
+        path:
+          type: string
+          description: |
+            Caminho no contêiner. Vazio quando o código usa disco mas não se
+            achou onde: a pessoa informa.
+        kind:
+          type: string
+          enum: [sqlite, write_dir]
+        confidence:
+          type: string
+          enum: [strong, weak]
+        reason:
+          type: string
+        evidence:
+          type: array
+          items:
+            type: string
+          description: Arquivos e linhas em que a sugestão se apoia.
     PersistentView:
       type: object
-      required: [paths, volumes]
+      required: [paths, volumes, suggestions]
       properties:
+        suggestions:
+          type: array
+          description: |
+            Pistas da última análise para caminhos ainda não declarados. Só
+            sugerem; quem declara é o usuário (`PUT .../persistent-paths`).
+          items:
+            $ref: '#/components/schemas/PersistentSuggestion'
+
         paths:
           type: array
           items:
@@ -2126,7 +2156,7 @@ components:
       enum: [READY, NEEDS_INPUT, UNSUPPORTED]
     AnalysisResult:
       type: object
-      required: [outcome, catalog_version, rules, fields, pending, conflicts, unsupported, config_variables, warnings, evidences, coverage]
+      required: [outcome, catalog_version, rules, fields, pending, conflicts, unsupported, config_variables, persistent_suggestions, warnings, evidences, coverage]
       properties:
         outcome:
           $ref: '#/components/schemas/AnalysisOutcome'
@@ -2159,6 +2189,11 @@ components:
           description: Variáveis de ambiente do projeto; nenhum valor do repositório sai daqui, exceto `default_value` de valores não secretos.
           items:
             $ref: '#/components/schemas/ConfigVariable'
+        persistent_suggestions:
+          type: array
+          description: Caminhos que o código parece usar para guardar dados em disco (DEC-41). Só sugerem.
+          items:
+            $ref: '#/components/schemas/PersistentSuggestion'
         warnings:
           type: array
           description: Avisos que nunca bloqueiam (por exemplo, credencial exposta no repositório).

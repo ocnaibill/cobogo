@@ -1101,7 +1101,26 @@ export interface components {
             orphan: boolean;
             project_deleted: boolean;
         };
+        PersistentSuggestion: {
+            /**
+             * @description Caminho no contêiner. Vazio quando o código usa disco mas não se
+             *     achou onde: a pessoa informa.
+             */
+            path: string;
+            /** @enum {string} */
+            kind: "sqlite" | "write_dir";
+            /** @enum {string} */
+            confidence: "strong" | "weak";
+            reason: string;
+            /** @description Arquivos e linhas em que a sugestão se apoia. */
+            evidence: string[];
+        };
         PersistentView: {
+            /**
+             * @description Pistas da última análise para caminhos ainda não declarados. Só
+             *     sugerem; quem declara é o usuário (`PUT .../persistent-paths`).
+             */
+            suggestions: components["schemas"]["PersistentSuggestion"][];
             paths: string[];
             volumes: components["schemas"]["ProjectVolume"][];
         };
@@ -1167,6 +1186,8 @@ export interface components {
             unsupported: components["schemas"]["Finding"][];
             /** @description Variáveis de ambiente do projeto; nenhum valor do repositório sai daqui, exceto `default_value` de valores não secretos. */
             config_variables: components["schemas"]["ConfigVariable"][];
+            /** @description Caminhos que o código parece usar para guardar dados em disco (DEC-41). Só sugerem. */
+            persistent_suggestions: components["schemas"]["PersistentSuggestion"][];
             /** @description Avisos que nunca bloqueiam (por exemplo, credencial exposta no repositório). */
             warnings: components["schemas"]["Finding"][];
             evidences: components["schemas"]["Evidence"][];

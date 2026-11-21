@@ -88,6 +88,7 @@ func analyzeWith(cat Catalog, fsys fs.FS, in Input) (domain.AnalysisResult, erro
 		}
 	}
 	slices.SortFunc(res.ConfigVariables, func(a, b domain.ConfigVariable) int { return strings.Compare(a.Name, b.Name) })
+	res.PersistentSuggestions = suggestPersistence(fsys)
 
 	supported := len(res.Unsupported) == 0
 	res.Fields, res.Pending, res.Conflicts = resolve(cat, proposals, res.Pending, res.Conflicts, overrides, invalid, supported)

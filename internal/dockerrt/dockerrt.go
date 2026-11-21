@@ -308,7 +308,13 @@ type RunResult struct {
 func appHostConfig(portSpec nat.Port, l domain.Limits) *container.HostConfig {
 	memory := int64(l.AppMemoryMB) * mib
 	pids := int64(l.AppPids)
+	// O processo 1 de um contêiner ignora o sinal de término se não tiver um
+	// tratador próprio (é uma regra do kernel), e o Docker o mata à força depois
+	// de 10 s. O init do Docker (tini) assume o processo 1 e repassa o sinal ao
+	// processo da aplicação, que então encerra na hora (DEC-40, DEC-41).
+	useInit := true
 	return &container.HostConfig{
+		Init: &useInit,
 		PortBindings: nat.PortMap{
 			portSpec: []nat.PortBinding{{HostIP: "127.0.0.1", HostPort: "0"}},
 		},

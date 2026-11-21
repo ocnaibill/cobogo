@@ -147,6 +147,7 @@ func TestPersistentPaths(t *testing.T) {
 	for name, in := range map[string][]string{
 		"relative":           {"app/data"},
 		"root":               {"/"},
+		"the whole app":      {"/app"},
 		"empty":              {""},
 		"parent traversal":   {"/app/../etc"},
 		"repeated slash":     {"/app//data"},
