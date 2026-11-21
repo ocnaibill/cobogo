@@ -99,7 +99,8 @@ services:
     <<: *hardened
     restart: "no"
     profiles: [tools]
-    command: ["rotate-secrets"]
+    # `run ... rotate-secrets --check` substitui o `command`; o subcomando fica no entrypoint.
+    entrypoint: ["/usr/local/bin/cobogo-api", "rotate-secrets"]
     environment:
       DATABASE_URL: postgres://cobogo_owner:${COBOGO_OWNER_PASSWORD}@postgres:5432/cobogo_core?sslmode=disable
       COBOGO_SECRET_KEY: ${COBOGO_SECRET_KEY:-}
