@@ -196,3 +196,72 @@ export function DangerZone({ projectId, slug }: { projectId: string; slug: strin
     </Card>
   );
 }
+
+type AppAction = "stop" | "start" | "restart";
+
+const APP_DONE: Record<AppAction, string> = {
+  stop: "Aplicação parada. O endereço mostra a página de projeto inativo.",
+  start: "Aplicação no ar de novo.",
+  restart: "Aplicação reiniciada.",
+};
+
+/**
+ * Parar, iniciar e reiniciar (DEC-40). A API só enfileira; o worker executa, e
+ * a operação é acompanhada até terminar. Parado não é falhou.
+ */
+export function useAppControl(projectId: string) {
+  const qc = useQueryClient();
+  const [pending, setPending] = useState<{ id: string; action: AppAction } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const op = useOperation(pending?.id ?? null);
+  const settled = !!op.data && isSettled(op.data);
+
+  useEffect(() => {
+    if (!settled) return;
+    for (const key of [["project", projectId], ["projects"], ["operations", projectId]]) qc.invalidateQueries({ queryKey: key });
+  }, [settled, projectId, qc]);
+
+  async function run(action: AppAction) {
+    setError(null);
+    const path = { params: { path: { id: projectId } } };
+    try {
+      const created = await unwrap(
+        action === "stop" ? api.POST("/projects/{id}/app/stop", path) : action === "start" ? api.POST("/projects/{id}/app/start", path) : api.POST("/projects/{id}/app/restart", path),
+      );
+      setPending({ id: created.id, action });
+    } catch (e) {
+      setPending(null);
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  const busy = !!pending && !settled;
+  let notice: { tone: "success" | "danger" | "info"; text: string } | null = null;
+  if (error) notice = { tone: "danger", text: error };
+  else if (pending && busy) notice = { tone: "info", text: pending.action === "stop" ? "Parando a aplicação…" : pending.action === "start" ? "Iniciando a aplicação e esperando ela responder…" : "Reiniciando a aplicação…" };
+  else if (pending && op.data?.state === "DONE") notice = { tone: "success", text: APP_DONE[pending.action] };
+  else if (pending && op.data?.state === "FAILED") notice = { tone: "danger", text: op.data.error || "A operação falhou." };
+  return { run, busy, notice };
+}
+
+/** Os botões da aplicação: no ar, para ou reinicia; parada, inicia. */
+export function AppButtons({ state, busy, run }: { state: "none" | "running" | "stopped"; busy: boolean; run: (a: AppAction) => void }) {
+  if (state === "none") return null;
+  if (state === "stopped") {
+    return (
+      <Button variant="primary" icon="rocket" busy={busy} onClick={() => run("start")}>
+        Iniciar
+      </Button>
+    );
+  }
+  return (
+    <>
+      <Button icon="refresh" disabled={busy} onClick={() => run("restart")} title="Não relê variáveis; para isso, faça um novo deploy">
+        Reiniciar
+      </Button>
+      <Button disabled={busy} onClick={() => window.confirm("Parar a aplicação? O endereço passa a mostrar a página de projeto inativo, e você pode iniciá-la de novo quando quiser.") && run("stop")}>
+        Parar
+      </Button>
+    </>
+  );
+}

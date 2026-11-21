@@ -7,7 +7,7 @@ import { api, ApiError, idempotencyKey, unwrap, type ConfigVariable } from "../a
 import { Badge, Button, Card, CopyButton, Empty, ErrorBox, Field, LinkButton, Loading, Notice, PageHead, StateBadge, Tag, When } from "../components/ui";
 import { Icon, type IconName } from "../components/icons";
 import { duration, repoName, shortSha } from "../lib/format";
-import { ApplyLimits, DangerZone, OperationsTab } from "../components/Lifecycle";
+import { AppButtons, ApplyLimits, DangerZone, OperationsTab, useAppControl } from "../components/Lifecycle";
 import { profileLabel } from "../lib/deploy";
 import { EnvHistory, ImportEnv, Suggestions } from "../components/Secrets";
 import { missingLikely, withRequired } from "../lib/secrets";
@@ -42,6 +42,7 @@ export function ProjectPage() {
     enabled: !!analysisDeploymentId,
     retry: false,
   });
+  const appControl = useAppControl(id);
   const limits = useQuery({ queryKey: ["limits", id], queryFn: () => unwrap(api.GET("/projects/{id}/limits", { params: { path: { id } } })) });
 
   if (project.isLoading) return <Loading />;
@@ -83,7 +84,8 @@ export function ProjectPage() {
         }
         actions={
           <>
-            <Button variant="primary" icon="rocket" onClick={deploy} busy={busy}>
+            <AppButtons state={p.app_state} busy={appControl.busy} run={appControl.run} />
+            <Button variant={p.app_state === "stopped" ? "secondary" : "primary"} icon="rocket" onClick={deploy} busy={busy}>
               Novo deploy
             </Button>
             {latest && (
@@ -97,7 +99,9 @@ export function ProjectPage() {
           </>
         }
       >
-        {lastOk ? (
+        {p.app_state === "stopped" ? (
+          <Badge tone="warning">Parado</Badge>
+        ) : lastOk ? (
           <Badge tone="success">No ar</Badge>
         ) : latest ? (
           <StateBadge state={latest.state} />
@@ -115,6 +119,12 @@ export function ProjectPage() {
         )}
       </PageHead>
       {error && <Notice tone="danger">{error}</Notice>}
+      {appControl.notice && <Notice tone={appControl.notice.tone}>{appControl.notice.text}</Notice>}
+      {p.app_state === "stopped" && !appControl.busy && (
+        <Notice tone="warning" title="A aplicação está parada.">
+          <span>O endereço público mostra a página de projeto inativo. Parar não é uma falha: o contêiner foi mantido, e Iniciar o traz de volta. Um novo deploy também o coloca no ar.</span>
+        </Notice>
+      )}
       {candidateFailed && (
         <Notice tone="warning" title="O último deploy falhou, mas a versão anterior continua no ar.">
           A falha foi só na candidata: o tráfego só troca depois que uma versão passa na verificação. <Link to={`/deploys/${latest!.id}`}>Ver a falha</Link>
@@ -173,7 +183,7 @@ export function ProjectPage() {
           </div>
         </Card>
 
-        <Card title="Release ativa" icon="layers" actions={lastOk ? <Badge tone="success">no ar</Badge> : undefined}>
+        <Card title="Release ativa" icon="layers" actions={lastOk ? p.app_state === "stopped" ? <Badge tone="warning">parada</Badge> : <Badge tone="success">no ar</Badge> : undefined}>
           {lastOk ? (
             <div className="stack">
               <div className="inset row-between">

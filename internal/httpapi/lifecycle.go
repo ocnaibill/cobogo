@@ -17,6 +17,8 @@ const (
 	codeDeploymentInProgress = "deployment_in_progress"
 	codeConfirmationMismatch = "confirmation_mismatch"
 	codeNoActiveRelease      = "no_active_release"
+	codeAppAlreadyStopped    = "app_already_stopped"
+	codeAppAlreadyRunning    = "app_already_running"
 )
 
 type deleteProjectRequest struct {
@@ -77,6 +79,39 @@ func (s *Server) handleApplyLimits(w http.ResponseWriter, r *http.Request, user 
 	default:
 		s.audit(r, &user, "project.limits.apply", p.ID.String(), "ok")
 		writeJSON(w, http.StatusAccepted, op)
+	}
+}
+
+// appOperationAudit é a ação de auditoria de cada operação de aplicação.
+var appOperationAudit = map[domain.OperationKind]string{
+	domain.OpStopApp: "project.app.stop", domain.OpStartApp: "project.app.start", domain.OpRestartApp: "project.app.restart",
+}
+
+// handleAppOperation pede ao worker que pare, inicie ou reinicie a release
+// ativa (DEC-40). A API só enfileira; quem mexe no contêiner é o worker.
+func (s *Server) handleAppOperation(kind domain.OperationKind) func(http.ResponseWriter, *http.Request, domain.User) {
+	return func(w http.ResponseWriter, r *http.Request, user domain.User) {
+		p, ok := s.projectOf(w, r, user)
+		if !ok {
+			return
+		}
+		op, err := s.store.RequestAppOperation(r.Context(), p.ID, user.ID, kind)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			writeError(w, http.StatusNotFound, "projeto não encontrado")
+		case errors.Is(err, store.ErrNoActiveRelease):
+			writeCode(w, http.StatusConflict, codeNoActiveRelease, "o projeto não tem release no ar; faça um deploy primeiro")
+		case errors.Is(err, store.ErrAppAlreadyStopped):
+			writeCode(w, http.StatusConflict, codeAppAlreadyStopped, "a aplicação já está parada")
+		case errors.Is(err, store.ErrAppAlreadyRunning):
+			writeCode(w, http.StatusConflict, codeAppAlreadyRunning, "a aplicação já está no ar")
+		case err != nil:
+			s.log.Error("pedir operação da aplicação", "tipo", kind, "erro", err)
+			writeError(w, http.StatusInternalServerError, "erro interno")
+		default:
+			s.audit(r, &user, appOperationAudit[kind], p.ID.String(), "ok")
+			writeJSON(w, http.StatusAccepted, op)
+		}
 	}
 }
 

@@ -67,7 +67,11 @@ func (s *Store) ListProjectsFor(ctx context.Context, ownerID uuid.UUID, limit in
 	at, id := cursorArgs(after)
 	rows, err := s.pool.Query(ctx, `
 		SELECT p.id, p.owner_id, p.slug, p.repository_url, p.root_directory, p.limits, p.created_at,
-		       d.id, d.state, d.created_at
+		       d.id, d.state, d.created_at,
+		       COALESCE((SELECT CASE WHEN r.stopped_at IS NULL THEN 'running' ELSE 'stopped' END
+		            FROM releases r JOIN deployments dd ON dd.id = r.deployment_id
+		            WHERE dd.project_id = p.id AND r.operational_state = 'active'
+		            ORDER BY r.created_at DESC LIMIT 1), 'none')
 		FROM projects p
 		LEFT JOIN LATERAL (
 			SELECT id, state, created_at FROM deployments
@@ -90,7 +94,7 @@ func (s *Store) ListProjectsFor(ctx context.Context, ownerID uuid.UUID, limit in
 		var depCreated *time.Time
 		var limitsRaw string
 		if err := rows.Scan(&it.ID, &it.OwnerID, &it.Slug, &it.RepositoryURL, &it.RootDirectory, &limitsRaw, &it.CreatedAt,
-			&depID, &depState, &depCreated); err != nil {
+			&depID, &depState, &depCreated, &it.AppState); err != nil {
 			return nil, nil, fmt.Errorf("store: ler projeto: %w", err)
 		}
 		var lerr error

@@ -110,7 +110,7 @@ func NewRouter(o Options) (http.Handler, error) {
 		}
 		panel.ServeHTTP(w, r)
 	})
-	return s.wrap(mux), nil
+	return s.inactiveGate(s.wrap(mux)), nil
 }
 
 type route struct {
@@ -137,6 +137,9 @@ func (s *Server) routes() []route {
 		{"GET /api/v1/projects/{id}", s.authed(s.handleGetProject)},
 		{"DELETE /api/v1/projects/{id}", s.authed(s.handleDeleteProject)},
 		{"POST /api/v1/projects/{id}/limits/apply", s.authed(s.handleApplyLimits)},
+		{"POST /api/v1/projects/{id}/app/stop", s.authed(s.handleAppOperation(domain.OpStopApp))},
+		{"POST /api/v1/projects/{id}/app/start", s.authed(s.handleAppOperation(domain.OpStartApp))},
+		{"POST /api/v1/projects/{id}/app/restart", s.authed(s.handleAppOperation(domain.OpRestartApp))},
 		{"GET /api/v1/projects/{id}/operations", s.authed(s.handleListOperations)},
 		{"GET /api/v1/operations/{id}", s.authed(s.handleGetOperation)},
 		{"GET /api/v1/projects/{id}/deployments", s.authed(s.handleListDeployments)},

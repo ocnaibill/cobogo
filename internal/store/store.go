@@ -31,6 +31,10 @@ var (
 	ErrConfirmationMismatch = errors.New("store: o nome de confirmação não confere")
 	// ErrNoActiveRelease indica que o projeto não tem release no ar.
 	ErrNoActiveRelease = errors.New("store: o projeto não tem release ativa")
+	// ErrAppAlreadyStopped e ErrAppAlreadyRunning: o pedido de parar ou de
+	// iniciar não muda nada (DEC-40).
+	ErrAppAlreadyStopped = errors.New("store: a aplicação já está parada")
+	ErrAppAlreadyRunning = errors.New("store: a aplicação já está no ar")
 )
 
 type Store struct {
@@ -70,9 +74,13 @@ func (s *Store) GetProject(ctx context.Context, id uuid.UUID) (domain.Project, e
 	var p domain.Project
 	var limitsRaw string
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, owner_id, slug, repository_url, root_directory, limits, created_at, deleted_at
-		FROM projects WHERE id = $1`, id,
-	).Scan(&p.ID, &p.OwnerID, &p.Slug, &p.RepositoryURL, &p.RootDirectory, &limitsRaw, &p.CreatedAt, &p.DeletedAt)
+		SELECT p.id, p.owner_id, p.slug, p.repository_url, p.root_directory, p.limits, p.created_at, p.deleted_at,
+		       COALESCE((SELECT CASE WHEN r.stopped_at IS NULL THEN 'running' ELSE 'stopped' END
+		            FROM releases r JOIN deployments dd ON dd.id = r.deployment_id
+		            WHERE dd.project_id = p.id AND r.operational_state = 'active'
+		            ORDER BY r.created_at DESC LIMIT 1), 'none')
+		FROM projects p WHERE p.id = $1`, id,
+	).Scan(&p.ID, &p.OwnerID, &p.Slug, &p.RepositoryURL, &p.RootDirectory, &limitsRaw, &p.CreatedAt, &p.DeletedAt, &p.AppState)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Project{}, ErrNotFound
 	}
@@ -466,7 +474,7 @@ func (s *Store) GetReleaseByDeployment(ctx context.Context, deploymentID uuid.UU
 // release ativa que tem rota (DEC-31 item 9). Só lê o banco.
 func (s *Store) ListRoutes(ctx context.Context) ([]domain.Route, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT DISTINCT ON (d.project_id) p.slug, r.route_host, r.route_target
+		SELECT DISTINCT ON (d.project_id) p.slug, r.route_host, r.route_target, r.stopped_at IS NOT NULL
 		FROM releases r
 		JOIN deployments d ON d.id = r.deployment_id
 		JOIN projects p ON p.id = d.project_id
@@ -479,7 +487,7 @@ func (s *Store) ListRoutes(ctx context.Context) ([]domain.Route, error) {
 	var routes []domain.Route
 	for rows.Next() {
 		var rt domain.Route
-		if err := rows.Scan(&rt.Slug, &rt.Host, &rt.Target); err != nil {
+		if err := rows.Scan(&rt.Slug, &rt.Host, &rt.Target, &rt.Stopped); err != nil {
 			return nil, fmt.Errorf("store: ler rota: %w", err)
 		}
 		routes = append(routes, rt)

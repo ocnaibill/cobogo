@@ -460,6 +460,98 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /projects/{id}/app/stop:
+    post:
+      tags: [projects, operations]
+      summary: Para a aplicação do projeto
+      description: |
+        Pede ao worker que pare o contêiner da release ativa **e o mantenha**
+        (DEC-40): imagem e configuração continuam, e iniciar de novo é rápido.
+        O endereço público passa a mostrar a página de projeto inativo (503).
+        `app_state` do projeto vira `stopped`, que não é o mesmo que falhou.
+      operationId: stopProjectApp
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '202':
+          description: A operação foi enfileirada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: O projeto não tem release no ar (`no_active_release`) ou a aplicação já está parada (`app_already_stopped`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /projects/{id}/app/start:
+    post:
+      tags: [projects, operations]
+      summary: Inicia a aplicação parada do projeto
+      description: |
+        Pede ao worker que inicie o contêiner mantido e espere a prontidão
+        como um deploy faria. Só então a rota volta ao contêiner. Se não ficar
+        pronta no prazo, a operação termina `FAILED` com o motivo e o projeto
+        continua parado.
+      operationId: startProjectApp
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '202':
+          description: A operação foi enfileirada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: O projeto não tem release no ar (`no_active_release`) ou a aplicação já está no ar (`app_already_running`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /projects/{id}/app/restart:
+    post:
+      tags: [projects, operations]
+      summary: Reinicia a aplicação do projeto
+      description: |
+        Parar e iniciar. **Não relê variáveis nem limites**: o contêiner é o
+        mesmo. Um novo deploy relê as variáveis; `POST .../limits/apply` muda
+        os limites. Vale também com a aplicação parada (equivale a iniciar).
+      operationId: restartProjectApp
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '202':
+          description: A operação foi enfileirada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: O projeto não tem release no ar (`no_active_release`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /projects/{id}/deployments:
     get:
       tags: [deployments]
@@ -1338,7 +1430,7 @@ components:
           format: uuid
         kind:
           type: string
-          enum: [retire_releases, delete_project, apply_limits, sweep]
+          enum: [retire_releases, delete_project, apply_limits, sweep, stop_app, start_app, restart_app]
         state:
           type: string
           enum: [PENDING, RUNNING, DONE, FAILED]
@@ -1460,8 +1552,14 @@ components:
           type: number
     Project:
       type: object
-      required: [id, slug, repository_url, root_directory, limits, created_at]
+      required: [id, slug, repository_url, root_directory, limits, created_at, app_state]
       properties:
+        app_state:
+          type: string
+          enum: [none, running, stopped]
+          description: |
+            Estado da release ativa: `none` (nenhuma), `running` ou `stopped`
+            (parada de propósito, DEC-40; não é uma falha).
         limits:
           $ref: '#/components/schemas/Limits'
         id:

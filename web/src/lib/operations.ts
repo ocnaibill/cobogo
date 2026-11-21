@@ -8,6 +8,9 @@ export const OP_LABEL: Record<Operation["kind"], string> = {
   delete_project: "Excluir projeto",
   apply_limits: "Aplicar limites",
   sweep: "Faxina de recursos órfãos",
+  stop_app: "Parar a aplicação",
+  start_app: "Iniciar a aplicação",
+  restart_app: "Reiniciar a aplicação",
 };
 
 export const OP_STATE_LABEL: Record<Operation["state"], string> = {
@@ -37,6 +40,11 @@ export function summarize(op: Operation): string {
   switch (op.kind) {
     case "apply_limits":
       return r.changed === false ? `Nada mudou: o contêiner já tinha ${res(r.after)}.` : `De ${res(r.before)} para ${res(r.after)}.`;
+    case "stop_app":
+      return "A aplicação foi parada; o endereço mostra a página de projeto inativo.";
+    case "start_app":
+    case "restart_app":
+      return "A aplicação voltou ao ar e passou na verificação.";
     case "retire_releases":
     case "delete_project":
     case "sweep": {

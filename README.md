@@ -158,6 +158,8 @@ curl "${H[@]}" -X POST $API/api/v1/projects/<id>/env/import -d '{"mode": "apply"
 
 Para trocar a chave de cifra (`COBOGO_SECRET_KEYS` e `COBOGO_SECRET_KEY_CURRENT`; `COBOGO_SECRET_KEY` sozinha continua valendo), rode `cobogo-api rotate-secrets` com o role dono do banco; `--check` só conta as variáveis por versão de chave. O passo a passo na VM está em [`deploy/README.md`](deploy/README.md). Rotacionar a chave não muda nenhum valor e não pede novo deploy.
 
+**Parar, iniciar e reiniciar (DEC-40).** `POST $API/api/v1/projects/<id>/app/stop|start|restart` enfileira a operação (202) e o worker a executa; acompanhe em `GET /operations/<id>`. Parar **mantém o contêiner** e o endereço do projeto passa a mostrar uma página de "projeto inativo" (503); `app_state` do projeto vira `stopped`, que não é falha. Iniciar espera a aplicação responder antes de a rota voltar; reiniciar não relê variáveis (um novo deploy relê). Parar o que já está parado, ou iniciar o que está no ar, responde 409.
+
 ### **5. Acompanhar o progresso**
 
 O contrato completo está em [`docs/api/openapi.yaml`](docs/api/openapi.yaml) (OpenAPI 3; cole-o no Swagger Editor ou gere um cliente a partir dele). Para acompanhar um deploy:

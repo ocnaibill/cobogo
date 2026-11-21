@@ -306,11 +306,11 @@ func (s *Store) RequestApplyLimits(ctx context.Context, projectID, ownerID uuid.
 func (s *Store) ActiveRelease(ctx context.Context, projectID uuid.UUID) (domain.Release, error) {
 	var r domain.Release
 	err := s.pool.QueryRow(ctx, `
-		SELECT r.id, r.deployment_id, r.image_id, r.container_id, r.operational_state, r.health, r.host_port, r.url, r.route_host, r.route_target, r.created_at
+		SELECT r.id, r.deployment_id, r.image_id, r.container_id, r.operational_state, r.health, r.host_port, r.url, r.route_host, r.route_target, r.created_at, r.stopped_at
 		FROM releases r JOIN deployments d ON d.id = r.deployment_id
 		WHERE d.project_id = $1 AND r.operational_state = 'active'
 		ORDER BY r.created_at DESC LIMIT 1`, projectID,
-	).Scan(&r.ID, &r.DeploymentID, &r.ImageID, &r.ContainerID, &r.OperationalState, &r.Health, &r.HostPort, &r.URL, &r.RouteHost, &r.RouteTarget, &r.CreatedAt)
+	).Scan(&r.ID, &r.DeploymentID, &r.ImageID, &r.ContainerID, &r.OperationalState, &r.Health, &r.HostPort, &r.URL, &r.RouteHost, &r.RouteTarget, &r.CreatedAt, &r.StoppedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Release{}, ErrNoActiveRelease
 	}
@@ -407,4 +407,66 @@ func (s *Store) AppendEvent(ctx context.Context, deploymentID uuid.UUID, stage, 
 		return fmt.Errorf("store: confirmar evento: %w", err)
 	}
 	return nil
+}
+
+// RequestAppOperation enfileira parar, iniciar ou reiniciar a release ativa
+// (DEC-40). Recusa sem release no ar e quando o pedido não muda nada (parar o
+// que já está parado, iniciar o que já está no ar); reiniciar sempre vale.
+func (s *Store) RequestAppOperation(ctx context.Context, projectID, ownerID uuid.UUID, kind domain.OperationKind) (domain.Operation, error) {
+	if _, err := s.GetProjectFor(ctx, projectID, ownerID); err != nil {
+		return domain.Operation{}, err
+	}
+	active, err := s.ActiveRelease(ctx, projectID)
+	if err != nil {
+		return domain.Operation{}, err
+	}
+	switch {
+	case kind == domain.OpStopApp && active.StoppedAt != nil:
+		return domain.Operation{}, ErrAppAlreadyStopped
+	case kind == domain.OpStartApp && active.StoppedAt == nil:
+		return domain.Operation{}, ErrAppAlreadyRunning
+	}
+	return s.EnqueueOperation(ctx, &projectID, kind, nil, time.Now().UTC(), &ownerID)
+}
+
+// SetAppStopped marca a release ativa como parada ou em execução (DEC-40). Só
+// vale para uma release que ainda é a ativa: se um deploy a substituiu no meio
+// do caminho, não há o que marcar.
+func (s *Store) SetAppStopped(ctx context.Context, releaseID uuid.UUID, stopped bool) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE releases SET stopped_at = CASE WHEN $2 THEN COALESCE(stopped_at, now()) ELSE NULL END
+		WHERE id = $1 AND operational_state = 'active'`, releaseID, stopped)
+	if err != nil {
+		return fmt.Errorf("store: marcar a aplicação como parada: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNoActiveRelease
+	}
+	return nil
+}
+
+// UpdateReleaseHostPort guarda a porta de host nova de uma release ativa que
+// foi reiniciada: a porta publicada é efêmera e pode mudar (DEC-40).
+func (s *Store) UpdateReleaseHostPort(ctx context.Context, releaseID uuid.UUID, hostPort int) error {
+	_, err := s.pool.Exec(ctx, `UPDATE releases SET host_port = $2 WHERE id = $1 AND operational_state = 'active'`, releaseID, hostPort)
+	if err != nil {
+		return fmt.Errorf("store: atualizar a porta da release: %w", err)
+	}
+	return nil
+}
+
+// AppStoppedBySlug diz se o projeto de um slug existe e está com a aplicação
+// parada. Serve à página de inativo (DEC-40) e só lê o que ela mostra.
+func (s *Store) AppStoppedBySlug(ctx context.Context, slug string) (bool, error) {
+	var stopped bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM projects p
+			JOIN deployments d ON d.project_id = p.id
+			JOIN releases r ON r.deployment_id = d.id
+			WHERE p.slug = $1 AND p.deleted_at IS NULL AND r.operational_state = 'active' AND r.stopped_at IS NOT NULL)`, slug).Scan(&stopped)
+	if err != nil {
+		return false, fmt.Errorf("store: ler se a aplicação está parada: %w", err)
+	}
+	return stopped, nil
 }

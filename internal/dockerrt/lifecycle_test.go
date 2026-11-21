@@ -9,6 +9,7 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/go-connections/nat"
 
 	"github.com/ocnaibill/cobogo/internal/domain"
 )
@@ -253,5 +254,67 @@ func TestProjectImagesAreFoundByLabelAndPrunedSafely(t *testing.T) {
 	}
 	if err := rt.RemoveImage(ctx, left[0]); !errors.Is(err, ErrImageInUse) {
 		t.Errorf("removing an image in use = %v, want ErrImageInUse", err)
+	}
+}
+
+// Parar mantém o contêiner; iniciar o traz de volta com a porta publicada de
+// agora (DEC-40). Nada disso toca um contêiner sem os labels do Cobogó.
+func TestStopKeepsTheContainerAndStartBringsItBack(t *testing.T) {
+	rt := dockerForTest(t)
+	ctx := context.Background()
+	port := nat.Port("8080/tcp")
+	spawn := func(name string, labels map[string]string) string {
+		created, err := rt.cli.ContainerCreate(ctx,
+			&container.Config{Image: "node:26-slim", Cmd: []string{"sleep", "300"}, Labels: labels, ExposedPorts: nat.PortSet{port: {}}},
+			&container.HostConfig{PortBindings: nat.PortMap{port: {{HostIP: "127.0.0.1"}}}}, nil, nil, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_ = rt.cli.ContainerRemove(context.Background(), created.ID, container.RemoveOptions{Force: true})
+		})
+		if err := rt.cli.ContainerStart(ctx, created.ID, container.StartOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		return created.ID
+	}
+	mine := spawn("cobogo-test-stop-mine", map[string]string{LabelManaged: "true", LabelDeployment: "dep-stop", LabelProject: "proj-stop"})
+	foreign := spawn("cobogo-test-stop-foreign", map[string]string{LabelProject: "proj-stop"})
+
+	if err := rt.StopContainer(ctx, foreign); err == nil {
+		t.Error("stopping a container the Cobogó did not create must be refused (RF-18)")
+	}
+	if _, err := rt.StartContainer(ctx, foreign, 8080); err == nil {
+		t.Error("starting a container the Cobogó did not create must be refused (RF-18)")
+	}
+	if running, _, _ := rt.State(ctx, foreign); !running {
+		t.Error("the foreign container must be untouched")
+	}
+
+	if err := rt.StopContainer(ctx, mine); err != nil {
+		t.Fatal(err)
+	}
+	if running, _, _ := rt.State(ctx, mine); running {
+		t.Error("the container must be stopped")
+	}
+	if !exists(t, rt, mine) {
+		t.Error("stopping must keep the container")
+	}
+	if err := rt.StopContainer(ctx, mine); err != nil {
+		t.Errorf("stopping what is already stopped is a no-op: %v", err)
+	}
+
+	started, err := rt.StartContainer(ctx, mine, 8080)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.Name != "cobogo-test-stop-mine" || started.HostPort <= 0 {
+		t.Errorf("started = %+v", started)
+	}
+	if running, _, _ := rt.State(ctx, mine); !running {
+		t.Error("the container must be running again")
+	}
+	if _, err := rt.StartContainer(ctx, mine, 8080); err != nil {
+		t.Errorf("starting what is already running is a no-op: %v", err)
 	}
 }

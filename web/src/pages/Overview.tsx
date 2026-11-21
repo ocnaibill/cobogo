@@ -12,9 +12,10 @@ import { isActive } from "../lib/deploy";
 import { repoName } from "../lib/format";
 import { useAppsDomain } from "../hooks/useInstance";
 
-type Bucket = "ok" | "attention" | "running" | "none";
+type Bucket = "ok" | "attention" | "running" | "none" | "stopped";
 
 function bucket(p: ProjectSummary): Bucket {
+  if (p.app_state === "stopped") return "stopped";
   const s = p.last_deployment?.state;
   if (!s) return "none";
   if (s === "SUCCEEDED") return "ok";
@@ -28,6 +29,7 @@ const FILTERS: { key: Bucket | "all"; label: string; dot?: string }[] = [
   { key: "ok", label: "Publicados", dot: "success" },
   { key: "attention", label: "Atenção", dot: "danger" },
   { key: "running", label: "Em andamento", dot: "info" },
+  { key: "stopped", label: "Parados", dot: "warning" },
   { key: "none", label: "Sem deploy", dot: "neutral" },
 ];
 
@@ -45,7 +47,7 @@ export function OverviewPage() {
   });
 
   const projects = useMemo(() => q.data?.pages.flatMap((p) => p.projects) ?? [], [q.data]);
-  const counts: Record<Bucket, number> = { ok: 0, attention: 0, running: 0, none: 0 };
+  const counts: Record<Bucket, number> = { ok: 0, attention: 0, running: 0, none: 0, stopped: 0 };
   projects.forEach((p) => counts[bucket(p)]++);
   const total = projects.length;
   const needle = query.trim().toLowerCase();
@@ -193,7 +195,7 @@ export function OverviewPage() {
 
 function ProjectRow({ p, url }: { p: ProjectSummary; url: string | null }) {
   const d = p.last_deployment;
-  const live = d?.state === "SUCCEEDED";
+  const live = d?.state === "SUCCEEDED" && p.app_state !== "stopped";
   return (
     <tr>
       <td>
@@ -224,9 +226,7 @@ function ProjectRow({ p, url }: { p: ProjectSummary; url: string | null }) {
       <td>
         {d ? (
           <div className="stack-sm">
-            <Link to={`/deploys/${d.id}`}>
-              <StateBadge state={d.state} />
-            </Link>
+            <Link to={`/deploys/${d.id}`}>{p.app_state === "stopped" ? <Badge tone="warning">Parado</Badge> : <StateBadge state={d.state} />}</Link>
             <span className="meta">
               <When iso={d.created_at} />
             </span>

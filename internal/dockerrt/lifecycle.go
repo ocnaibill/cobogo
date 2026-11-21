@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/docker/docker/api/types"
@@ -14,6 +16,7 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/errdefs"
+	"github.com/docker/go-connections/nat"
 
 	"github.com/ocnaibill/cobogo/internal/domain"
 )
@@ -274,4 +277,68 @@ func (r *Runtime) UpdateLimits(ctx context.Context, containerID string, l domain
 		return before, Resources{}, err
 	}
 	return before, after, nil
+}
+
+// managedInspect inspeciona um contêiner e recusa o que não é gerenciado pelo
+// Cobogó: o ID de qualquer outro contêiner nunca chega a uma ação (RF-18).
+func (r *Runtime) managedInspect(ctx context.Context, containerID string) (types.ContainerJSON, error) {
+	inspect, err := r.cli.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return types.ContainerJSON{}, fmt.Errorf("dockerrt: inspecionar contêiner: %w", err)
+	}
+	if inspect.Config == nil || inspect.Config.Labels[LabelManaged] != "true" {
+		return types.ContainerJSON{}, fmt.Errorf("dockerrt: o contêiner %s não é gerenciado pelo Cobogó", shortID(containerID))
+	}
+	return inspect, nil
+}
+
+// StopContainer para o contêiner e o **mantém** (DEC-40): imagem, configuração e
+// redes continuam, então iniciar de novo é rápido. Parar o que já está parado
+// não é erro.
+func (r *Runtime) StopContainer(ctx context.Context, containerID string) error {
+	if _, err := r.managedInspect(ctx, containerID); err != nil {
+		return err
+	}
+	timeout := 10
+	if err := r.cli.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &timeout}); err != nil && !errdefs.IsNotModified(err) {
+		return fmt.Errorf("dockerrt: parar contêiner: %w", err)
+	}
+	return nil
+}
+
+// Started é o que se sabe de um contêiner recém-iniciado.
+type Started struct {
+	// Name é o nome do contêiner, o que a sonda por rede usa.
+	Name string
+	// HostPort é a porta de host em que o daemon o publicou agora: a porta
+	// efêmera pode mudar quando um contêiner é iniciado de novo.
+	HostPort int
+}
+
+// StartContainer inicia um contêiner gerenciado que estava parado. Iniciar o
+// que já está no ar não é erro.
+func (r *Runtime) StartContainer(ctx context.Context, containerID string, containerPort int) (Started, error) {
+	if _, err := r.managedInspect(ctx, containerID); err != nil {
+		return Started{}, err
+	}
+	if err := r.cli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil && !errdefs.IsNotModified(err) {
+		return Started{}, fmt.Errorf("dockerrt: iniciar contêiner: %w", err)
+	}
+	inspect, err := r.managedInspect(ctx, containerID)
+	if err != nil {
+		return Started{}, err
+	}
+	portSpec := nat.Port(strconv.Itoa(containerPort) + "/tcp")
+	bindings := inspect.NetworkSettings.Ports[portSpec]
+	if len(bindings) == 0 {
+		if inspect.State != nil && !inspect.State.Running {
+			return Started{}, &ExitedError{ExitCode: inspect.State.ExitCode}
+		}
+		return Started{}, fmt.Errorf("dockerrt: porta %s não foi publicada pelo daemon", portSpec)
+	}
+	hostPort, err := strconv.Atoi(bindings[0].HostPort)
+	if err != nil {
+		return Started{}, fmt.Errorf("dockerrt: porta de host inválida: %w", err)
+	}
+	return Started{Name: strings.TrimPrefix(inspect.Name, "/"), HostPort: hostPort}, nil
 }

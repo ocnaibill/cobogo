@@ -27,6 +27,11 @@ describe("summarize", () => {
     expect(summarize(op({ state: "PENDING", attempts: 1, error: "docker fora do ar" }))).toContain("Tentando de novo");
     expect(summarize(op({ state: "PENDING", attempts: 0 }))).toBe("");
   });
+  it("describes stop, start and restart", () => {
+    expect(summarize(op({ kind: "stop_app", state: "DONE" }))).toContain("projeto inativo");
+    expect(summarize(op({ kind: "start_app", state: "DONE" }))).toContain("voltou ao ar");
+    expect(summarize(op({ kind: "restart_app", state: "FAILED", error: "a aplicação não ficou pronta" }))).toBe("a aplicação não ficou pronta");
+  });
   it("knows when an operation is over", () => {
     expect(isSettled(op({ state: "DONE" }))).toBe(true);
     expect(isSettled(op({ state: "FAILED" }))).toBe(true);

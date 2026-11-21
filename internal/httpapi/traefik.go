@@ -131,12 +131,22 @@ func buildTraefikConfig(routes []domain.Route, panel *PanelRoute, log *slog.Logg
 			log.Warn("rota fora do padrão omitida", "slug", rt.Slug)
 			continue
 		}
+		target := rt.Target
+		// Aplicação parada: o host mostra a página de inativo, servida pela API
+		// (DEC-40). Sem rota do painel configurada, não há para onde apontar.
+		if rt.Stopped {
+			if panel == nil {
+				log.Warn("rota de aplicação parada omitida: sem destino da API", "slug", rt.Slug)
+				continue
+			}
+			target = panel.Target
+		}
 		name := "cobogo-" + rt.Slug
 		routers[name] = traefikRouter{
 			Rule: "Host(`" + rt.Host + "`)", EntryPoints: []string{traefikEntrypoint}, Service: name,
 		}
 		var svc traefikService
-		svc.LoadBalancer.Servers = []traefikServer{{URL: rt.Target}}
+		svc.LoadBalancer.Servers = []traefikServer{{URL: target}}
 		services[name] = svc
 	}
 	if len(routers) == 0 {

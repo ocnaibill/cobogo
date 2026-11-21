@@ -170,6 +170,15 @@ func (w *Worker) runOperation(ctx context.Context, op *domain.Operation) {
 		result, err = w.applyLimits(ctx, op)
 		var below *dockerrt.ErrBelowUsage
 		permanent = errors.Is(err, errNoActiveRelease) || errors.As(err, &below)
+	case domain.OpStopApp:
+		result, err = w.stopApp(ctx, op)
+		permanent = errors.Is(err, errNoActiveRelease)
+	case domain.OpStartApp:
+		result, err = w.startApp(ctx, op)
+		permanent = errors.Is(err, errNoActiveRelease) || errors.Is(err, errStartNotReady)
+	case domain.OpRestartApp:
+		result, err = w.restartApp(ctx, op)
+		permanent = errors.Is(err, errNoActiveRelease) || errors.Is(err, errStartNotReady)
 	default:
 		err, permanent = fmt.Errorf("tipo de operação desconhecido: %s", op.Kind), true
 	}

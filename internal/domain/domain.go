@@ -22,6 +22,8 @@ type Project struct {
 	// DeletedAt marca o projeto excluído (DEC-38): ele some da API e das
 	// rotas, e o histórico fica.
 	DeletedAt *time.Time `json:"-"`
+	// AppState é o estado da release ativa: none, running ou stopped (DEC-40).
+	AppState string `json:"app_state"`
 }
 
 // Limits são os tetos de recursos de contêineres de aplicação e de builds
@@ -169,9 +171,11 @@ type Release struct {
 	// quando não havia domínio configurado.
 	URL string `json:"url,omitempty"`
 	// RouteHost e RouteTarget são o que o Traefik lê (DEC-31); não saem pela API.
-	RouteHost   string    `json:"-"`
-	RouteTarget string    `json:"-"`
-	CreatedAt   time.Time `json:"created_at"`
+	RouteHost   string `json:"-"`
+	RouteTarget string `json:"-"`
+	// StoppedAt é quando a aplicação foi parada de propósito (DEC-40).
+	StoppedAt *time.Time `json:"stopped_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
 }
 
 // EnvSource diz de onde veio o valor de uma variável.
@@ -230,6 +234,8 @@ type Route struct {
 	Slug   string
 	Host   string
 	Target string
+	// Stopped: a aplicação foi parada; o host mostra a página de inativo (DEC-40).
+	Stopped bool
 }
 
 // Operações de ciclo de vida que o worker executa a pedido da API (DEC-38).
@@ -240,6 +246,18 @@ const (
 	OpDeleteProject  OperationKind = "delete_project"
 	OpApplyLimits    OperationKind = "apply_limits"
 	OpSweep          OperationKind = "sweep"
+	// DEC-40: parar, iniciar e reiniciar a release ativa.
+	OpStopApp    OperationKind = "stop_app"
+	OpStartApp   OperationKind = "start_app"
+	OpRestartApp OperationKind = "restart_app"
+)
+
+// Estados da aplicação de um projeto (DEC-40): sem release ativa, no ar ou
+// parada de propósito. "Parada" não é "falhou" (RN-12).
+const (
+	AppNone    = "none"
+	AppRunning = "running"
+	AppStopped = "stopped"
 )
 
 type OperationState string

@@ -255,6 +255,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/projects/{id}/app/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Para a aplicação do projeto
+         * @description Pede ao worker que pare o contêiner da release ativa **e o mantenha**
+         *     (DEC-40): imagem e configuração continuam, e iniciar de novo é rápido.
+         *     O endereço público passa a mostrar a página de projeto inativo (503).
+         *     `app_state` do projeto vira `stopped`, que não é o mesmo que falhou.
+         */
+        post: operations["stopProjectApp"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{id}/app/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Inicia a aplicação parada do projeto
+         * @description Pede ao worker que inicie o contêiner mantido e espere a prontidão
+         *     como um deploy faria. Só então a rota volta ao contêiner. Se não ficar
+         *     pronta no prazo, a operação termina `FAILED` com o motivo e o projeto
+         *     continua parado.
+         */
+        post: operations["startProjectApp"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{id}/app/restart": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reinicia a aplicação do projeto
+         * @description Parar e iniciar. **Não relê variáveis nem limites**: o contêiner é o
+         *     mesmo. Um novo deploy relê as variáveis; `POST .../limits/apply` muda
+         *     os limites. Vale também com a aplicação parada (equivale a iniciar).
+         */
+        post: operations["restartProjectApp"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/projects/{id}/deployments": {
         parameters: {
             query?: never;
@@ -679,7 +747,7 @@ export interface components {
             /** Format: uuid */
             project_id?: string;
             /** @enum {string} */
-            kind: "retire_releases" | "delete_project" | "apply_limits" | "sweep";
+            kind: "retire_releases" | "delete_project" | "apply_limits" | "sweep" | "stop_app" | "start_app" | "restart_app";
             /** @enum {string} */
             state: "PENDING" | "RUNNING" | "DONE" | "FAILED";
             params: {
@@ -756,6 +824,12 @@ export interface components {
             max?: number;
         };
         Project: {
+            /**
+             * @description Estado da release ativa: `none` (nenhuma), `running` ou `stopped`
+             *     (parada de propósito, DEC-40; não é uma falha).
+             * @enum {string}
+             */
+            app_state: "none" | "running" | "stopped";
             limits: components["schemas"]["Limits"];
             /** Format: uuid */
             id: string;
@@ -1571,6 +1645,108 @@ export interface operations {
         };
     };
     applyProjectLimits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A operação foi enfileirada. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Operation"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+            /** @description O projeto não tem release no ar (`no_active_release`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    stopProjectApp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A operação foi enfileirada. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Operation"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+            /** @description O projeto não tem release no ar (`no_active_release`) ou a aplicação já está parada (`app_already_stopped`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    startProjectApp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A operação foi enfileirada. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Operation"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+            /** @description O projeto não tem release no ar (`no_active_release`) ou a aplicação já está no ar (`app_already_running`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    restartProjectApp: {
         parameters: {
             query?: never;
             header?: never;
