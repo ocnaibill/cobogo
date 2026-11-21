@@ -147,6 +147,17 @@ O Cobogó só gera segredos da lista fechada acima; credenciais de terceiros (`S
 
 A análise do deploy traz `config_variables` (classe, estado no `.env.example`, aviso e, para valores padrão não secretos, `default_value` para você confirmar) e `warnings` (por exemplo, credenciais reais encontradas no repositório).
 
+**Importar um `.env` colado (DEC-39).** Em duas etapas, com o mesmo texto: `preview` lê o texto sem executar nem expandir nada e diz, por nome, o que aconteceria (`create`, `replace` ou `blocked`) e os avisos (placeholder, formato de credencial, valor vazio, `$VAR` que não é expandido, nome repetido). **Nunca devolve valores.** `apply` grava só os nomes que você escolher:
+
+```bash
+curl "${H[@]}" -X POST $API/api/v1/projects/<id>/env/import -d '{"mode": "preview", "text": "DATABASE_URL=postgres://...\nJWT_SECRET=..."}'
+curl "${H[@]}" -X POST $API/api/v1/projects/<id>/env/import -d '{"mode": "apply", "names": ["DATABASE_URL"], "text": "DATABASE_URL=postgres://...\nJWT_SECRET=..."}'
+```
+
+**Sugestões** (`GET .../env/suggestions`): para `<SLUG>_URL`, `APP_URL`, `SITE_URL`, `BASE_URL`, `PUBLIC_URL` e `NEXT_PUBLIC_SITE_URL` que o código usa e que ainda não têm valor, o Cobogó oferece o endereço público do projeto; nada é gravado sem você enviar o `PUT`. **Variáveis obrigatórias** (`PUT .../required-env` com `{"names": [...]}`): se alguma não tiver valor, o deploy falha logo depois da análise, antes do build, dizendo quais faltam; `GET .../required-env` traz também as `likely` (prováveis) que a análise indicou. **Histórico** (`GET .../env-history`): quem mudou o quê, com versão e origem (`user`, `generated` ou `imported`), sem valor algum, nem os antigos.
+
+Para trocar a chave de cifra (`COBOGO_SECRET_KEYS` e `COBOGO_SECRET_KEY_CURRENT`; `COBOGO_SECRET_KEY` sozinha continua valendo), rode `cobogo-api rotate-secrets` com o role dono do banco; `--check` só conta as variáveis por versão de chave. O passo a passo na VM está em [`deploy/README.md`](deploy/README.md). Rotacionar a chave não muda nenhum valor e não pede novo deploy.
+
 ### **5. Acompanhar o progresso**
 
 O contrato completo está em [`docs/api/openapi.yaml`](docs/api/openapi.yaml) (OpenAPI 3; cole-o no Swagger Editor ou gere um cliente a partir dele). Para acompanhar um deploy:

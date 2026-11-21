@@ -21,6 +21,8 @@ var ErrNoCipher = errors.New("store: cifra de variáveis não configurada")
 type Cipher interface {
 	Seal(plaintext, aad []byte) ([]byte, error)
 	Open(sealed, aad []byte) ([]byte, error)
+	// OpenVersion abre um valor com a chave da versão em que ele foi gravado.
+	OpenVersion(keyVersion int, sealed, aad []byte) ([]byte, error)
 	KeyVersion() int
 }
 
@@ -174,7 +176,7 @@ func (s *Store) RevealEnvValues(ctx context.Context, projectID uuid.UUID) (map[s
 		if err := rows.Scan(&v.Name, &v.Version, &v.Source, &v.KeyVersion, &v.CreatedAt, &v.UpdatedAt, &sealed); err != nil {
 			return nil, nil, fmt.Errorf("store: ler variável cifrada: %w", err)
 		}
-		plain, err := s.cipher.Open(sealed, envAAD(projectID, v.Name, v.Version))
+		plain, err := s.cipher.OpenVersion(v.KeyVersion, sealed, envAAD(projectID, v.Name, v.Version))
 		if err != nil {
 			return nil, nil, fmt.Errorf("store: decifrar a variável %s: %w", v.Name, err)
 		}

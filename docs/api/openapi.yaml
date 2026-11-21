@@ -778,6 +778,193 @@ paths:
           $ref: '#/components/responses/Unauthenticated'
         '404':
           $ref: '#/components/responses/NotFound'
+  /projects/{id}/env/import:
+    post:
+      tags: [env]
+      summary: Importa variáveis de um .env colado, com revisão
+      description: |
+        Duas etapas, as duas com o mesmo texto. `preview` lê o texto **sem
+        executar nem expandir nada** e diz, por nome, o que aconteceria
+        (`create`, `replace` ou `blocked`), a classe e os avisos; **nunca
+        devolve valores** nem grava nada. `apply` grava só os `names`
+        escolhidos que a prévia não bloqueou, cada um como uma variável nova ou
+        uma versão nova (origem `imported`). Até 200 variáveis e 256 KiB.
+        Variáveis da plataforma (como `PORT`) e vazias ficam bloqueadas.
+      operationId: importEnv
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text, mode]
+              properties:
+                text:
+                  type: string
+                  maxLength: 262144
+                mode:
+                  type: string
+                  enum: [preview, apply]
+                names:
+                  type: array
+                  description: 'Obrigatório em `apply`: as variáveis escolhidas.'
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: A prévia (`mode=preview`) ou o resultado (`mode=apply`).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ImportPreview'
+                  - $ref: '#/components/schemas/ImportResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          description: O texto excede 256 KiB.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /projects/{id}/env/suggestions:
+    get:
+      tags: [env]
+      summary: Valores que o Cobogó conhece e oferece
+      description: |
+        Lista **fechada**: `<SLUG>_URL`, `APP_URL`, `SITE_URL`, `BASE_URL`,
+        `PUBLIC_URL` e `NEXT_PUBLIC_SITE_URL`, só para um nome que a última
+        análise encontrou e o projeto ainda não definiu, e só com domínio das
+        aplicações configurado. O valor é o endereço público do projeto, sem a
+        barra final. Nada é aplicado sozinho: a pessoa confirma e grava com
+        `PUT /projects/{id}/env/{name}`.
+      operationId: envSuggestions
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: As sugestões.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [suggestions, domain_configured]
+                properties:
+                  domain_configured:
+                    type: boolean
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, value, reason]
+                      properties:
+                        name:
+                          type: string
+                        value:
+                          type: string
+                        reason:
+                          type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/required-env:
+    get:
+      tags: [env]
+      summary: Variáveis que o usuário exigiu e as prováveis
+      description: |
+        `names` são as exigidas (sem valor, o deploy falha cedo, antes do
+        build); `likely` são as que a última análise indica como provavelmente
+        obrigatórias, para a pessoa marcar.
+      operationId: getRequiredEnv
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: As listas.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequiredEnv'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [env]
+      summary: Define as variáveis obrigatórias
+      description: |
+        Substitui a lista inteira (`[]` não exige nenhuma). Variáveis da
+        plataforma não podem ser exigidas. Até 200 nomes.
+      operationId: putRequiredEnv
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [names]
+              properties:
+                names:
+                  type: array
+                  maxItems: 200
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: As listas, já com a nova.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequiredEnv'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/env-history:
+    get:
+      tags: [env]
+      summary: O que mudou nas variáveis do projeto
+      description: |
+        Lido da auditoria, do mais novo para o mais antigo (até 100): nome,
+        ação, versão, origem, quem e quando. **Sem valores**, nem os antigos:
+        valor errado se corrige digitando de novo.
+      operationId: envHistory
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: As mudanças.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [changes]
+                properties:
+                  changes:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/EnvChange'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /projects/{id}/env/{name}:
     put:
       tags: [env]
@@ -1445,7 +1632,7 @@ components:
           type: integer
         source:
           type: string
-          enum: [user, generated]
+          enum: [user, generated, imported]
         key_version:
           type: integer
         created_at:
@@ -1454,6 +1641,126 @@ components:
         updated_at:
           type: string
           format: date-time
+    ImportWarning:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [platform, empty, too_large, null_char, duplicate, placeholder, credential, not_expanded, replaces_existing]
+        message:
+          type: string
+          description: Nunca contém o valor; para `credential`, só o tipo.
+    ImportPreview:
+      type: object
+      required: [variables, diagnostics]
+      properties:
+        variables:
+          type: array
+          items:
+            type: object
+            required: [name, line, action, class, default_selected, warnings]
+            properties:
+              name:
+                type: string
+              line:
+                type: integer
+                description: Linha da atribuição que vale.
+              action:
+                type: string
+                enum: [create, replace, blocked]
+              class:
+                type: string
+                enum: [platform, generable, user, public]
+              default_selected:
+                type: boolean
+                description: |
+                  Se a interface deve marcar a variável por padrão. Fica
+                  `false` para as que substituiriam um valor, as que parecem
+                  placeholder e as bloqueadas.
+              warnings:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ImportWarning'
+        diagnostics:
+          type: array
+          description: Linhas que não viraram variável. Nunca repetem o conteúdo da linha.
+          items:
+            type: object
+            required: [line, code, message]
+            properties:
+              line:
+                type: integer
+              name:
+                type: string
+              code:
+                type: string
+                enum: [not_assignment, invalid_name, multiline_value, unsupported_syntax, empty_name]
+              message:
+                type: string
+    ImportResult:
+      type: object
+      required: [applied, skipped]
+      properties:
+        applied:
+          type: array
+          items:
+            type: object
+            required: [name, version, redeploy_required]
+            properties:
+              name:
+                type: string
+              version:
+                type: integer
+              redeploy_required:
+                type: boolean
+        skipped:
+          type: array
+          items:
+            type: object
+            required: [name, reason]
+            properties:
+              name:
+                type: string
+              reason:
+                type: string
+                enum: [not_in_text, blocked]
+    RequiredEnv:
+      type: object
+      required: [names, likely]
+      properties:
+        names:
+          type: array
+          items:
+            type: string
+        likely:
+          type: array
+          items:
+            type: string
+    EnvChange:
+      type: object
+      required: [action, at]
+      properties:
+        name:
+          type: string
+          description: Ausente nas ações do projeto todo (`env.import`, `env.required`).
+        action:
+          type: string
+          enum: [env.set, env.generate, env.delete, env.import, env.required]
+        version:
+          type: integer
+        source:
+          type: string
+          enum: [user, generated, imported]
+        actor:
+          type: string
+        at:
+          type: string
+          format: date-time
+        names:
+          type: array
+          items:
+            type: string
     EnvVariableResult:
       allOf:
         - $ref: '#/components/schemas/EnvVariable'

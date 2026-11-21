@@ -11,7 +11,6 @@ import (
 
 	"github.com/ocnaibill/cobogo/internal/config"
 	"github.com/ocnaibill/cobogo/internal/dockerrt"
-	"github.com/ocnaibill/cobogo/internal/secrets"
 	"github.com/ocnaibill/cobogo/internal/settings"
 	"github.com/ocnaibill/cobogo/internal/store"
 	"github.com/ocnaibill/cobogo/internal/worker"
@@ -47,12 +46,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	box, err := secrets.NewBox(cfg.SecretKey, 1)
-	if err != nil {
-		log.Error("preparar cifra de variáveis", "erro", err)
-		os.Exit(1)
-	}
-	st := store.New(pool).WithCipher(box)
+	st := store.New(pool).WithCipher(cfg.Keyring)
 	w := worker.New(st, rt, log, settings.NewResolver(st, settings.Env{Limits: cfg.Limits, GitHosts: cfg.ExtraGitHosts, AppsDomain: cfg.AppsDomain, AppsScheme: cfg.AppsScheme}))
 
 	w.SetProbeMode(cfg.ProbeMode)

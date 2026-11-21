@@ -9,6 +9,8 @@ import { Icon, type IconName } from "../components/icons";
 import { duration, repoName, shortSha } from "../lib/format";
 import { ApplyLimits, DangerZone, OperationsTab } from "../components/Lifecycle";
 import { profileLabel } from "../lib/deploy";
+import { EnvHistory, ImportEnv, Suggestions } from "../components/Secrets";
+import { missingLikely, withRequired } from "../lib/secrets";
 
 type Tab = "deploys" | "variaveis" | "limites" | "operacoes";
 
@@ -290,12 +292,35 @@ function VariablesTab({ projectId, discovered }: { projectId: string; discovered
   const [value, setValue] = useState("");
   const [msg, setMsg] = useState<{ tone: "success" | "danger" | "warning"; text: string } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const required = useQuery({ queryKey: ["required-env", projectId], queryFn: () => unwrap(api.GET("/projects/{id}/required-env", { params: { path: { id: projectId } } })) });
+  const requiredNames = required.data?.names ?? [];
+  const hasPublic = discovered.some((d) => d.class === "public");
 
   const stored = new Map((vars.data?.variables ?? []).map((v) => [v.name, v]));
   const extraNames = [...stored.keys()].filter((n) => !discovered.some((d) => d.name === n));
+  // Exigidas que o código não cita e ainda não têm valor: sem uma linha, ficariam invisíveis.
+  const requiredOnly = requiredNames.filter((n) => !stored.has(n) && !discovered.some((d) => d.name === n));
   const missing = discovered.filter((d) => !stored.has(d.name) && d.hint?.code === "likely_required").length;
 
-  const refresh = () => qc.invalidateQueries({ queryKey: ["env", projectId] });
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ["env", projectId] });
+    qc.invalidateQueries({ queryKey: ["env-history", projectId] });
+    qc.invalidateQueries({ queryKey: ["env-suggestions", projectId] });
+  };
+
+  async function setRequired(names: string[]) {
+    setBusy("required");
+    setMsg(null);
+    try {
+      const r = await unwrap(api.PUT("/projects/{id}/required-env", { params: { path: { id: projectId } }, body: { names } }));
+      qc.setQueryData(["required-env", projectId], r);
+      qc.invalidateQueries({ queryKey: ["env-history", projectId] });
+    } catch (e) {
+      setMsg({ tone: "danger", text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(null);
+    }
+  }
 
   async function save(evt: FormEvent) {
     evt.preventDefault();
@@ -350,20 +375,34 @@ function VariablesTab({ projectId, discovered }: { projectId: string; discovered
       <Notice tone="info" icon="shield" title="Valores nunca voltam ao painel">
         Ficam cifrados no banco e só são entregues ao contêiner. A API do painel não consegue nem ler o texto cifrado. Uma mudança vale a partir do próximo deploy.
       </Notice>
+      {hasPublic && (
+        <Notice tone="warning" title="Variáveis públicas pedem um novo build">
+          <span>
+            Variáveis como <code>VITE_*</code> e <code>NEXT_PUBLIC_*</code> entram no JavaScript entregue ao navegador na hora do build, e qualquer visitante pode lê-las. Mudar uma exige um novo deploy.
+          </span>
+        </Notice>
+      )}
       {msg && <Notice tone={msg.tone}>{msg.text}</Notice>}
+      <Suggestions projectId={projectId} />
       <section className="card card-flush" aria-label="Variáveis do projeto">
         <header className="card-head">
           <h2 className="card-title">
             <Icon name="key" size={20} className="card-icon" /> Variáveis de ambiente
           </h2>
           <span className="row">
-            <Tag>{discovered.length + extraNames.length} variável(is)</Tag>
+            <Tag>{discovered.length + extraNames.length + requiredOnly.length} variável(is)</Tag>
             {missing > 0 && <Tag tone="danger">{missing} faltando</Tag>}
+            {requiredNames.length > 0 && <Tag tone="warning">{requiredNames.length} exigida(s)</Tag>}
+            {missingLikely(requiredNames, required.data?.likely ?? []).length > 0 && (
+              <Button icon="check" busy={busy === "required"} onClick={() => setRequired([...new Set([...requiredNames, ...(required.data?.likely ?? [])])].sort())}>
+                Marcar as prováveis obrigatórias
+              </Button>
+            )}
           </span>
         </header>
         {vars.isLoading && <Loading />}
         {vars.isError && <ErrorBox error={vars.error} />}
-        {discovered.length > 0 || extraNames.length > 0 ? (
+        {discovered.length > 0 || extraNames.length > 0 || requiredOnly.length > 0 ? (
           <div className="table-wrap">
             <table className="table">
               <thead>
@@ -372,6 +411,9 @@ function VariablesTab({ projectId, discovered }: { projectId: string; discovered
                   <th scope="col">Situação</th>
                   <th scope="col">Valor</th>
                   <th scope="col">Origem</th>
+                  <th scope="col" title="Sem valor, o deploy falha antes do build">
+                    Exigir
+                  </th>
                   <th scope="col" className="num">
                     Ações
                   </th>
@@ -390,7 +432,7 @@ function VariablesTab({ projectId, discovered }: { projectId: string; discovered
                       </td>
                       <td>
                         {s ? (
-                          <Badge tone="success">definida · v{s.version}{s.source === "generated" ? " · gerada" : ""}</Badge>
+                          <Badge tone="success">definida · v{s.version}{s.source === "generated" ? " · gerada" : s.source === "imported" ? " · importada" : ""}</Badge>
                         ) : d.hint?.code === "likely_required" ? (
                           <Badge tone="danger">falta</Badge>
                         ) : (
@@ -401,6 +443,9 @@ function VariablesTab({ projectId, discovered }: { projectId: string; discovered
                       <td className="small muted">
                         {d.class === "public" && <Tag tone="info">pública: vai para o JavaScript do navegador</Tag>}{" "}
                         {d.hint?.message ?? (d.declared_in_example ? "declarada no exemplo" : "referenciada no código")}
+                      </td>
+                      <td>
+                        <RequiredBox name={d.name} names={requiredNames} busy={busy === "required"} onChange={setRequired} />
                       </td>
                       <td>
                         <div className="row-end">
@@ -422,6 +467,31 @@ function VariablesTab({ projectId, discovered }: { projectId: string; discovered
                     </tr>
                   );
                 })}
+                {requiredOnly.map((n) => (
+                  <tr key={n}>
+                    <td>
+                      <span className="row mono strong">
+                        <Icon name="lock" size={14} className="faint" />
+                        {n}
+                      </span>
+                    </td>
+                    <td>
+                      <Badge tone="danger">falta</Badge>
+                    </td>
+                    <td className="mono faint">—</td>
+                    <td className="small muted">exigida por você; o código não a cita</td>
+                    <td>
+                      <RequiredBox name={n} names={requiredNames} busy={busy === "required"} onChange={setRequired} />
+                    </td>
+                    <td>
+                      <div className="row-end">
+                        <Button variant="ghost" onClick={() => setName(n)}>
+                          Definir
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
                 {extraNames.map((n) => (
                   <tr key={n}>
                     <td>
@@ -435,6 +505,9 @@ function VariablesTab({ projectId, discovered }: { projectId: string; discovered
                     </td>
                     <td className="mono faint">••••••••••••</td>
                     <td className="small muted">não encontrada na última análise</td>
+                    <td>
+                      <RequiredBox name={n} names={requiredNames} busy={busy === "required"} onChange={setRequired} />
+                    </td>
                     <td>
                       <div className="row-end">
                         <Button variant="ghost" onClick={() => setName(n)}>
@@ -471,7 +544,18 @@ function VariablesTab({ projectId, discovered }: { projectId: string; discovered
           </Button>
         </form>
       </Card>
+      <ImportEnv projectId={projectId} />
+      <EnvHistory projectId={projectId} />
     </div>
+  );
+}
+
+function RequiredBox({ name, names, busy, onChange }: { name: string; names: string[]; busy: boolean; onChange: (names: string[]) => void }) {
+  const on = names.includes(name);
+  return (
+    <label className="check">
+      <input type="checkbox" checked={on} disabled={busy} onChange={(e) => onChange(withRequired(names, name, e.target.checked))} aria-label={`Exigir ${name} para publicar`} />
+    </label>
   );
 }
 

@@ -156,6 +156,11 @@ func (s *Server) routes() []route {
 		{"PUT /api/v1/projects/{id}/env/{name}", s.authed(s.handlePutEnv)},
 		{"DELETE /api/v1/projects/{id}/env/{name}", s.authed(s.handleDeleteEnv)},
 		{"POST /api/v1/projects/{id}/env/{name}/generate", s.authed(s.handleGenerateEnv)},
+		{"POST /api/v1/projects/{id}/env/import", s.authed(s.handleImportEnv)},
+		{"GET /api/v1/projects/{id}/env/suggestions", s.authed(s.handleEnvSuggestions)},
+		{"GET /api/v1/projects/{id}/required-env", s.authed(s.handleGetRequiredEnv)},
+		{"PUT /api/v1/projects/{id}/required-env", s.authed(s.handlePutRequiredEnv)},
+		{"GET /api/v1/projects/{id}/env-history", s.authed(s.handleEnvHistory)},
 	}
 }
 
@@ -196,7 +201,13 @@ func (s *Server) clientIP(r *http.Request) string {
 // audit registra uma ação do administrador. Só nomes e identificadores entram
 // em target, nunca valores.
 func (s *Server) audit(r *http.Request, actor *domain.User, action, target, outcome string) {
-	ev := domain.AuditEvent{Action: action, Target: target, IP: s.clientIP(r), Outcome: outcome}
+	s.auditDetail(r, actor, action, target, outcome, nil)
+}
+
+// auditDetail é audit com detalhe estruturado (versão e origem de uma
+// variável, nomes de uma lista). O detalhe nunca leva valores (DEC-39).
+func (s *Server) auditDetail(r *http.Request, actor *domain.User, action, target, outcome string, detail map[string]any) {
+	ev := domain.AuditEvent{Action: action, Target: target, IP: s.clientIP(r), Outcome: outcome, Detail: detail}
 	if actor != nil {
 		ev.ActorID = &actor.ID
 	}

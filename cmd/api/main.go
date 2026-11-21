@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -21,7 +22,6 @@ import (
 	"github.com/ocnaibill/cobogo/internal/auth"
 	"github.com/ocnaibill/cobogo/internal/config"
 	"github.com/ocnaibill/cobogo/internal/httpapi"
-	"github.com/ocnaibill/cobogo/internal/secrets"
 	"github.com/ocnaibill/cobogo/internal/settings"
 	"github.com/ocnaibill/cobogo/internal/store"
 )
@@ -34,6 +34,16 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "migrate" {
 		if err := migrateCommand(log); err != nil {
 			log.Error("migrar o banco", "erro", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// `cobogo-api rotate-secrets [--check]`: recifra as variáveis com a chave
+	// atual do chaveiro, com o role dono (DEC-39 item 6).
+	if len(os.Args) > 1 && os.Args[1] == "rotate-secrets" {
+		if err := rotateSecretsCommand(log, os.Args[2:]); err != nil {
+			log.Error("rotacionar a chave", "erro", err)
 			os.Exit(1)
 		}
 		return
@@ -60,12 +70,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	box, err := secrets.NewBox(cfg.SecretKey, 1)
-	if err != nil {
-		log.Error("preparar cifra de variáveis", "erro", err)
-		os.Exit(1)
-	}
-	st := store.New(pool).WithCipher(box)
+	st := store.New(pool).WithCipher(cfg.Keyring)
 
 	hasher, err := auth.NewHasher(2)
 	if err != nil {
@@ -315,4 +320,89 @@ func migrateCommand(log *slog.Logger) error {
 		log.Warn("migrations aplicadas; os roles de aplicação não existem, então os privilégios não foram aplicados (esperado só em desenvolvimento)")
 	}
 	return nil
+}
+
+// rotateSecretsCommand recifra cada variável com a chave atual do chaveiro, sem
+// mudar a versão da variável (o valor é o mesmo: não pede novo deploy). Com
+// --check só conta, por versão de chave, e não altera nada. Roda com o role
+// dono: a API e o worker não leem nem reescrevem texto cifrado fora do uso
+// normal (DEC-33, DEC-39).
+func rotateSecretsCommand(log *slog.Logger, args []string) error {
+	check := false
+	for _, a := range args {
+		if a != "--check" {
+			return fmt.Errorf("argumento desconhecido %q (use --check para só contar)", a)
+		}
+		check = true
+	}
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		return errors.New("DATABASE_URL é obrigatória (o role dono do esquema)")
+	}
+	ring, err := config.LoadKeyring()
+	if err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		return fmt.Errorf("conectar ao postgres: %w", err)
+	}
+	defer pool.Close()
+	st := store.New(pool).WithCipher(ring)
+
+	counts, err := st.KeyVersionCounts(ctx)
+	if err != nil {
+		return err
+	}
+	if check {
+		fmt.Println(secretsReport(counts, ring.KeyVersion()))
+		return nil
+	}
+	report, err := st.RotateSecrets(ctx)
+	if err != nil {
+		return err
+	}
+	total := 0
+	for _, n := range report.Rotated {
+		total += n
+	}
+	log.Info("variáveis recifradas", "total", total, "chave_atual", report.Current)
+	after, err := st.KeyVersionCounts(ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Println(secretsReport(after, ring.KeyVersion()))
+	return nil
+}
+
+// secretsReport diz, por versão de chave, quantas variáveis há e se alguma
+// chave antiga já pode sair do ambiente.
+func secretsReport(counts map[int]int, current int) string {
+	versions := make([]int, 0, len(counts))
+	for v := range counts {
+		versions = append(versions, v)
+	}
+	sort.Ints(versions)
+	var b strings.Builder
+	old := 0
+	for _, v := range versions {
+		mark := ""
+		if v == current {
+			mark = " (atual)"
+		} else {
+			old += counts[v]
+		}
+		fmt.Fprintf(&b, "chave versão %d%s: %d variável(is)\n", v, mark, counts[v])
+	}
+	if len(versions) == 0 {
+		b.WriteString("nenhuma variável cifrada\n")
+	}
+	if old == 0 {
+		fmt.Fprintf(&b, "nenhuma variável usa chave antiga: as chaves diferentes da versão %d já podem sair de COBOGO_SECRET_KEYS", current)
+	} else {
+		fmt.Fprintf(&b, "%d variável(is) ainda usam chave antiga: rode `cobogo-api rotate-secrets` e só depois retire a chave antiga", old)
+	}
+	return b.String()
 }

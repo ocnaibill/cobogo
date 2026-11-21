@@ -118,3 +118,67 @@ func TestGenerate(t *testing.T) {
 		seen[s] = true
 	}
 }
+
+func TestParseKeyringFromTheEnvironment(t *testing.T) {
+	k1 := base64.StdEncoding.EncodeToString(testKey)
+	other := make([]byte, 32)
+	for i := range other {
+		other[i] = byte(200 - i)
+	}
+	k2 := base64.StdEncoding.EncodeToString(other)
+	aad := []byte("cobogo/env/p/N/1")
+
+	// Só COBOGO_SECRET_KEY: uma chave, versão 1 (quem não rotaciona não muda nada).
+	ring, err := ParseKeyring("", "", k1)
+	if err != nil || ring.KeyVersion() != 1 || len(ring.Versions()) != 1 {
+		t.Fatalf("single key: %v, %v", ring, err)
+	}
+
+	// Duas chaves, a 2 grava; o que a 1 cifrou continua abrindo.
+	old, err := ParseKeyring("", "", k1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealedOld, _ := old.Seal([]byte("segredo"), aad)
+	ring, err = ParseKeyring("1:"+k1+", 2:"+k2, "2", "")
+	if err != nil || ring.KeyVersion() != 2 {
+		t.Fatalf("two keys: %v, %v", ring, err)
+	}
+	if got, err := ring.OpenVersion(1, sealedOld, aad); err != nil || string(got) != "segredo" {
+		t.Errorf("the old key must still open what it sealed: %q, %v", got, err)
+	}
+	sealedNew, _ := ring.Seal([]byte("novo"), aad)
+	if _, err := old.OpenVersion(1, sealedNew, aad); err == nil {
+		t.Error("the old key alone must not open what the new key sealed")
+	}
+
+	// COBOGO_SECRET_KEY junto da lista é a versão 1.
+	if _, err := ParseKeyring("2:"+k2, "2", k1); err != nil {
+		t.Errorf("legacy key beside the list: %v", err)
+	}
+
+	for name, c := range map[string]struct{ keys, current, single string }{
+		"nothing":                 {"", "", ""},
+		"current without a list":  {"", "2", k1},
+		"several without current": {"1:" + k1 + ",2:" + k2, "", ""},
+		"current not in the list": {"1:" + k1, "3", ""},
+		"current not a number":    {"1:" + k1 + ",2:" + k2, "dois", ""},
+		"duplicate version":       {"1:" + k1 + ",1:" + k2, "1", ""},
+		"version zero":            {"0:" + k1, "0", ""},
+		"missing version":         {k1, "1", ""},
+		"bad key in the list":     {"1:curta", "1", ""},
+		"legacy differs from v1":  {"1:" + k1, "1", k2},
+		"legacy key invalid":      {"2:" + k2, "2", "curta"},
+		"empty list":              {" , ", "1", ""},
+	} {
+		_, err := ParseKeyring(c.keys, c.current, c.single)
+		if err == nil {
+			t.Errorf("%s: want an error", name)
+			continue
+		}
+		// Nenhuma mensagem repete uma chave.
+		if strings.Contains(err.Error(), k1) || strings.Contains(err.Error(), k2) {
+			t.Errorf("%s: the error repeats a key: %v", name, err)
+		}
+	}
+}

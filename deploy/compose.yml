@@ -91,13 +91,35 @@ services:
     mem_limit: 128m
     networks: [control]
 
+  # Rotação da chave das variáveis (DEC-39): só sob demanda, com o role dono, que
+  # é o único que pode reescrever o texto cifrado. Não sobe com `up`:
+  #   docker compose --env-file deploy/.env -f deploy/compose.yml --profile tools run --rm rotate-secrets [--check]
+  rotate-secrets:
+    build: *api-build
+    <<: *hardened
+    restart: "no"
+    profiles: [tools]
+    command: ["rotate-secrets"]
+    environment:
+      DATABASE_URL: postgres://cobogo_owner:${COBOGO_OWNER_PASSWORD}@postgres:5432/cobogo_core?sslmode=disable
+      COBOGO_SECRET_KEY: ${COBOGO_SECRET_KEY:-}
+      COBOGO_SECRET_KEYS: ${COBOGO_SECRET_KEYS:-}
+      COBOGO_SECRET_KEY_CURRENT: ${COBOGO_SECRET_KEY_CURRENT:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 128m
+    networks: [control]
+
   api:
     build: *api-build
     <<: *hardened
     environment:
       DATABASE_URL: postgres://cobogo_api:${COBOGO_API_PASSWORD}@postgres:5432/cobogo_core?sslmode=disable
       COBOGO_AUTO_MIGRATE: "0"
-      COBOGO_SECRET_KEY: ${COBOGO_SECRET_KEY:?defina COBOGO_SECRET_KEY}
+      COBOGO_SECRET_KEY: ${COBOGO_SECRET_KEY:-}
+      COBOGO_SECRET_KEYS: ${COBOGO_SECRET_KEYS:-}
+      COBOGO_SECRET_KEY_CURRENT: ${COBOGO_SECRET_KEY_CURRENT:-}
       COBOGO_PUBLIC_URL: ${COBOGO_PUBLIC_URL:?defina COBOGO_PUBLIC_URL}
       COBOGO_COOKIE_INSECURE: ${COBOGO_COOKIE_INSECURE:-0}
       # Só o Traefik, na rede de roteamento, pode informar o IP do cliente.
@@ -132,7 +154,9 @@ services:
       DOCKER_HOST: tcp://docker-proxy:2375
       DATABASE_URL: postgres://cobogo_worker:${COBOGO_WORKER_PASSWORD}@postgres:5432/cobogo_core?sslmode=disable
       COBOGO_AUTO_MIGRATE: "0"
-      COBOGO_SECRET_KEY: ${COBOGO_SECRET_KEY:?defina COBOGO_SECRET_KEY}
+      COBOGO_SECRET_KEY: ${COBOGO_SECRET_KEY:-}
+      COBOGO_SECRET_KEYS: ${COBOGO_SECRET_KEYS:-}
+      COBOGO_SECRET_KEY_CURRENT: ${COBOGO_SECRET_KEY_CURRENT:-}
       # Dentro de um contêiner a porta publicada no host não é alcançável: a
       # sonda fala com a aplicação pelo nome, na rede do projeto (DEC-32 item 5).
       COBOGO_PROBE: network

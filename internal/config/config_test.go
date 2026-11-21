@@ -12,7 +12,7 @@ const goodKey = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=" // 32 bytes
 
 func setEnv(t *testing.T, kv map[string]string) {
 	t.Helper()
-	for _, k := range []string{"DATABASE_URL", "COBOGO_SECRET_KEY", "COBOGO_PUBLIC_URL", "COBOGO_TRUSTED_PROXIES", "COBOGO_EXTRA_GIT_HOSTS", "COBOGO_COOKIE_INSECURE", "API_ADDR"} {
+	for _, k := range []string{"DATABASE_URL", "COBOGO_SECRET_KEY", "COBOGO_SECRET_KEYS", "COBOGO_SECRET_KEY_CURRENT", "COBOGO_PUBLIC_URL", "COBOGO_TRUSTED_PROXIES", "COBOGO_EXTRA_GIT_HOSTS", "COBOGO_COOKIE_INSECURE", "API_ADDR"} {
 		t.Setenv(k, "")
 	}
 	for k, v := range kv {
@@ -228,5 +228,19 @@ func TestLoadAutoMigrate(t *testing.T) {
 		if err != nil || c.AutoMigrate != want {
 			t.Errorf("COBOGO_AUTO_MIGRATE=%q: AutoMigrate = %v, %v; want %v (an unrecognised value keeps the default, on)", value, c.AutoMigrate, err, want)
 		}
+	}
+}
+
+func TestLoadAcceptsAKeyringAndRefusesAnAmbiguousOne(t *testing.T) {
+	other := "ZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTA="
+	setEnv(t, map[string]string{"DATABASE_URL": "postgres://x", "COBOGO_SECRET_KEYS": "1:" + goodKey + ",2:" + other, "COBOGO_SECRET_KEY_CURRENT": "2"})
+	cfg, err := Load()
+	if err != nil || cfg.Keyring.KeyVersion() != 2 {
+		t.Fatalf("keyring: %v, %v", cfg.Keyring, err)
+	}
+
+	setEnv(t, map[string]string{"DATABASE_URL": "postgres://x", "COBOGO_SECRET_KEYS": "1:" + goodKey + ",2:" + other})
+	if _, err := Load(); err == nil {
+		t.Error("two keys without COBOGO_SECRET_KEY_CURRENT must be refused")
 	}
 }

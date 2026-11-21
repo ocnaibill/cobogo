@@ -113,7 +113,7 @@ func (s *Server) handlePutEnv(w http.ResponseWriter, r *http.Request, user domai
 		writeError(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
-	s.audit(r, &user, "env.set", projectID.String()+"/"+name, "ok")
+	s.auditDetail(r, &user, "env.set", projectID.String()+"/"+name, "ok", map[string]any{"version": v.Version, "source": string(v.Source)})
 	writeJSON(w, http.StatusOK, newEnvResponse(v))
 }
 
@@ -177,6 +177,6 @@ func (s *Server) handleGenerateEnv(w http.ResponseWriter, r *http.Request, user 
 		writeError(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
-	s.audit(r, &user, "env.generate", projectID.String()+"/"+name, "ok")
+	s.auditDetail(r, &user, "env.generate", projectID.String()+"/"+name, "ok", map[string]any{"version": v.Version, "source": string(v.Source)})
 	writeJSON(w, http.StatusOK, newEnvResponse(v))
 }

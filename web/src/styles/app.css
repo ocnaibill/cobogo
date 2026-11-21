@@ -258,6 +258,11 @@ input:read-only { background: var(--surface-2); color: var(--text-muted); }
 .field-hint { font-size: 12.5px; color: var(--text-muted); }
 .field-error { font-size: 12.5px; color: var(--danger); font-weight: 600; }
 .input-sm { max-width: 140px; padding: 7px 10px; }
+/* Caixa de marcação: o padrão de `input` (largura total) não serve a ela. */
+.check { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.check input[type="checkbox"] { width: 16px; height: 16px; padding: 0; accent-color: var(--brand); }
+ul.plain { margin: 6px 0 0; padding-left: 18px; }
+textarea.mono { resize: vertical; min-height: 120px; line-height: 1.5; }
 .form-inline { display: grid; grid-template-columns: 1fr 1fr auto; gap: 12px; align-items: start; }
 .form-inline > .btn { margin-top: 27px; }
 @media (max-width: 760px) { .form-inline { grid-template-columns: 1fr; } .form-inline > .btn { margin-top: 0; } }
@@ -411,6 +416,7 @@ details summary { cursor: pointer; font-weight: 600; }
 }
 .card-text { margin: 10px 0 12px; }
 .text-success { color: var(--success); }
+.text-danger { color: var(--danger); }
 .tile-hot { background: var(--danger-bg); }
 .tile-hot strong { color: var(--danger); }
 .term-tag { min-width: 0; width: 104px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

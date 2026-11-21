@@ -19,9 +19,9 @@ import (
 type Config struct {
 	DatabaseURL string
 	APIAddr     string
-	// SecretKey é a chave AES-256 que cifra os valores das variáveis dos
-	// projetos (DEC-24). Fica fora do banco, no ambiente do processo.
-	SecretKey []byte
+	// Keyring guarda as chaves AES-256 que cifram os valores das variáveis dos
+	// projetos (DEC-24, DEC-39). Ficam fora do banco, no ambiente do processo.
+	Keyring *secrets.Keyring
 
 	// PublicURL é a origem pública do painel (esquema e host), usada para
 	// conferir o Origin das requisições de alteração (DEC-27 item 7).
@@ -60,6 +60,16 @@ type Config struct {
 	Limits domain.Limits
 }
 
+// LoadKeyring lê o chaveiro do ambiente: COBOGO_SECRET_KEY sozinha (versão 1) ou
+// COBOGO_SECRET_KEYS com COBOGO_SECRET_KEY_CURRENT (DEC-39 item 6).
+func LoadKeyring() (*secrets.Keyring, error) {
+	ring, err := secrets.ParseKeyring(os.Getenv("COBOGO_SECRET_KEYS"), os.Getenv("COBOGO_SECRET_KEY_CURRENT"), os.Getenv("COBOGO_SECRET_KEY"))
+	if err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	return ring, nil
+}
+
 func Load() (Config, error) {
 	c := Config{
 		DatabaseURL:    os.Getenv("DATABASE_URL"),
@@ -75,15 +85,11 @@ func Load() (Config, error) {
 	if c.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("config: variável DATABASE_URL é obrigatória")
 	}
-	rawKey := os.Getenv("COBOGO_SECRET_KEY")
-	if rawKey == "" {
-		return Config{}, fmt.Errorf("config: variável COBOGO_SECRET_KEY é obrigatória (32 bytes em base64; gere com `openssl rand -base64 32`)")
-	}
-	key, err := secrets.ParseKey(rawKey)
+	ring, err := LoadKeyring()
 	if err != nil {
-		return Config{}, fmt.Errorf("config: COBOGO_SECRET_KEY inválida: %w", err)
+		return Config{}, err
 	}
-	c.SecretKey = key
+	c.Keyring = ring
 
 	for _, item := range splitList(os.Getenv("COBOGO_TRUSTED_PROXIES")) {
 		prefix, err := parsePrefix(item)

@@ -180,6 +180,8 @@ type EnvSource string
 const (
 	EnvSourceUser      EnvSource = "user"
 	EnvSourceGenerated EnvSource = "generated"
+	// EnvSourceImported: veio de um .env colado e revisado (DEC-39).
+	EnvSourceImported EnvSource = "imported"
 )
 
 // EnvVariable são os metadados de uma variável de ambiente do projeto. O
@@ -218,6 +220,8 @@ type AuditEvent struct {
 	Target  string
 	IP      string
 	Outcome string
+	// Detail guarda fatos sem segredo, como a versão e a origem de uma variável.
+	Detail map[string]any
 }
 
 // Route é uma linha da tabela de rotas do Traefik: o host público de um

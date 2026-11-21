@@ -201,9 +201,13 @@ func (s *Store) DeleteExpiredSessions(ctx context.Context, idle time.Duration) (
 // AppendAudit registra um evento de auditoria. Quem chama garante que não há
 // senha, token nem valor de variável nos campos.
 func (s *Store) AppendAudit(ctx context.Context, e domain.AuditEvent) error {
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO audit_events (id, actor_id, action, target, ip, outcome) VALUES ($1, $2, $3, $4, $5, $6)`,
-		uuid.New(), e.ActorID, clip(e.Action, 64), clip(e.Target, 256), clip(e.IP, 64), clip(e.Outcome, 32))
+	detail, err := marshalMap(e.Detail)
+	if err != nil {
+		return fmt.Errorf("store: serializar detalhe da auditoria: %w", err)
+	}
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO audit_events (id, actor_id, action, target, ip, outcome, detail) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		uuid.New(), e.ActorID, clip(e.Action, 64), clip(e.Target, 256), clip(e.IP, 64), clip(e.Outcome, 32), string(detail))
 	if err != nil {
 		return fmt.Errorf("store: registrar auditoria: %w", err)
 	}

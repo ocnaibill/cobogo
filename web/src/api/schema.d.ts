@@ -428,6 +428,106 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/projects/{id}/env/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Importa variáveis de um .env colado, com revisão
+         * @description Duas etapas, as duas com o mesmo texto. `preview` lê o texto **sem
+         *     executar nem expandir nada** e diz, por nome, o que aconteceria
+         *     (`create`, `replace` ou `blocked`), a classe e os avisos; **nunca
+         *     devolve valores** nem grava nada. `apply` grava só os `names`
+         *     escolhidos que a prévia não bloqueou, cada um como uma variável nova ou
+         *     uma versão nova (origem `imported`). Até 200 variáveis e 256 KiB.
+         *     Variáveis da plataforma (como `PORT`) e vazias ficam bloqueadas.
+         */
+        post: operations["importEnv"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{id}/env/suggestions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Valores que o Cobogó conhece e oferece
+         * @description Lista **fechada**: `<SLUG>_URL`, `APP_URL`, `SITE_URL`, `BASE_URL`,
+         *     `PUBLIC_URL` e `NEXT_PUBLIC_SITE_URL`, só para um nome que a última
+         *     análise encontrou e o projeto ainda não definiu, e só com domínio das
+         *     aplicações configurado. O valor é o endereço público do projeto, sem a
+         *     barra final. Nada é aplicado sozinho: a pessoa confirma e grava com
+         *     `PUT /projects/{id}/env/{name}`.
+         */
+        get: operations["envSuggestions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{id}/required-env": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Variáveis que o usuário exigiu e as prováveis
+         * @description `names` são as exigidas (sem valor, o deploy falha cedo, antes do
+         *     build); `likely` são as que a última análise indica como provavelmente
+         *     obrigatórias, para a pessoa marcar.
+         */
+        get: operations["getRequiredEnv"];
+        /**
+         * Define as variáveis obrigatórias
+         * @description Substitui a lista inteira (`[]` não exige nenhuma). Variáveis da
+         *     plataforma não podem ser exigidas. Até 200 nomes.
+         */
+        put: operations["putRequiredEnv"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{id}/env-history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * O que mudou nas variáveis do projeto
+         * @description Lido da auditoria, do mais novo para o mais antigo (até 100): nome,
+         *     ação, versão, origem, quem e quando. **Sem valores**, nem os antigos:
+         *     valor errado se corrige digitando de novo.
+         */
+        get: operations["envHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/projects/{id}/env/{name}": {
         parameters: {
             query?: never;
@@ -763,12 +863,73 @@ export interface components {
             name: string;
             version: number;
             /** @enum {string} */
-            source: "user" | "generated";
+            source: "user" | "generated" | "imported";
             key_version: number;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
             updated_at: string;
+        };
+        ImportWarning: {
+            /** @enum {string} */
+            code: "platform" | "empty" | "too_large" | "null_char" | "duplicate" | "placeholder" | "credential" | "not_expanded" | "replaces_existing";
+            /** @description Nunca contém o valor; para `credential`, só o tipo. */
+            message: string;
+        };
+        ImportPreview: {
+            variables: {
+                name: string;
+                /** @description Linha da atribuição que vale. */
+                line: number;
+                /** @enum {string} */
+                action: "create" | "replace" | "blocked";
+                /** @enum {string} */
+                class: "platform" | "generable" | "user" | "public";
+                /**
+                 * @description Se a interface deve marcar a variável por padrão. Fica
+                 *     `false` para as que substituiriam um valor, as que parecem
+                 *     placeholder e as bloqueadas.
+                 */
+                default_selected: boolean;
+                warnings: components["schemas"]["ImportWarning"][];
+            }[];
+            /** @description Linhas que não viraram variável. Nunca repetem o conteúdo da linha. */
+            diagnostics: {
+                line: number;
+                name?: string;
+                /** @enum {string} */
+                code: "not_assignment" | "invalid_name" | "multiline_value" | "unsupported_syntax" | "empty_name";
+                message: string;
+            }[];
+        };
+        ImportResult: {
+            applied: {
+                name: string;
+                version: number;
+                redeploy_required: boolean;
+            }[];
+            skipped: {
+                name: string;
+                /** @enum {string} */
+                reason: "not_in_text" | "blocked";
+            }[];
+        };
+        RequiredEnv: {
+            names: string[];
+            likely: string[];
+        };
+        EnvChange: {
+            /** @description Ausente nas ações do projeto todo (`env.import`, `env.required`). */
+            name?: string;
+            /** @enum {string} */
+            action: "env.set" | "env.generate" | "env.delete" | "env.import" | "env.required";
+            version?: number;
+            /** @enum {string} */
+            source?: "user" | "generated" | "imported";
+            actor?: string;
+            /** Format: date-time */
+            at: string;
+            names?: string[];
         };
         EnvVariableResult: components["schemas"]["EnvVariable"] & {
             /** @description Um deploy em execução continua com o valor antigo até um novo deploy. */
@@ -1756,6 +1917,165 @@ export interface operations {
                 content: {
                     "application/json": {
                         variables: components["schemas"]["EnvVariable"][];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    importEnv: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    text: string;
+                    /** @enum {string} */
+                    mode: "preview" | "apply";
+                    /** @description Obrigatório em `apply`: as variáveis escolhidas. */
+                    names?: string[];
+                };
+            };
+        };
+        responses: {
+            /** @description A prévia (`mode=preview`) ou o resultado (`mode=apply`). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportPreview"] | components["schemas"]["ImportResult"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+            /** @description O texto excede 256 KiB. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    envSuggestions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description As sugestões. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        domain_configured: boolean;
+                        suggestions: {
+                            name: string;
+                            value: string;
+                            reason: string;
+                        }[];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    getRequiredEnv: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description As listas. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequiredEnv"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    putRequiredEnv: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    names: string[];
+                };
+            };
+        };
+        responses: {
+            /** @description As listas, já com a nova. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequiredEnv"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    envHistory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description As mudanças. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        changes: components["schemas"]["EnvChange"][];
                     };
                 };
             };

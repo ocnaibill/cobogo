@@ -365,6 +365,20 @@ func (s *Store) AnswerDeployment(ctx context.Context, id uuid.UUID, answers map[
 	return dep, nil
 }
 
+// LatestAnalysis devolve a análise mais recente do projeto (DEC-39: sugestões e
+// variáveis prováveis). ErrNotFound quando ainda não houve nenhuma.
+func (s *Store) LatestAnalysis(ctx context.Context, projectID uuid.UUID) (domain.Analysis, error) {
+	var id uuid.UUID
+	err := s.pool.QueryRow(ctx, `SELECT id FROM analyses WHERE project_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1`, projectID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Analysis{}, ErrNotFound
+	}
+	if err != nil {
+		return domain.Analysis{}, fmt.Errorf("store: buscar última análise: %w", err)
+	}
+	return s.GetAnalysis(ctx, id)
+}
+
 func (s *Store) GetAnalysis(ctx context.Context, id uuid.UUID) (domain.Analysis, error) {
 	var a domain.Analysis
 	var resultRaw string

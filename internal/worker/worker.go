@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/ocnaibill/cobogo/internal/analyzer"
@@ -444,6 +445,12 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 		return at("ANALYZING", o.Transition(ctx, dep.ID, domain.DeploymentNeedsInput, ""))
 	}
 
+	// Variáveis que o usuário exigiu (DEC-39 item 4): falta de valor falha
+	// cedo, antes do plano e do build, com a lista do que falta.
+	if err := w.checkRequiredEnv(ctx, project.ID); err != nil {
+		return at("ANALYZING", err)
+	}
+
 	// --- GENERATING ---
 	if err := o.Transition(ctx, dep.ID, domain.DeploymentGenerating, ""); err != nil {
 		return at("GENERATING", err)
@@ -721,4 +728,42 @@ func portSource(result domain.AnalysisResult) string {
 		}
 	}
 	return ""
+}
+
+// checkRequiredEnv falha o deploy quando alguma variável obrigatória do projeto
+// ainda não tem valor. Só nomes: nada do que está guardado é lido.
+func (w *Worker) checkRequiredEnv(ctx context.Context, projectID uuid.UUID) error {
+	required, err := w.store.RequiredEnv(ctx, projectID)
+	if err != nil {
+		return fmt.Errorf("ler variáveis obrigatórias: %w", err)
+	}
+	if len(required) == 0 {
+		return nil
+	}
+	defined, err := w.store.ListEnvVariables(ctx, projectID)
+	if err != nil {
+		return fmt.Errorf("listar variáveis do projeto: %w", err)
+	}
+	have := make(map[string]bool, len(defined))
+	for _, v := range defined {
+		have[v.Name] = true
+	}
+	var missing []string
+	for _, name := range required {
+		if !have[name] {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	list := strings.Join(missing, ", ")
+	return &detailedError{
+		err: fmt.Errorf("faltam variáveis obrigatórias: %s", list),
+		detail: failureDetail{Diagnosis: diagnosis.Diagnosis{
+			Confidence: diagnosis.Confirmed,
+			Variables:  missing,
+			Message:    "defina o valor de " + list + " na aba de variáveis e faça um novo deploy; o build nem começou",
+		}},
+	}
 }
