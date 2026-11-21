@@ -24,6 +24,13 @@ var (
 	// ErrNotAwaitingInput indica uma resposta a um deploy que não está em
 	// NEEDS_INPUT (já respondido, em andamento ou encerrado).
 	ErrNotAwaitingInput = errors.New("store: o deploy não está aguardando informações")
+	// ErrDeploymentInProgress recusa excluir um projeto com deploy em
+	// execução (DEC-38 item 5).
+	ErrDeploymentInProgress = errors.New("store: há um deploy em andamento")
+	// ErrConfirmationMismatch indica que o nome digitado não é o do projeto.
+	ErrConfirmationMismatch = errors.New("store: o nome de confirmação não confere")
+	// ErrNoActiveRelease indica que o projeto não tem release no ar.
+	ErrNoActiveRelease = errors.New("store: o projeto não tem release ativa")
 )
 
 type Store struct {
@@ -56,15 +63,16 @@ func (s *Store) CreateProject(ctx context.Context, ownerID uuid.UUID, slug, repo
 	return p, nil
 }
 
-// GetProject lê um projeto sem filtrar por dono. É para o worker, que age em
-// nome de um deploy já autorizado; a API usa GetProjectFor.
+// GetProject lê um projeto sem filtrar por dono nem por exclusão. É para o
+// worker, que age em nome de um deploy já autorizado e precisa do projeto
+// excluído para limpar o que sobrou; a API usa GetProjectFor.
 func (s *Store) GetProject(ctx context.Context, id uuid.UUID) (domain.Project, error) {
 	var p domain.Project
 	var limitsRaw string
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, owner_id, slug, repository_url, root_directory, limits, created_at
+		SELECT id, owner_id, slug, repository_url, root_directory, limits, created_at, deleted_at
 		FROM projects WHERE id = $1`, id,
-	).Scan(&p.ID, &p.OwnerID, &p.Slug, &p.RepositoryURL, &p.RootDirectory, &limitsRaw, &p.CreatedAt)
+	).Scan(&p.ID, &p.OwnerID, &p.Slug, &p.RepositoryURL, &p.RootDirectory, &limitsRaw, &p.CreatedAt, &p.DeletedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Project{}, ErrNotFound
 	}
@@ -84,7 +92,8 @@ func (s *Store) GetProjectFor(ctx context.Context, id, ownerID uuid.UUID) (domai
 	if err != nil {
 		return domain.Project{}, err
 	}
-	if p.OwnerID == nil || *p.OwnerID != ownerID {
+	// Um projeto excluído some da API, como um de outro dono (DEC-38).
+	if p.OwnerID == nil || *p.OwnerID != ownerID || p.DeletedAt != nil {
 		return domain.Project{}, ErrNotFound
 	}
 	return p, nil
@@ -447,7 +456,7 @@ func (s *Store) ListRoutes(ctx context.Context) ([]domain.Route, error) {
 		FROM releases r
 		JOIN deployments d ON d.id = r.deployment_id
 		JOIN projects p ON p.id = d.project_id
-		WHERE r.operational_state = 'active' AND r.route_host <> '' AND r.route_target <> ''
+		WHERE r.operational_state = 'active' AND r.route_host <> '' AND r.route_target <> '' AND p.deleted_at IS NULL
 		ORDER BY d.project_id, r.created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("store: listar rotas: %w", err)

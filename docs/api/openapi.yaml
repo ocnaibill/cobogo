@@ -35,6 +35,8 @@ tags:
     description: Deploys, progresso, análise e plano
   - name: env
     description: Variáveis de ambiente do projeto (os valores nunca são devolvidos)
+  - name: operations
+    description: Ciclo de vida (excluir projeto, aplicar limites, aposentar releases), executado pelo worker
   - name: settings
     description: Política operacional editável (limites de recursos e hosts de repositório)
   - name: health
@@ -323,6 +325,141 @@ paths:
           $ref: '#/components/responses/Unauthenticated'
         '404':
           $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [projects, operations]
+      summary: Exclui o projeto
+      description: |
+        Exclusão lógica (DEC-38). Na hora: o projeto some das listas e responde
+        404, a rota sai do ar (o Traefik a perde em até 2 s), as variáveis
+        cifradas são apagadas e deploys na fila ou aguardando resposta são
+        cancelados. Depois, o worker remove contêineres, rede e imagens do
+        projeto; acompanhe pela operação devolvida. **O histórico fica**
+        (deploys, eventos, análises, releases e auditoria) e volumes nunca são
+        tocados. Recusado com `deployment_in_progress` se há deploy em execução.
+        O nome do projeto fica livre para reuso.
+      operationId: deleteProject
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm_slug]
+              properties:
+                confirm_slug:
+                  type: string
+                  description: O nome (slug) do projeto, digitado para confirmar.
+      responses:
+        '202':
+          description: A exclusão foi aceita; a limpeza segue pelo worker.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
+        '400':
+          description: Corpo inválido ou nome de confirmação diferente (`confirmation_mismatch`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Há um deploy em execução (`deployment_in_progress`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /projects/{id}/operations:
+    get:
+      tags: [operations]
+      summary: Operações recentes do projeto
+      description: |
+        Da mais nova à mais antiga, inclusive de um projeto excluído (a limpeza
+        dele pode estar em andamento ou ter falhado).
+      operationId: listOperations
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: As operações.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [operations]
+                properties:
+                  operations:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Operation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+  /operations/{id}:
+    get:
+      tags: [operations]
+      summary: Uma operação de ciclo de vida
+      operationId: getOperation
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: A operação.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/limits/apply:
+    post:
+      tags: [projects, operations]
+      summary: Aplica os limites atuais à release no ar
+      description: |
+        Pede ao worker que atualize o contêiner da release ativa com os limites
+        efetivos de hoje, sem reiniciá-lo (#33). Memória e swap sobem e descem
+        juntos. **Reduzir a memória abaixo do uso atual é recusado** (a
+        operação termina `FAILED` com a explicação), em vez de matar a
+        aplicação. O resultado traz os limites de antes e de depois.
+      operationId: applyProjectLimits
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '202':
+          description: A operação foi enfileirada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: O projeto não tem release no ar (`no_active_release`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /projects/{id}/deployments:
     get:
       tags: [deployments]
@@ -989,12 +1126,58 @@ components:
                 - deployment_finished
                 - analysis_unavailable
                 - plan_unavailable
+                - deployment_in_progress
+                - confirmation_mismatch
+                - no_active_release
             message:
               type: string
               description: Em português, para leitura humana.
     NextBefore:
       type: string
       description: Cursor da próxima página; vazio na última.
+    Operation:
+      type: object
+      required: [id, kind, state, params, result, attempts, not_before, created_at, updated_at]
+      description: |
+        Um pedido de ciclo de vida que o worker executa (DEC-38). `PENDING`
+        espera (ou espera até `not_before`), `RUNNING` está em execução, `DONE`
+        terminou e `FAILED` esgotou as tentativas ou foi recusado (veja `error`).
+      properties:
+        id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          enum: [retire_releases, delete_project, apply_limits, sweep]
+        state:
+          type: string
+          enum: [PENDING, RUNNING, DONE, FAILED]
+        params:
+          type: object
+          additionalProperties: true
+        result:
+          type: object
+          additionalProperties: true
+          description: |
+            O que a operação fez: contêineres e imagens removidos, ou os limites
+            de antes e de depois.
+        error:
+          type: string
+          description: Em português, para leitura humana.
+        attempts:
+          type: integer
+        not_before:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
     User:
       type: object
       required: [id, login, created_at]
@@ -1085,7 +1268,7 @@ components:
           description: Padrão de fábrica, do mesmo tipo de `value`.
         min:
           type: number
-          description: Só nos limites.
+          description: Nos limites e nas políticas numéricas (espera e imagens retidas).
         max:
           type: number
     Project:

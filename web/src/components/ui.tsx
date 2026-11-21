@@ -17,7 +17,10 @@ export function Button({
   ...rest
 }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant; busy?: boolean; icon?: IconName }) {
   return (
-    <button {...rest} className={`btn btn-${variant} ${rest.className ?? ""}`} disabled={rest.disabled || busy} aria-busy={busy || undefined}>
+    // type="button" por padrão: dentro de um <form>, o padrão do navegador é
+    // "submit", e um "Cancelar" sem tipo enviaria o formulário (a exclusão de
+    // projeto foi enviada assim num teste). Quem envia pede type="submit".
+    <button {...rest} type={rest.type ?? "button"} className={`btn btn-${variant} ${rest.className ?? ""}`} disabled={rest.disabled || busy} aria-busy={busy || undefined}>
       {busy ? <span className="spinner" aria-hidden="true" /> : icon && <Icon name={icon} size={16} />}
       {children}
     </button>

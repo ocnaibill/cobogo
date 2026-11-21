@@ -348,6 +348,83 @@ func TestTheWholeFlowWorksWithOnlyTheGrantedPrivileges(t *testing.T) {
 	if n, err := api.CountUsers(ctx); err != nil || n != 1 {
 		t.Fatalf("CountUsers = %d, %v", n, err)
 	}
+
+	// --- ciclo de vida (DEC-38): a API pede, o worker executa ---
+	if _, err := api.RequestApplyLimits(ctx, project.ID, admin.ID); err != nil {
+		t.Fatalf("RequestApplyLimits: %v", err)
+	}
+	at := time.Now().UTC().Add(-time.Second)
+	if _, err := worker.EnqueueOperation(ctx, &project.ID, domain.OpRetireReleases, nil, at, nil); err != nil {
+		t.Fatalf("worker EnqueueOperation: %v", err)
+	}
+	if _, err := worker.EnqueueOperation(ctx, &project.ID, domain.OpRetireReleases, nil, at, nil); err != nil {
+		t.Fatalf("worker EnqueueOperation (coalesce): %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		op, err := worker.ClaimNextOperation(ctx, time.Minute, 3)
+		if err != nil || op == nil {
+			t.Fatalf("worker ClaimNextOperation = %v, %v", op, err)
+		}
+		if err := worker.FinishOperation(ctx, op.ID, map[string]any{"ok": true}); err != nil {
+			t.Fatalf("FinishOperation: %v", err)
+		}
+	}
+	if _, err := worker.ContainerFacts(ctx, []uuid.UUID{dep.ID}); err != nil {
+		t.Fatalf("worker ContainerFacts: %v", err)
+	}
+	if err := worker.MarkReleasesRetired(ctx, []string{"ctr"}); err != nil {
+		t.Fatalf("MarkReleasesRetired: %v", err)
+	}
+	if err := worker.AppendEvent(ctx, dep.ID, "lifecycle", "retired", map[string]any{"x": 1}); err != nil {
+		t.Fatalf("worker AppendEvent: %v", err)
+	}
+	if err := worker.RecordOperation(ctx, nil, domain.OpSweep, map[string]any{"n": 1}); err != nil {
+		t.Fatalf("worker RecordOperation: %v", err)
+	}
+	if _, err := worker.ActiveRelease(ctx, project.ID); err != nil {
+		t.Fatalf("worker ActiveRelease: %v", err)
+	}
+	// Excluir o projeto: só a API, e só com as permissões que tem.
+	del, err := api.DeleteProject(ctx, project.ID, admin.ID, "app-roles")
+	if err != nil {
+		t.Fatalf("api DeleteProject: %v", err)
+	}
+	if _, err := api.GetOperationFor(ctx, del.ID, admin.ID); err != nil {
+		t.Fatalf("api GetOperationFor: %v", err)
+	}
+	if _, err := api.ListOperationsFor(ctx, project.ID, admin.ID, 10); err != nil {
+		t.Fatalf("api ListOperationsFor: %v", err)
+	}
+	claimed2, err := worker.ClaimNextOperation(ctx, time.Minute, 3)
+	if err != nil || claimed2 == nil || claimed2.Kind != domain.OpDeleteProject {
+		t.Fatalf("the worker must claim the delete: %+v, %v", claimed2, err)
+	}
+	if err := worker.MarkProjectReleasesRemoved(ctx, project.ID); err != nil {
+		t.Fatalf("MarkProjectReleasesRemoved: %v", err)
+	}
+	if err := worker.FinishOperation(ctx, claimed2.ID, nil); err != nil {
+		t.Fatalf("FinishOperation (delete): %v", err)
+	}
+	if got, err := worker.GetProject(ctx, project.ID); err != nil || got.DeletedAt == nil {
+		t.Fatalf("the worker still reads the deleted project: %+v, %v", got, err)
+	}
+
+	// O que continua proibido: o histórico não se apaga por nenhum dos dois roles.
+	for name, pool := range map[string]interface {
+		Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	}{"api": r.API, "worker": r.Worker} {
+		for _, table := range []string{"deployment_events", "deployments", "analyses", "releases", "audit_events", "operations", "projects"} {
+			if _, err := pool.Exec(ctx, "DELETE FROM "+table); err == nil {
+				t.Errorf("the %s role must not delete from %s", name, table)
+			}
+		}
+	}
+	if _, err := r.Worker.Exec(ctx, "UPDATE projects SET deleted_at = NULL"); err == nil {
+		t.Error("the worker must not touch projects")
+	}
+	if _, err := r.API.Exec(ctx, "UPDATE operations SET state = 'DONE'"); err == nil {
+		t.Error("the API must not conclude operations")
+	}
 	_ = fmt.Sprint
 	_ = uuid.Nil
 }

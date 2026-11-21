@@ -21,7 +21,11 @@ func TestCreateDeploymentValidatesOverrides(t *testing.T) {
 	for name, overrides := range map[string]string{
 		"unknown field":      `{"dockerfile":"FROM scratch"}`,
 		"port not a number":  `{"port":"exemplo"}`,
-		"field not editable": `{"profile":"P-NODE"}`,
+		"field not editable": `{"commit_sha":"abc123"}`,
+		"unknown profile":    `{"profile":"P-PY"}`,
+		"bad manager":        `{"package_manager":"yarn"}`,
+		"bad bun version":    `{"bun_version":"2"}`,
+		"bad output dir":     `{"output_dir":"../fora"}`,
 		"unknown mode":       `{"execution_mode":"staging"}`,
 		"command ends in \\": `{"build_command":"npm run build \\"}`,
 	} {
@@ -29,6 +33,11 @@ func TestCreateDeploymentValidatesOverrides(t *testing.T) {
 		if rec := h.do("POST", "/api/v1/projects/"+project+"/deployments", body); rec.Code != http.StatusBadRequest {
 			t.Errorf("%s: status %d, want 400 (%s)", name, rec.Code, rec.Body)
 		}
+	}
+
+	// Overrides das DECs 36 e 37 são aceitos quando válidos.
+	if rec := h.do("POST", "/api/v1/projects/"+project+"/deployments", `{"idempotency_key":"k-static","overrides":{"profile":"P-STATIC","output_dir":"dist","spa_fallback":"false","package_manager":"bun","bun_version":"1.2"}}`); rec.Code != http.StatusAccepted {
+		t.Errorf("valid DEC-36/37 overrides: status %d, want 202 (%s)", rec.Code, rec.Body)
 	}
 
 	dep := h.deployment(project, `{"idempotency_key":"ok","overrides":{"port":"3000"}}`)

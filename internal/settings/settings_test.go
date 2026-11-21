@@ -344,3 +344,40 @@ func TestAppsRoutingPrecedenceAndURLs(t *testing.T) {
 		}
 	}
 }
+
+func TestLifecyclePolicyHasDefaultsIsEditableAndIsNotAProjectLimit(t *testing.T) {
+	got, err := NewResolver(nil, Env{}).Lifecycle(ctx)
+	if err != nil || got.GraceSeconds != 30 || got.ImagesKept != 2 {
+		t.Fatalf("defaults = %+v, %v; want 30 s and 2 images", got, err)
+	}
+	stored := NewResolver(fakeDB{values: map[string]string{RetireGraceSeconds: "90", ReleaseImagesKept: "4"}}, Env{})
+	if got, _ := stored.Lifecycle(ctx); got.GraceSeconds != 90 || got.ImagesKept != 4 {
+		t.Errorf("stored = %+v, want 90 s and 4 images", got)
+	}
+	for _, key := range []string{RetireGraceSeconds, ReleaseImagesKept} {
+		d, ok := Lookup(key)
+		if !ok || d.IsLimit() {
+			t.Errorf("%s must exist and must not be a per-project limit", key)
+		}
+	}
+	if _, err := mustDef(t, RetireGraceSeconds).Normalize("2"); err == nil {
+		t.Error("a grace below 5 s is shorter than the router needs and must be refused")
+	}
+	if _, err := mustDef(t, ReleaseImagesKept).Normalize("0"); err == nil {
+		t.Error("keeping no image at all must be refused")
+	}
+	// Os limites por projeto continuam sendo só os de recursos.
+	eff, _ := NewResolver(nil, Env{}).EffectiveLimits(ctx, domain.Limits{})
+	if _, ok := eff[RetireGraceSeconds]; ok {
+		t.Error("a policy number must not appear among the effective resource limits")
+	}
+}
+
+func mustDef(t *testing.T, key string) Def {
+	t.Helper()
+	d, ok := Lookup(key)
+	if !ok {
+		t.Fatalf("no definition for %s", key)
+	}
+	return d
+}

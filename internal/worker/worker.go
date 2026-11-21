@@ -72,6 +72,7 @@ func New(st *store.Store, rt *dockerrt.Runtime, log *slog.Logger, cfg *settings.
 // simultâneo em M1), até ctx ser cancelado.
 func (w *Worker) Run(ctx context.Context) error {
 	go w.warmUp(ctx)
+	nextSweep := time.Now().Add(firstSweepAfter)
 
 	for {
 		select {
@@ -90,6 +91,20 @@ func (w *Worker) Run(ctx context.Context) error {
 			continue
 		}
 		if job == nil {
+			// Sem deploy para fazer: operações de ciclo de vida e, de tempos em
+			// tempos, a faxina (DEC-38). Um deploy sempre tem a vez primeiro.
+			op, err := w.store.ClaimNextOperation(ctx, opLease, opMaxAttempts)
+			if err != nil && ctx.Err() == nil {
+				w.log.Error("reivindicar operação", "erro", err)
+			}
+			if op != nil {
+				w.runOperation(ctx, op)
+				continue
+			}
+			if time.Now().After(nextSweep) {
+				w.sweepOnce(ctx)
+				nextSweep = time.Now().Add(sweepInterval)
+			}
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -492,7 +507,8 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 			}
 		}
 	}
-	buildResult, err := rt.BuildWithArgs(buildCtx, rootDir, plan.Dockerfile, imageTag, plan.Runtime, buildArgs, func(line string) {
+	imageLabels := map[string]string{dockerrt.LabelManaged: "true", dockerrt.LabelProject: project.ID.String()}
+	buildResult, err := rt.BuildWithArgs(buildCtx, rootDir, plan.Dockerfile, imageTag, plan.Runtime, buildArgs, imageLabels, func(line string) {
 		_ = w.emit(ctx, o, dep.ID, "building", "log", map[string]any{"line": line})
 	})
 	cancelBuild()
@@ -669,10 +685,11 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 	succeeded = true
 	releaseURL := spec.URL
 
-	// As releases anteriores ficam como estão, no ingress e rodando: o Traefik
-	// leva até um ciclo de consulta para trocar a rota, e desconectar a antiga
-	// antes disso derrubaria pedidos em andamento. Rebaixar e retirar, com um
-	// período de espera maior que o ciclo, é a parte 5c (RF-15).
+	// As releases anteriores ficam rodando até o período de espera acabar: o
+	// Traefik leva até um ciclo de consulta para trocar a rota, e tirar a antiga
+	// antes disso derrubaria pedidos em andamento. A retirada é uma operação
+	// agendada, fora do pipeline (DEC-38 item 2).
+	w.scheduleRetire(ctx, project.ID)
 	if routing.Enabled() {
 		if err := w.emit(ctx, o, dep.ID, "routing", "promoted", map[string]any{"url": releaseURL}); err != nil {
 			return err

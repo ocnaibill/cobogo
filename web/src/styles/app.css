@@ -416,3 +416,4 @@ details summary { cursor: pointer; font-weight: 600; }
 .term-tag { min-width: 0; width: 104px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .banner-main { flex: 1 1 440px; }
 .inset.row-between > span:first-child { white-space: nowrap; }
+.full { width: 100%; }

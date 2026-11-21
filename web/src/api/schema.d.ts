@@ -176,6 +176,79 @@ export interface paths {
         get: operations["getProject"];
         put?: never;
         post?: never;
+        /**
+         * Exclui o projeto
+         * @description Exclusão lógica (DEC-38). Na hora: o projeto some das listas e responde
+         *     404, a rota sai do ar (o Traefik a perde em até 2 s), as variáveis
+         *     cifradas são apagadas e deploys na fila ou aguardando resposta são
+         *     cancelados. Depois, o worker remove contêineres, rede e imagens do
+         *     projeto; acompanhe pela operação devolvida. **O histórico fica**
+         *     (deploys, eventos, análises, releases e auditoria) e volumes nunca são
+         *     tocados. Recusado com `deployment_in_progress` se há deploy em execução.
+         *     O nome do projeto fica livre para reuso.
+         */
+        delete: operations["deleteProject"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{id}/operations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Operações recentes do projeto
+         * @description Da mais nova à mais antiga, inclusive de um projeto excluído (a limpeza
+         *     dele pode estar em andamento ou ter falhado).
+         */
+        get: operations["listOperations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/operations/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Uma operação de ciclo de vida */
+        get: operations["getOperation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{id}/limits/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Aplica os limites atuais à release no ar
+         * @description Pede ao worker que atualize o contêiner da release ativa com os limites
+         *     efetivos de hoje, sem reiniciá-lo (#33). Memória e swap sobem e descem
+         *     juntos. **Reduzir a memória abaixo do uso atual é recusado** (a
+         *     operação termina `FAILED` com a explicação), em vez de matar a
+         *     aplicação. O resultado traz os limites de antes e de depois.
+         */
+        post: operations["applyProjectLimits"];
         delete?: never;
         options?: never;
         head?: never;
@@ -488,13 +561,47 @@ export interface components {
                  * @description Estável; decida por ele.
                  * @enum {string}
                  */
-                code: "invalid_request" | "unauthenticated" | "forbidden" | "csrf" | "not_found" | "conflict" | "unsupported_media_type" | "payload_too_large" | "rate_limited" | "unavailable" | "internal" | "invalid_credentials" | "invalid_setup_token" | "setup_closed" | "weak_password" | "not_awaiting_input" | "deployment_started" | "deployment_finished" | "analysis_unavailable" | "plan_unavailable";
+                code: "invalid_request" | "unauthenticated" | "forbidden" | "csrf" | "not_found" | "conflict" | "unsupported_media_type" | "payload_too_large" | "rate_limited" | "unavailable" | "internal" | "invalid_credentials" | "invalid_setup_token" | "setup_closed" | "weak_password" | "not_awaiting_input" | "deployment_started" | "deployment_finished" | "analysis_unavailable" | "plan_unavailable" | "deployment_in_progress" | "confirmation_mismatch" | "no_active_release";
                 /** @description Em português, para leitura humana. */
                 message: string;
             };
         };
         /** @description Cursor da próxima página; vazio na última. */
         NextBefore: string;
+        /**
+         * @description Um pedido de ciclo de vida que o worker executa (DEC-38). `PENDING`
+         *     espera (ou espera até `not_before`), `RUNNING` está em execução, `DONE`
+         *     terminou e `FAILED` esgotou as tentativas ou foi recusado (veja `error`).
+         */
+        Operation: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            project_id?: string;
+            /** @enum {string} */
+            kind: "retire_releases" | "delete_project" | "apply_limits" | "sweep";
+            /** @enum {string} */
+            state: "PENDING" | "RUNNING" | "DONE" | "FAILED";
+            params: {
+                [key: string]: unknown;
+            };
+            /**
+             * @description O que a operação fez: contêineres e imagens removidos, ou os limites
+             *     de antes e de depois.
+             */
+            result: {
+                [key: string]: unknown;
+            };
+            /** @description Em português, para leitura humana. */
+            error?: string;
+            attempts: number;
+            /** Format: date-time */
+            not_before: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
         User: {
             /** Format: uuid */
             id: string;
@@ -544,7 +651,7 @@ export interface components {
             source: "database" | "env" | "default";
             /** @description Padrão de fábrica, do mesmo tipo de `value`. */
             default: unknown;
-            /** @description Só nos limites. */
+            /** @description Nos limites e nas políticas numéricas (espera e imagens retidas). */
             min?: number;
             max?: number;
         };
@@ -1198,6 +1305,142 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthenticated"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    deleteProject: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description O nome (slug) do projeto, digitado para confirmar. */
+                    confirm_slug: string;
+                };
+            };
+        };
+        responses: {
+            /** @description A exclusão foi aceita; a limpeza segue pelo worker. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Operation"];
+                };
+            };
+            /** @description Corpo inválido ou nome de confirmação diferente (`confirmation_mismatch`). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+            /** @description Há um deploy em execução (`deployment_in_progress`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listOperations: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description As operações. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        operations: components["schemas"]["Operation"][];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+        };
+    };
+    getOperation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A operação. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Operation"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    applyProjectLimits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A operação foi enfileirada. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Operation"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+            /** @description O projeto não tem release no ar (`no_active_release`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     listDeployments: {

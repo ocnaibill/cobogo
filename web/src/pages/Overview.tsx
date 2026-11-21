@@ -4,9 +4,9 @@
 // real de cada aplicação entra com o coletor (MVP); aqui ela não é inventada.
 import { useMemo, useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
-import { Link } from "react-router";
+import { Link, useLocation } from "react-router";
 import { api, unwrap, type ProjectSummary } from "../api/client";
-import { Badge, Button, Empty, ErrorBox, LinkButton, Loading, Metric, StateBadge, Tag, When } from "../components/ui";
+import { Badge, Button, Empty, ErrorBox, LinkButton, Loading, Metric, Notice, StateBadge, Tag, When } from "../components/ui";
 import { Icon } from "../components/icons";
 import { isActive } from "../lib/deploy";
 import { repoName } from "../lib/format";
@@ -32,6 +32,7 @@ const FILTERS: { key: Bucket | "all"; label: string; dot?: string }[] = [
 ];
 
 export function OverviewPage() {
+  const deleted = (useLocation().state as { deleted?: string } | null)?.deleted;
   const [filter, setFilter] = useState<Bucket | "all">("all");
   const [query, setQuery] = useState("");
   const apps = useAppsDomain();
@@ -83,6 +84,11 @@ export function OverviewPage() {
         </div>
       </div>
 
+      {deleted && (
+        <Notice tone="success" title={`${deleted} foi excluído.`}>
+          O endereço saiu do ar e a limpeza segue em segundo plano. O histórico dos deploys foi preservado.
+        </Notice>
+      )}
       {q.isLoading && <Loading />}
       {q.isError && <ErrorBox error={q.error} onRetry={() => q.refetch()} />}
 

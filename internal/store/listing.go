@@ -73,7 +73,7 @@ func (s *Store) ListProjectsFor(ctx context.Context, ownerID uuid.UUID, limit in
 			SELECT id, state, created_at FROM deployments
 			WHERE project_id = p.id ORDER BY created_at DESC, id DESC LIMIT 1
 		) d ON true
-		WHERE p.owner_id = $1
+		WHERE p.owner_id = $1 AND p.deleted_at IS NULL
 		  AND ($2::timestamptz IS NULL OR (p.created_at, p.id) < ($2::timestamptz, $3::uuid))
 		ORDER BY p.created_at DESC, p.id DESC
 		LIMIT $4`, ownerID, at, id, limit+1)

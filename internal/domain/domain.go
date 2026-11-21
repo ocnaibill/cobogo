@@ -19,6 +19,9 @@ type Project struct {
 	// da configuração global (DEC-30 item 7).
 	Limits    Limits    `json:"limits"`
 	CreatedAt time.Time `json:"created_at"`
+	// DeletedAt marca o projeto excluído (DEC-38): ele some da API e das
+	// rotas, e o histórico fica.
+	DeletedAt *time.Time `json:"-"`
 }
 
 // Limits são os tetos de recursos de contêineres de aplicação e de builds
@@ -223,4 +226,39 @@ type Route struct {
 	Slug   string
 	Host   string
 	Target string
+}
+
+// Operações de ciclo de vida que o worker executa a pedido da API (DEC-38).
+type OperationKind string
+
+const (
+	OpRetireReleases OperationKind = "retire_releases"
+	OpDeleteProject  OperationKind = "delete_project"
+	OpApplyLimits    OperationKind = "apply_limits"
+	OpSweep          OperationKind = "sweep"
+)
+
+type OperationState string
+
+const (
+	OpPending OperationState = "PENDING"
+	OpRunning OperationState = "RUNNING"
+	OpDone    OperationState = "DONE"
+	OpFailed  OperationState = "FAILED"
+)
+
+// Operation é um pedido de ciclo de vida: aposentar releases, excluir um
+// projeto, aplicar limites ou varrer recursos órfãos.
+type Operation struct {
+	ID        uuid.UUID      `json:"id"`
+	ProjectID *uuid.UUID     `json:"project_id,omitempty"`
+	Kind      OperationKind  `json:"kind"`
+	State     OperationState `json:"state"`
+	Params    map[string]any `json:"params"`
+	Result    map[string]any `json:"result"`
+	Error     string         `json:"error,omitempty"`
+	Attempts  int            `json:"attempts"`
+	NotBefore time.Time      `json:"not_before"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
 }

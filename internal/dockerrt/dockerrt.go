@@ -203,13 +203,16 @@ type BuildResult struct {
 // Build constrói a imagem a partir do workspace e do Dockerfile gerado,
 // registrando logs do stream em logSink (RF-04, RF-07).
 func (r *Runtime) Build(ctx context.Context, workspaceDir, dockerfile, imageTag, baseImage string, logSink func(line string)) (BuildResult, error) {
-	return r.BuildWithArgs(ctx, workspaceDir, dockerfile, imageTag, baseImage, nil, logSink)
+	return r.BuildWithArgs(ctx, workspaceDir, dockerfile, imageTag, baseImage, nil, nil, logSink)
 }
 
 // BuildWithArgs é o Build com argumentos de build (ARG): só configuração
 // pública de site estático passa por aqui, porque vai para o bundle de todo
 // jeito (DEC-37). Segredos nunca: um ARG fica no histórico da imagem.
-func (r *Runtime) BuildWithArgs(ctx context.Context, workspaceDir, dockerfile, imageTag, baseImage string, args map[string]*string, logSink func(line string)) (BuildResult, error) {
+//
+// labels vão para a imagem final: com o do projeto, a retenção e a exclusão
+// acham só as imagens dele (DEC-38 item 3).
+func (r *Runtime) BuildWithArgs(ctx context.Context, workspaceDir, dockerfile, imageTag, baseImage string, args map[string]*string, labels map[string]string, logSink func(line string)) (BuildResult, error) {
 	buildCtx, err := buildContext(workspaceDir, dockerfile, logSink)
 	if err != nil {
 		return BuildResult{}, err
@@ -217,6 +220,7 @@ func (r *Runtime) BuildWithArgs(ctx context.Context, workspaceDir, dockerfile, i
 
 	opts := buildOptions(imageTag, r.limits)
 	opts.BuildArgs = args
+	opts.Labels = labels
 	resp, err := r.cli.ImageBuild(ctx, buildCtx, opts)
 	if err != nil {
 		return BuildResult{}, fmt.Errorf("dockerrt: iniciar build: %w", err)

@@ -22,6 +22,8 @@ const (
 	IngressNetwork = "cobogo-ingress"
 )
 
+var networkInspectOptions = network.InspectOptions{}
+
 // ProjectNetwork é o nome da rede de um projeto.
 func ProjectNetwork(projectID string) string { return "cobogo-proj-" + projectID }
 

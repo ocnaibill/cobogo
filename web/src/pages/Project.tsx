@@ -7,9 +7,10 @@ import { api, ApiError, idempotencyKey, unwrap, type ConfigVariable } from "../a
 import { Badge, Button, Card, CopyButton, Empty, ErrorBox, Field, LinkButton, Loading, Notice, PageHead, StateBadge, Tag, When } from "../components/ui";
 import { Icon, type IconName } from "../components/icons";
 import { duration, repoName, shortSha } from "../lib/format";
+import { ApplyLimits, DangerZone, OperationsTab } from "../components/Lifecycle";
 import { profileLabel } from "../lib/deploy";
 
-type Tab = "deploys" | "variaveis" | "limites";
+type Tab = "deploys" | "variaveis" | "limites" | "operacoes";
 
 export function ProjectPage() {
   const { id = "" } = useParams();
@@ -212,6 +213,7 @@ export function ProjectPage() {
             ["deploys", "Histórico de deploys", "history"],
             ["variaveis", "Variáveis e segredos", "key"],
             ["limites", "Limites", "sliders"],
+            ["operacoes", "Operações", "activity"],
           ] as [Tab, string, IconName][]
         ).map(([t, label, icon]) => (
           <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? "tab active" : "tab"} onClick={() => setParams(t === "deploys" ? {} : { aba: t }, { replace: true })}>
@@ -275,6 +277,8 @@ export function ProjectPage() {
       )}
       {tab === "variaveis" && <VariablesTab projectId={id} discovered={(analysis.data?.result.config_variables ?? []).filter((v) => v.class !== "platform")} />}
       {tab === "limites" && <LimitsTab projectId={id} />}
+      {tab === "operacoes" && <OperationsTab projectId={id} />}
+      <DangerZone projectId={id} slug={p.slug} />
     </div>
   );
 }
@@ -574,6 +578,11 @@ function LimitsTab({ projectId }: { projectId: string }) {
           </div>
         )}
       </form>
+      <div className="card-foot">
+        <div className="full">
+          <ApplyLimits projectId={projectId} onApplied={() => qc.invalidateQueries({ queryKey: ["operations", projectId] })} />
+        </div>
+      </div>
     </section>
   );
 }

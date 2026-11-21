@@ -29,6 +29,9 @@ const (
 	ExtraGitHosts = "extra_git_hosts"
 	AppsDomain    = "apps_domain"
 	AppsScheme    = "apps_scheme"
+	// Política do ciclo de vida (DEC-38).
+	RetireGraceSeconds = "retire_grace_seconds"
+	ReleaseImagesKept  = "release_images_kept"
 )
 
 // Kind é o tipo do valor de uma chave.
@@ -58,6 +61,9 @@ type Def struct {
 	// AllowEmpty diz que um valor vazio gravado é uma escolha ("nenhum"), e
 	// não a ausência de valor: ele sobrepõe o ambiente.
 	AllowEmpty bool
+	// Policy marca um número que não é limite de recursos: tem padrão próprio e
+	// um projeto não o sobrepõe (DEC-38).
+	Policy bool
 }
 
 // Defs são as chaves, na ordem em que o painel as mostra.
@@ -70,6 +76,8 @@ var Defs = []Def{
 	{Key: ExtraGitHosts, Kind: KindHosts, EnvVar: "COBOGO_EXTRA_GIT_HOSTS", AllowEmpty: true},
 	{Key: AppsDomain, Kind: KindDomain, EnvVar: "COBOGO_APPS_DOMAIN", AllowEmpty: true},
 	{Key: AppsScheme, Kind: KindChoice, EnvVar: "COBOGO_APPS_SCHEME", Choices: []string{"https", "http"}, Default: "https"},
+	{Key: RetireGraceSeconds, Kind: KindInt, Min: 5, Max: 3600, Default: "30", Policy: true},
+	{Key: ReleaseImagesKept, Kind: KindInt, Min: 1, Max: 20, Default: "2", Policy: true},
 }
 
 // Lookup acha a definição de uma chave.
@@ -84,7 +92,7 @@ func Lookup(key string) (Def, bool) {
 
 // IsLimit diz se a chave é um limite de recursos (os únicos que um projeto
 // pode sobrepor).
-func (d Def) IsLimit() bool { return d.Kind == KindInt || d.Kind == KindFloat }
+func (d Def) IsLimit() bool { return (d.Kind == KindInt || d.Kind == KindFloat) && !d.Policy }
 
 const maxHosts = 20
 
@@ -354,7 +362,7 @@ func (r *Resolver) List(ctx context.Context) ([]Item, error) {
 	for _, d := range Defs {
 		raw, source := r.pick(stored, d.Key)
 		it := Item{Key: d.Key, Kind: d.Kind, Value: typed(d, raw), Source: source, Default: typed(d, defaultRaw(d.Key))}
-		if d.IsLimit() {
+		if d.Kind == KindInt || d.Kind == KindFloat {
 			min, max := d.Min, d.Max
 			it.Min, it.Max = &min, &max
 		}
@@ -451,6 +459,26 @@ func (r Routing) URL(slug string) string {
 		port = ":" + port
 	}
 	return r.Scheme + "://" + r.Host(slug) + port + "/"
+}
+
+// Lifecycle é a política de retirada de releases (DEC-38): quanto esperar
+// antes de remover a release anterior e quantas imagens guardar por projeto.
+type Lifecycle struct {
+	GraceSeconds int
+	ImagesKept   int
+}
+
+// Lifecycle devolve a política efetiva.
+func (r *Resolver) Lifecycle(ctx context.Context) (Lifecycle, error) {
+	stored, err := r.stored(ctx)
+	if err != nil {
+		return Lifecycle{}, err
+	}
+	grace, _ := r.pick(stored, RetireGraceSeconds)
+	kept, _ := r.pick(stored, ReleaseImagesKept)
+	g, _ := strconv.Atoi(grace)
+	k, _ := strconv.Atoi(kept)
+	return Lifecycle{GraceSeconds: g, ImagesKept: k}, nil
 }
 
 // Apps devolve o roteamento efetivo.
