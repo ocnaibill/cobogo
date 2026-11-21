@@ -15,10 +15,13 @@ import (
 type Roles struct {
 	API    string
 	Worker string
+	// Collector é o role do coletor de métricas (DEC-43). É opcional: se não
+	// existe, os privilégios dele não são aplicados (desenvolvimento).
+	Collector string
 }
 
 // DefaultRoles são os nomes que o script de criação dos roles usa.
-var DefaultRoles = Roles{API: "cobogo_api", Worker: "cobogo_worker"}
+var DefaultRoles = Roles{API: "cobogo_api", Worker: "cobogo_worker", Collector: "cobogo_collector"}
 
 // Privileges descreve o que um role pode fazer numa tabela: privilégios da
 // tabela inteira e privilégios por coluna.
@@ -29,8 +32,9 @@ type Privileges struct {
 
 // TableAccess é o acesso de cada role a uma tabela.
 type TableAccess struct {
-	API    Privileges
-	Worker Privileges
+	API       Privileges
+	Worker    Privileges
+	Collector Privileges
 }
 
 func tbl(p ...string) Privileges { return Privileges{Table: p} }
@@ -47,7 +51,7 @@ var (
 // não esteja aqui faz o passo de migração falhar.
 var accessMatrix = map[string]TableAccess{
 	// Os dois só leem as migrations aplicadas, para conferir o esquema ao subir.
-	"schema_migrations": {API: tbl("SELECT"), Worker: tbl("SELECT")},
+	"schema_migrations": {API: tbl("SELECT"), Worker: tbl("SELECT"), Collector: tbl("SELECT")},
 	"users":             {API: tbl("SELECT", "INSERT", "UPDATE")},
 	"sessions":          {API: tbl("SELECT", "INSERT", "UPDATE", "DELETE")},
 	"audit_events":      {API: tbl("SELECT", "INSERT")},
@@ -62,6 +66,11 @@ var accessMatrix = map[string]TableAccess{
 	"project_volumes": {API: tbl("SELECT"), Worker: tbl("SELECT", "INSERT", "UPDATE")},
 	// DEC-42: a API registra a escolha do usuário; o worker, o desfecho da criação.
 	"project_services": {API: tbl("SELECT", "INSERT", "UPDATE"), Worker: tbl("SELECT", "UPDATE")},
+	// DEC-43: só o coletor escreve as amostras (e as apaga na retenção); a API as lê.
+	"metric_samples":      {API: tbl("SELECT"), Collector: tbl("SELECT", "INSERT", "DELETE")},
+	"metric_rollups":      {API: tbl("SELECT"), Collector: tbl("SELECT", "INSERT", "UPDATE", "DELETE")},
+	"metric_probes":       {API: tbl("SELECT"), Collector: tbl("SELECT", "INSERT", "DELETE")},
+	"collector_heartbeat": {API: tbl("SELECT"), Collector: tbl("SELECT", "INSERT", "UPDATE")},
 	// A API pede (inserção) e acompanha (leitura); o worker executa e conclui.
 	"operations": {API: tbl("SELECT", "INSERT"), Worker: tbl("SELECT", "INSERT", "UPDATE")},
 	"env_variables": {
@@ -147,7 +156,21 @@ func ApplyGrants(ctx context.Context, pool *pgxpool.Pool, roles Roles) (applied 
 		return nil
 	}
 
-	for _, role := range []string{roles.API, roles.Worker} {
+	// O coletor é opcional: só entra se o role existe.
+	granted := map[string]func(TableAccess) Privileges{
+		roles.API:    func(a TableAccess) Privileges { return a.API },
+		roles.Worker: func(a TableAccess) Privileges { return a.Worker },
+	}
+	if roles.Collector != "" {
+		var exists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)`, roles.Collector).Scan(&exists); err != nil {
+			return false, fmt.Errorf("store: procurar o role do coletor: %w", err)
+		}
+		if exists {
+			granted[roles.Collector] = func(a TableAccess) Privileges { return a.Collector }
+		}
+	}
+	for role := range granted {
 		if err := exec(fmt.Sprintf("GRANT CONNECT ON DATABASE %s TO %s", id(database), id(role))); err != nil {
 			return false, err
 		}
@@ -163,7 +186,8 @@ func ApplyGrants(ctx context.Context, pool *pgxpool.Pool, roles Roles) (applied 
 		if !ok {
 			continue
 		}
-		for role, p := range map[string]Privileges{roles.API: access.API, roles.Worker: access.Worker} {
+		for role, pick := range granted {
+			p := pick(access)
 			if len(p.Table) > 0 {
 				if err := exec(fmt.Sprintf("GRANT %s ON TABLE %s TO %s", strings.Join(p.Table, ", "), id(table), id(role))); err != nil {
 					return false, err

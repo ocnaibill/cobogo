@@ -78,7 +78,7 @@ func TestPrivilegesMatchTheMatrixExactly(t *testing.T) {
 	r := storetest.NewWithRoles(t)
 	matrix := store.AccessMatrix()
 	for table, access := range matrix {
-		for role, p := range map[string]store.Privileges{r.Roles.API: access.API, r.Roles.Worker: access.Worker} {
+		for role, p := range map[string]store.Privileges{r.Roles.API: access.API, r.Roles.Worker: access.Worker, r.Roles.Collector: access.Collector} {
 			for _, col := range columnsOf(t, r, table) {
 				for _, priv := range []string{"SELECT", "INSERT", "UPDATE", "REFERENCES"} {
 					want := slices.Contains(p.Table, priv) || slices.Contains(p.Columns[priv], col)
@@ -103,7 +103,7 @@ func TestPrivilegesMatchTheMatrixExactly(t *testing.T) {
 			}
 		}
 	}
-	for _, role := range []string{r.Roles.API, r.Roles.Worker} {
+	for _, role := range []string{r.Roles.API, r.Roles.Worker, r.Roles.Collector} {
 		var create bool
 		if err := r.Owner.QueryRow(ctx, `SELECT has_schema_privilege($1, current_schema(), 'CREATE')`, role).Scan(&create); err != nil {
 			t.Fatal(err)

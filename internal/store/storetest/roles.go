@@ -22,6 +22,8 @@ type Roled struct {
 	Owner  *pgxpool.Pool
 	API    *pgxpool.Pool
 	Worker *pgxpool.Pool
+	// Collector é o pool do role do coletor de métricas (DEC-43).
+	Collector *pgxpool.Pool
 	// APIStore e WorkerStore são Stores sobre os pools restritos, com a cifra
 	// dos testes (o worker decifra, a API só escreve o cifrado).
 	APIStore    *store.Store
@@ -46,8 +48,9 @@ func NewWithRoles(t *testing.T) Roled {
 		t.Fatal(err)
 	}
 	roles := store.Roles{
-		API:    "cobogo_api_" + hex.EncodeToString(suffix),
-		Worker: "cobogo_worker_" + hex.EncodeToString(suffix),
+		API:       "cobogo_api_" + hex.EncodeToString(suffix),
+		Worker:    "cobogo_worker_" + hex.EncodeToString(suffix),
+		Collector: "cobogo_collector_" + hex.EncodeToString(suffix),
 	}
 	const password = "senha-de-teste"
 
@@ -55,14 +58,14 @@ func NewWithRoles(t *testing.T) Roled {
 	if err := owner.QueryRow(ctx, `SELECT current_schema(), current_database()`).Scan(&schema, &database); err != nil {
 		t.Fatal(err)
 	}
-	for _, role := range []string{roles.API, roles.Worker} {
+	for _, role := range []string{roles.API, roles.Worker, roles.Collector} {
 		sql := fmt.Sprintf("CREATE ROLE %s LOGIN PASSWORD '%s'", pgx.Identifier{role}.Sanitize(), password)
 		if _, err := owner.Exec(ctx, sql); err != nil {
 			t.Fatalf("criar role de teste (o usuário dos testes precisa de CREATEROLE): %v", err)
 		}
 	}
 	t.Cleanup(func() {
-		for _, role := range []string{roles.API, roles.Worker} {
+		for _, role := range []string{roles.API, roles.Worker, roles.Collector} {
 			id := pgx.Identifier{role}.Sanitize()
 			_, _ = owner.Exec(context.Background(), "DROP OWNED BY "+id)
 			_, _ = owner.Exec(context.Background(), "DROP ROLE IF EXISTS "+id)
@@ -90,9 +93,9 @@ func NewWithRoles(t *testing.T) Roled {
 	if err != nil {
 		t.Fatal(err)
 	}
-	api, worker := connect(roles.API), connect(roles.Worker)
+	api, worker, collector := connect(roles.API), connect(roles.Worker), connect(roles.Collector)
 	return Roled{
-		Owner: owner, API: api, Worker: worker,
+		Owner: owner, API: api, Worker: worker, Collector: collector,
 		APIStore:    store.New(api).WithCipher(box),
 		WorkerStore: store.New(worker).WithCipher(box),
 		Roles:       roles, Schema: schema,

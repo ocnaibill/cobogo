@@ -41,6 +41,8 @@ tags:
     description: Política operacional editável (limites de recursos e hosts de repositório)
   - name: health
     description: Disponibilidade
+  - name: observability
+    description: Recursos e saúde dos contêineres, coletados por um processo próprio (DEC-43)
 security:
   - cookieAuth: []
 paths:
@@ -803,6 +805,60 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /metrics/overview:
+    get:
+      tags: [observability]
+      summary: Consumo e saúde das cargas geridas
+      description: |
+        A última leitura de cada contêiner do Cobogó (DEC-43): quantos rodam, não
+        rodam ou estão **desconhecidos** (sem leitura há mais de três intervalos,
+        o sinal de um coletor parado), memória e CPU somadas, o consumo por perfil
+        tecnológico e o resultado da última sonda de rota por projeto. `collector`
+        é o batimento do coletor (nulo se nunca rodou).
+      operationId: metricsOverview
+      responses:
+        '200':
+          description: A visão geral.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsOverview'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+  /projects/{id}/metrics:
+    get:
+      tags: [observability]
+      summary: Recursos e saúde dos contêineres do projeto
+      description: |
+        Por contêiner (aplicação ativa, as anteriores e o banco): identidade,
+        estado, saúde do Docker, reinícios, última leitura **com a idade** e a
+        série da janela (no máximo ~240 pontos; intervalos sem amostra não geram
+        ponto, e um valor sem leitura é `null`, nunca zero). Traz os marcadores de
+        deploy e de reinício e a sonda de rota. CPU em **núcleos** usados;
+        memória **sem o cache de arquivos**. Docker stats não é APM: não há
+        latência de usuários nem taxa de erro.
+      operationId: projectMetrics
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - name: window
+          in: query
+          schema:
+            type: string
+            enum: [15m, 1h, 6h, 24h, 7d]
+            default: 1h
+      responses:
+        '200':
+          description: As métricas.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectMetrics'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /projects/{id}/deployments:
     get:
       tags: [deployments]
@@ -2153,6 +2209,247 @@ components:
           description: Sem projeto vivo, ou o caminho deixou de ser persistente.
         project_deleted:
           type: boolean
+    CollectorStatus:
+      type: object
+      required: [last_at, duration_ms, containers, errors, interval_ms, stale]
+      properties:
+        last_at:
+          type: string
+          format: date-time
+        duration_ms:
+          type: integer
+        containers:
+          type: integer
+        errors:
+          type: integer
+        last_error:
+          type: string
+        interval_ms:
+          type: integer
+        stale:
+          type: boolean
+          description: Passou de três intervalos sem rodada.
+    MetricPoint:
+      type: object
+      required: [t, cpu_avg, cpu_max, mem_avg, mem_max]
+      properties:
+        t:
+          type: string
+          format: date-time
+        cpu_avg:
+          type: number
+          nullable: true
+        cpu_max:
+          type: number
+          nullable: true
+        mem_avg:
+          type: integer
+          format: int64
+          nullable: true
+        mem_max:
+          type: integer
+          format: int64
+          nullable: true
+    ContainerMetrics:
+      type: object
+      required: [container_id, name, role, restarts, oom_killed, current, stale, series]
+      properties:
+        container_id:
+          type: string
+        name:
+          type: string
+        role:
+          type: string
+          enum: [app, service]
+        service:
+          type: string
+        deployment_id:
+          type: string
+          format: uuid
+        release_state:
+          type: string
+          description: Papel da release (`active`, `superseded`, `retired`, `removed`); vazio para o banco.
+        state:
+          type: string
+        health:
+          type: string
+        restarts:
+          type: integer
+        oom_killed:
+          type: boolean
+        started_at:
+          type: string
+          format: date-time
+        stale:
+          type: boolean
+        current:
+          nullable: true
+          type: object
+          required: [at, cpu_cores, cpu_limit_cores, mem_bytes, mem_limit_bytes]
+          properties:
+            at:
+              type: string
+              format: date-time
+            cpu_cores:
+              type: number
+              nullable: true
+            cpu_limit_cores:
+              type: number
+              nullable: true
+            mem_bytes:
+              type: integer
+              format: int64
+              nullable: true
+            mem_limit_bytes:
+              type: integer
+              format: int64
+              nullable: true
+        series:
+          type: array
+          items:
+            $ref: '#/components/schemas/MetricPoint'
+    MetricMarker:
+      type: object
+      required: [at, kind, label]
+      properties:
+        at:
+          type: string
+          format: date-time
+        kind:
+          type: string
+          enum: [deploy, restart, start, oom]
+        label:
+          type: string
+        container_id:
+          type: string
+    ProbePoint:
+      type: object
+      required: [t, ok, failed, stopped, avg_ms, total]
+      properties:
+        t:
+          type: string
+          format: date-time
+        ok:
+          type: integer
+        failed:
+          type: integer
+        stopped:
+          type: integer
+        avg_ms:
+          type: integer
+          nullable: true
+        total:
+          type: integer
+    ProbeView:
+      type: object
+      required: [host, at, outcome, status, duration_ms, stale, series]
+      description: |
+        A sonda de rota (DEC-43 item 10): uma requisição pelo Traefik, com o host
+        do projeto. É uma verificação sintética, não disponibilidade nem latência
+        de usuários.
+      properties:
+        host:
+          type: string
+        at:
+          type: string
+          format: date-time
+        outcome:
+          type: string
+          enum: [responded, client_error, failed, stopped]
+        status:
+          type: integer
+          nullable: true
+        duration_ms:
+          type: integer
+          nullable: true
+        stale:
+          type: boolean
+        series:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProbePoint'
+    ProjectMetrics:
+      type: object
+      required: [window, from, to, step_seconds, source, collector, containers, markers, probe]
+      properties:
+        window:
+          type: string
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        step_seconds:
+          type: integer
+        source:
+          type: string
+          enum: [raw, rollup]
+        collector:
+          allOf:
+            - $ref: '#/components/schemas/CollectorStatus'
+          nullable: true
+        containers:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContainerMetrics'
+        markers:
+          type: array
+          items:
+            $ref: '#/components/schemas/MetricMarker'
+        probe:
+          allOf:
+            - $ref: '#/components/schemas/ProbeView'
+          nullable: true
+    ProfileUsage:
+      type: object
+      required: [profile, projects, containers, mem_bytes, cpu_cores]
+      properties:
+        profile:
+          type: string
+        projects:
+          type: integer
+        containers:
+          type: integer
+        mem_bytes:
+          type: integer
+          format: int64
+        cpu_cores:
+          type: number
+    MetricsOverview:
+      type: object
+      required: [collector, running, not_running, unknown, apps, services, mem_bytes, mem_limit_bytes, cpu_cores, by_profile, probes]
+      properties:
+        collector:
+          allOf:
+            - $ref: '#/components/schemas/CollectorStatus'
+          nullable: true
+        running:
+          type: integer
+        not_running:
+          type: integer
+        unknown:
+          type: integer
+        apps:
+          type: integer
+        services:
+          type: integer
+        mem_bytes:
+          type: integer
+          format: int64
+        mem_limit_bytes:
+          type: integer
+          format: int64
+        cpu_cores:
+          type: number
+        by_profile:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProfileUsage'
+        probes:
+          type: object
+          additionalProperties:
+            type: integer
     ServiceNeed:
       type: object
       required: [engine, level, variable, reason, evidence]

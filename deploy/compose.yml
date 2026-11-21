@@ -29,6 +29,7 @@ services:
       COBOGO_OWNER_PASSWORD: ${COBOGO_OWNER_PASSWORD:?defina COBOGO_OWNER_PASSWORD}
       COBOGO_API_PASSWORD: ${COBOGO_API_PASSWORD:?defina COBOGO_API_PASSWORD}
       COBOGO_WORKER_PASSWORD: ${COBOGO_WORKER_PASSWORD:?defina COBOGO_WORKER_PASSWORD}
+      COBOGO_COLLECTOR_PASSWORD: ${COBOGO_COLLECTOR_PASSWORD:?defina COBOGO_COLLECTOR_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/10-roles.sh:/docker-entrypoint-initdb.d/10-roles.sh:ro
@@ -77,6 +78,41 @@ services:
     user: "0:0"
     cap_drop: [ALL]
     mem_limit: 128m
+    networks: [control]
+
+  # O proxy do Docker **só de leitura** do coletor (DEC-43, DEC-19): lista,
+  # inspeciona e lê estatísticas dos contêineres; não cria, não para, não remove,
+  # não constrói e não mexe em imagens, volumes nem redes.
+  docker-proxy-ro:
+    image: tecnativa/docker-socket-proxy@sha256:be1ac64f33bd82043beb504822a17ba6b71668ea1ad7cf51a9a01d27bb7ab047
+    <<: *hardened
+    environment:
+      CONTAINERS: 1
+      POST: 0
+      EXEC: 0
+      IMAGES: 0
+      NETWORKS: 0
+      VOLUMES: 0
+      BUILD: 0
+      SERVICES: 0
+      SWARM: 0
+      SECRETS: 0
+      CONFIGS: 0
+      AUTH: 0
+      PLUGINS: 0
+      NODES: 0
+      TASKS: 0
+      SESSION: 0
+      DISTRIBUTION: 0
+      SYSTEM: 0
+      INFO: 0
+      EVENTS: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    tmpfs: ["/tmp", "/run", "/var/lib/haproxy"]
+    user: "0:0"
+    cap_drop: [ALL]
+    mem_limit: 64m
     networks: [control]
 
   # Aplica as migrations e os privilégios com o role dono, uma vez, antes de a API
@@ -147,6 +183,30 @@ services:
     # morto pelo kernel (verificado na VM). O comando de administração deve rodar
     # em contêiner próprio (`docker compose run --rm api admin ...`).
     mem_limit: 512m
+    networks: [control, routing]
+
+  # O coletor de métricas (DEC-43): processo próprio, em laço independente dos
+  # builds. Lê o Docker só pelo proxy de leitura e escreve só as amostras, com o
+  # seu role. A sonda de rota passa pelo Traefik, sem entrar nas redes dos projetos.
+  collector:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.collector
+    <<: *hardened
+    environment:
+      DOCKER_HOST: tcp://docker-proxy-ro:2375
+      DATABASE_URL: postgres://cobogo_collector:${COBOGO_COLLECTOR_PASSWORD:?defina COBOGO_COLLECTOR_PASSWORD}@postgres:5432/cobogo_core?sslmode=disable
+      COBOGO_AUTO_MIGRATE: "0"
+      COBOGO_COLLECTOR_INTERVAL: ${COBOGO_COLLECTOR_INTERVAL:-5s}
+      COBOGO_ROUTES_URL: http://api:8081/traefik/config
+      COBOGO_ROUTER_TOKEN: ${COBOGO_ROUTER_TOKEN:?defina COBOGO_ROUTER_TOKEN}
+      COBOGO_PROBE_URL: http://traefik:8000
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      docker-proxy-ro:
+        condition: service_started
+    mem_limit: 128m
     networks: [control, routing]
 
   worker:

@@ -436,6 +436,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/metrics/overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Consumo e saúde das cargas geridas
+         * @description A última leitura de cada contêiner do Cobogó (DEC-43): quantos rodam, não
+         *     rodam ou estão **desconhecidos** (sem leitura há mais de três intervalos,
+         *     o sinal de um coletor parado), memória e CPU somadas, o consumo por perfil
+         *     tecnológico e o resultado da última sonda de rota por projeto. `collector`
+         *     é o batimento do coletor (nulo se nunca rodou).
+         */
+        get: operations["metricsOverview"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{id}/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Recursos e saúde dos contêineres do projeto
+         * @description Por contêiner (aplicação ativa, as anteriores e o banco): identidade,
+         *     estado, saúde do Docker, reinícios, última leitura **com a idade** e a
+         *     série da janela (no máximo ~240 pontos; intervalos sem amostra não geram
+         *     ponto, e um valor sem leitura é `null`, nunca zero). Traz os marcadores de
+         *     deploy e de reinício e a sonda de rota. CPU em **núcleos** usados;
+         *     memória **sem o cache de arquivos**. Docker stats não é APM: não há
+         *     latência de usuários nem taxa de erro.
+         */
+        get: operations["projectMetrics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/projects/{id}/deployments": {
         parameters: {
             query?: never;
@@ -1139,6 +1189,128 @@ export interface components {
             /** @description Sem projeto vivo, ou o caminho deixou de ser persistente. */
             orphan: boolean;
             project_deleted: boolean;
+        };
+        CollectorStatus: {
+            /** Format: date-time */
+            last_at: string;
+            duration_ms: number;
+            containers: number;
+            errors: number;
+            last_error?: string;
+            interval_ms: number;
+            /** @description Passou de três intervalos sem rodada. */
+            stale: boolean;
+        };
+        MetricPoint: {
+            /** Format: date-time */
+            t: string;
+            cpu_avg: number | null;
+            cpu_max: number | null;
+            /** Format: int64 */
+            mem_avg: number | null;
+            /** Format: int64 */
+            mem_max: number | null;
+        };
+        ContainerMetrics: {
+            container_id: string;
+            name: string;
+            /** @enum {string} */
+            role: "app" | "service";
+            service?: string;
+            /** Format: uuid */
+            deployment_id?: string;
+            /** @description Papel da release (`active`, `superseded`, `retired`, `removed`); vazio para o banco. */
+            release_state?: string;
+            state?: string;
+            health?: string;
+            restarts: number;
+            oom_killed: boolean;
+            /** Format: date-time */
+            started_at?: string;
+            stale: boolean;
+            current: {
+                /** Format: date-time */
+                at: string;
+                cpu_cores: number | null;
+                cpu_limit_cores: number | null;
+                /** Format: int64 */
+                mem_bytes: number | null;
+                /** Format: int64 */
+                mem_limit_bytes: number | null;
+            } | null;
+            series: components["schemas"]["MetricPoint"][];
+        };
+        MetricMarker: {
+            /** Format: date-time */
+            at: string;
+            /** @enum {string} */
+            kind: "deploy" | "restart" | "start" | "oom";
+            label: string;
+            container_id?: string;
+        };
+        ProbePoint: {
+            /** Format: date-time */
+            t: string;
+            ok: number;
+            failed: number;
+            stopped: number;
+            avg_ms: number | null;
+            total: number;
+        };
+        /**
+         * @description A sonda de rota (DEC-43 item 10): uma requisição pelo Traefik, com o host
+         *     do projeto. É uma verificação sintética, não disponibilidade nem latência
+         *     de usuários.
+         */
+        ProbeView: {
+            host: string;
+            /** Format: date-time */
+            at: string;
+            /** @enum {string} */
+            outcome: "responded" | "client_error" | "failed" | "stopped";
+            status: number | null;
+            duration_ms: number | null;
+            stale: boolean;
+            series: components["schemas"]["ProbePoint"][];
+        };
+        ProjectMetrics: {
+            window: string;
+            /** Format: date-time */
+            from: string;
+            /** Format: date-time */
+            to: string;
+            step_seconds: number;
+            /** @enum {string} */
+            source: "raw" | "rollup";
+            collector: components["schemas"]["CollectorStatus"] | null;
+            containers: components["schemas"]["ContainerMetrics"][];
+            markers: components["schemas"]["MetricMarker"][];
+            probe: components["schemas"]["ProbeView"] | null;
+        };
+        ProfileUsage: {
+            profile: string;
+            projects: number;
+            containers: number;
+            /** Format: int64 */
+            mem_bytes: number;
+            cpu_cores: number;
+        };
+        MetricsOverview: {
+            collector: components["schemas"]["CollectorStatus"] | null;
+            running: number;
+            not_running: number;
+            unknown: number;
+            apps: number;
+            services: number;
+            /** Format: int64 */
+            mem_bytes: number;
+            /** Format: int64 */
+            mem_limit_bytes: number;
+            cpu_cores: number;
+            by_profile: components["schemas"]["ProfileUsage"][];
+            probes: {
+                [key: string]: number;
+            };
         };
         ServiceNeed: {
             /** @enum {string} */
@@ -2209,6 +2381,54 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+        };
+    };
+    metricsOverview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A visão geral. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricsOverview"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+        };
+    };
+    projectMetrics: {
+        parameters: {
+            query?: {
+                window?: "15m" | "1h" | "6h" | "24h" | "7d";
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description As métricas. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectMetrics"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
         };
     };
     listDeployments: {

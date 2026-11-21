@@ -139,6 +139,8 @@ func (s *Server) routes() []route {
 		{"POST /api/v1/projects/{id}/limits/apply", s.authed(s.handleApplyLimits)},
 		{"GET /api/v1/projects/{id}/persistent-paths", s.authed(s.handleGetPersistent)},
 		{"PUT /api/v1/projects/{id}/persistent-paths", s.authed(s.handlePutPersistent)},
+		{"GET /api/v1/metrics/overview", s.authed(s.handleMetricsOverview)},
+		{"GET /api/v1/projects/{id}/metrics", s.authed(s.handleProjectMetrics)},
 		{"GET /api/v1/projects/{id}/database", s.authed(s.handleGetDatabase)},
 		{"POST /api/v1/projects/{id}/database", s.authed(s.handleChooseDatabase)},
 		{"DELETE /api/v1/projects/{id}/database", s.authed(s.handleDeleteDatabase)},

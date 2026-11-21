@@ -9,6 +9,7 @@ import { api, unwrap, type ProjectSummary } from "../api/client";
 import { Badge, Button, Empty, ErrorBox, LinkButton, Loading, Metric, Notice, StateBadge, Tag, When } from "../components/ui";
 import { Icon } from "../components/icons";
 import { OrphanVolumes } from "../components/Data";
+import { FleetResources } from "../components/Resources";
 import { isActive } from "../lib/deploy";
 import { repoName } from "../lib/format";
 import { useAppsDomain } from "../hooks/useInstance";
@@ -74,7 +75,7 @@ export function OverviewPage() {
                 apps.loaded && <Tag tone="warning">sem domínio para as aplicações</Tag>
               )}
             </div>
-            <p className="small">Os indicadores contam o último deploy de cada projeto e se atualizam a cada 5 s. A saúde em tempo real entra com o coletor (MVP).</p>
+            <p className="small">Os indicadores contam o último deploy de cada projeto e se atualizam a cada 5 s. O consumo e a saúde dos contêineres vêm do coletor, no cartão abaixo, e são coisas diferentes do resultado do deploy.</p>
           </div>
         </div>
         <div className="row">
@@ -111,6 +112,8 @@ export function OverviewPage() {
             <Metric label="Em andamento" value={counts.running} denominator={`/ ${total}`} tone="info" icon="activity" foot={<span>na fila ou no worker agora</span>} />
             <Metric label="Sem deploy" value={counts.none} denominator={`/ ${total}`} tone="neutral" icon="box" foot={<span>importados, ainda não publicados</span>} />
           </div>
+
+          <FleetResources />
 
           <div className="banner banner-white">
             <div className="banner-main">

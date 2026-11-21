@@ -43,6 +43,13 @@ func marshalMap(m map[string]any) ([]byte, error) {
 	return json.Marshal(m)
 }
 
+// notBeforeSQL: o relógio de quem pede (a API, o worker) e o do banco podem
+// diferir por alguns milissegundos, e uma operação "para agora" não pode ficar
+// esperando por isso. Um `not_before` até 1 s no futuro vale como imediato; os
+// atrasos de verdade (o período de espera da aposentadoria) são de segundos ou
+// mais e ficam como pedidos.
+const notBeforeSQL = `CASE WHEN $5::timestamptz <= now() + interval '1 second' THEN now() ELSE $5::timestamptz END`
+
 // insertOperationTx cria uma operação PENDING. Para a aposentadoria de
 // releases, uma operação pendente do mesmo projeto é reaproveitada: um deploy
 // atrás do outro não empilha pedidos iguais.
@@ -65,7 +72,7 @@ func insertOperationTx(ctx context.Context, tx pgx.Tx, projectID *uuid.UUID, kin
 	}
 	return scanOperation(tx.QueryRow(ctx, `
 		INSERT INTO operations (id, project_id, kind, state, params, not_before, requested_by)
-		VALUES ($1, $2, $3, 'PENDING', $4, $5, $6)
+		VALUES ($1, $2, $3, 'PENDING', $4, `+notBeforeSQL+`, $6)
 		RETURNING `+operationColumns, uuid.New(), projectID, kind, string(raw), notBefore, requestedBy))
 }
 
