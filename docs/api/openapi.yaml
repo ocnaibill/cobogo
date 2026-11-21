@@ -686,6 +686,123 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /projects/{id}/database:
+    get:
+      tags: [projects]
+      summary: O banco de dados do projeto
+      description: |
+        O que a última análise achou sobre PostgreSQL (`need`, com `level`
+        `required` ou `possible` e as evidências), a escolha vigente do projeto
+        (`service`) e os dados do banco gerenciado, com o tamanho. DEC-42.
+      operationId: getDatabase
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: O estado do banco.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatabaseView'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [projects]
+      summary: Escolhe o destino do banco
+      description: |
+        Responde à pendência `database` (HEU-06.6). `managed`: o Cobogó cria um
+        PostgreSQL só deste projeto no próximo deploy e liga a variável de
+        conexão a ele (a senha é gerada aqui e nunca devolvida). `external`: a
+        URL de um banco que a pessoa já tem entra pelo fluxo de variáveis.
+        `none`: o projeto não precisa de banco. Os deploys parados esperando
+        esta escolha voltam à fila (`requeued`). **Nada é criado aqui.** Recusado
+        com `variable_defined` se a variável já tem um valor digitado (o vínculo
+        nunca o sobrescreve) e com `managed_exists` se já há um banco gerenciado.
+      operationId: chooseDatabase
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [choice]
+              properties:
+                choice:
+                  type: string
+                  enum: [managed, external, none]
+                variable:
+                  type: string
+                  description: A variável de conexão. Padrão `DATABASE_URL`.
+      responses:
+        '200':
+          description: A escolha foi registrada.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/DatabaseView'
+                  - type: object
+                    required: [requeued]
+                    properties:
+                      requeued:
+                        type: integer
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: A variável já tem valor digitado (`variable_defined`) ou já há um PostgreSQL gerenciado (`managed_exists`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      tags: [projects, operations]
+      summary: Apaga o PostgreSQL gerenciado e os dados
+      description: |
+        **Irreversível.** Pede ao worker que remova o contêiner do banco e o
+        volume dos dados (`delete_service`) e tira a variável de conexão
+        vinculada. A confirmação é o nome do projeto.
+      operationId: deleteDatabase
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm_slug]
+              properties:
+                confirm_slug:
+                  type: string
+      responses:
+        '202':
+          description: A operação foi enfileirada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: O projeto não tem um PostgreSQL gerenciado (`no_managed_database`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /projects/{id}/deployments:
     get:
       tags: [deployments]
@@ -1564,7 +1681,7 @@ components:
           format: uuid
         kind:
           type: string
-          enum: [retire_releases, delete_project, apply_limits, sweep, stop_app, start_app, restart_app, delete_volume]
+          enum: [retire_releases, delete_project, apply_limits, sweep, stop_app, start_app, restart_app, delete_volume, delete_service]
         state:
           type: string
           enum: [PENDING, RUNNING, DONE, FAILED]
@@ -1869,7 +1986,7 @@ components:
           type: integer
         source:
           type: string
-          enum: [user, generated, imported]
+          enum: [user, generated, imported, linked]
         key_version:
           type: integer
         created_at:
@@ -1988,7 +2105,7 @@ components:
           type: integer
         source:
           type: string
-          enum: [user, generated, imported]
+          enum: [user, generated, imported, linked]
         actor:
           type: string
         at:
@@ -2036,6 +2153,78 @@ components:
           description: Sem projeto vivo, ou o caminho deixou de ser persistente.
         project_deleted:
           type: boolean
+    ServiceNeed:
+      type: object
+      required: [engine, level, variable, reason, evidence]
+      properties:
+        engine:
+          type: string
+          enum: [postgres]
+        level:
+          type: string
+          enum: [required, possible]
+          description: |
+            `required`: código de runtime usa a engine (a pergunta bloqueia o
+            deploy antes do build). `possible`: só a dependência (vira sugestão).
+        variable:
+          type: string
+        reason:
+          type: string
+        evidence:
+          type: array
+          items:
+            type: string
+    Service:
+      type: object
+      required: [id, project_id, engine, mode, variable, status, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        engine:
+          type: string
+          enum: [postgres]
+        mode:
+          type: string
+          enum: [managed, external, none]
+        variable:
+          type: string
+        container_name:
+          type: string
+        volume_name:
+          type: string
+        status:
+          type: string
+          enum: [pending, ready, failed, deleting]
+        status_detail:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    DatabaseView:
+      type: object
+      required: [need, service, variable, volume]
+      properties:
+        need:
+          allOf:
+            - $ref: '#/components/schemas/ServiceNeed'
+          nullable: true
+        service:
+          allOf:
+            - $ref: '#/components/schemas/Service'
+          nullable: true
+        variable:
+          type: string
+        volume:
+          allOf:
+            - $ref: '#/components/schemas/ProjectVolume'
+          nullable: true
     PersistentSuggestion:
       type: object
       required: [path, kind, confidence, reason, evidence]
@@ -2156,7 +2345,7 @@ components:
       enum: [READY, NEEDS_INPUT, UNSUPPORTED]
     AnalysisResult:
       type: object
-      required: [outcome, catalog_version, rules, fields, pending, conflicts, unsupported, config_variables, persistent_suggestions, warnings, evidences, coverage]
+      required: [outcome, catalog_version, rules, fields, pending, conflicts, unsupported, config_variables, persistent_suggestions, service_needs, warnings, evidences, coverage]
       properties:
         outcome:
           $ref: '#/components/schemas/AnalysisOutcome'
@@ -2189,6 +2378,11 @@ components:
           description: Variáveis de ambiente do projeto; nenhum valor do repositório sai daqui, exceto `default_value` de valores não secretos.
           items:
             $ref: '#/components/schemas/ConfigVariable'
+        service_needs:
+          type: array
+          description: Serviços auxiliares (PostgreSQL) que o código parece exigir (DEC-42). Só informam.
+          items:
+            $ref: '#/components/schemas/ServiceNeed'
         persistent_suggestions:
           type: array
           description: Caminhos que o código parece usar para guardar dados em disco (DEC-41). Só sugerem.

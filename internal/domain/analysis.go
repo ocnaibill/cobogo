@@ -25,6 +25,10 @@ const (
 	FieldSPAFallback    = "spa_fallback"
 	FieldHealthPath     = "health_path"
 	FieldPort           = "port"
+	// FieldDatabase é a pendência de destino do banco (HEU-06.6, DEC-42). Não é um
+	// campo do plano e não se responde por overrides: a escolha vai em
+	// POST /projects/{id}/database.
+	FieldDatabase = "database"
 )
 
 // Perfis e gerenciadores do catálogo JavaScript (DEC-25, DEC-36).
@@ -256,8 +260,11 @@ type AnalysisResult struct {
 	// PersistentSuggestions são caminhos que o código parece usar para guardar
 	// dados em disco (DEC-41). Só sugerem: quem declara é o usuário.
 	PersistentSuggestions []PersistentSuggestion `json:"persistent_suggestions"`
-	Evidences             []Evidence             `json:"evidences"`
-	Coverage              Coverage               `json:"coverage"`
+	// ServiceNeeds são os serviços auxiliares que o código parece exigir
+	// (HEU-06, DEC-42). Só informam; criar um serviço exige a escolha do usuário.
+	ServiceNeeds []ServiceNeed `json:"service_needs"`
+	Evidences    []Evidence    `json:"evidences"`
+	Coverage     Coverage      `json:"coverage"`
 }
 
 // Tipos e confianças de uma sugestão de caminho persistente (DEC-41).
@@ -277,4 +284,20 @@ type PersistentSuggestion struct {
 	Confidence string   `json:"confidence"`
 	Reason     string   `json:"reason"`
 	Evidence   []string `json:"evidence"`
+}
+
+// Níveis de necessidade de um serviço (HEU-06.3 e HEU-06.5).
+const (
+	NeedRequired = "required" // código de runtime usa a engine
+	NeedPossible = "possible" // só a dependência: não se presume ativa nem inativa
+)
+
+// ServiceNeed é uma pista de que o projeto precisa de um banco. Variable é a
+// variável de conexão provável, que a pessoa pode trocar.
+type ServiceNeed struct {
+	Engine   string   `json:"engine"`
+	Level    string   `json:"level"`
+	Variable string   `json:"variable"`
+	Reason   string   `json:"reason"`
+	Evidence []string `json:"evidence"`
 }

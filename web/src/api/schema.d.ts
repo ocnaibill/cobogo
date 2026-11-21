@@ -397,6 +397,45 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/projects/{id}/database": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * O banco de dados do projeto
+         * @description O que a última análise achou sobre PostgreSQL (`need`, com `level`
+         *     `required` ou `possible` e as evidências), a escolha vigente do projeto
+         *     (`service`) e os dados do banco gerenciado, com o tamanho. DEC-42.
+         */
+        get: operations["getDatabase"];
+        put?: never;
+        /**
+         * Escolhe o destino do banco
+         * @description Responde à pendência `database` (HEU-06.6). `managed`: o Cobogó cria um
+         *     PostgreSQL só deste projeto no próximo deploy e liga a variável de
+         *     conexão a ele (a senha é gerada aqui e nunca devolvida). `external`: a
+         *     URL de um banco que a pessoa já tem entra pelo fluxo de variáveis.
+         *     `none`: o projeto não precisa de banco. Os deploys parados esperando
+         *     esta escolha voltam à fila (`requeued`). **Nada é criado aqui.** Recusado
+         *     com `variable_defined` se a variável já tem um valor digitado (o vínculo
+         *     nunca o sobrescreve) e com `managed_exists` se já há um banco gerenciado.
+         */
+        post: operations["chooseDatabase"];
+        /**
+         * Apaga o PostgreSQL gerenciado e os dados
+         * @description **Irreversível.** Pede ao worker que remova o contêiner do banco e o
+         *     volume dos dados (`delete_service`) e tira a variável de conexão
+         *     vinculada. A confirmação é o nome do projeto.
+         */
+        delete: operations["deleteDatabase"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/projects/{id}/deployments": {
         parameters: {
             query?: never;
@@ -821,7 +860,7 @@ export interface components {
             /** Format: uuid */
             project_id?: string;
             /** @enum {string} */
-            kind: "retire_releases" | "delete_project" | "apply_limits" | "sweep" | "stop_app" | "start_app" | "restart_app" | "delete_volume";
+            kind: "retire_releases" | "delete_project" | "apply_limits" | "sweep" | "stop_app" | "start_app" | "restart_app" | "delete_volume" | "delete_service";
             /** @enum {string} */
             state: "PENDING" | "RUNNING" | "DONE" | "FAILED";
             params: {
@@ -1013,7 +1052,7 @@ export interface components {
             name: string;
             version: number;
             /** @enum {string} */
-            source: "user" | "generated" | "imported";
+            source: "user" | "generated" | "imported" | "linked";
             key_version: number;
             /** Format: date-time */
             created_at: string;
@@ -1075,7 +1114,7 @@ export interface components {
             action: "env.set" | "env.generate" | "env.delete" | "env.import" | "env.required";
             version?: number;
             /** @enum {string} */
-            source?: "user" | "generated" | "imported";
+            source?: "user" | "generated" | "imported" | "linked";
             actor?: string;
             /** Format: date-time */
             at: string;
@@ -1100,6 +1139,45 @@ export interface components {
             /** @description Sem projeto vivo, ou o caminho deixou de ser persistente. */
             orphan: boolean;
             project_deleted: boolean;
+        };
+        ServiceNeed: {
+            /** @enum {string} */
+            engine: "postgres";
+            /**
+             * @description `required`: código de runtime usa a engine (a pergunta bloqueia o
+             *     deploy antes do build). `possible`: só a dependência (vira sugestão).
+             * @enum {string}
+             */
+            level: "required" | "possible";
+            variable: string;
+            reason: string;
+            evidence: string[];
+        };
+        Service: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            project_id: string;
+            /** @enum {string} */
+            engine: "postgres";
+            /** @enum {string} */
+            mode: "managed" | "external" | "none";
+            variable: string;
+            container_name?: string;
+            volume_name?: string;
+            /** @enum {string} */
+            status: "pending" | "ready" | "failed" | "deleting";
+            status_detail?: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        DatabaseView: {
+            need: components["schemas"]["ServiceNeed"] | null;
+            service: components["schemas"]["Service"] | null;
+            variable: string;
+            volume: components["schemas"]["ProjectVolume"] | null;
         };
         PersistentSuggestion: {
             /**
@@ -1186,6 +1264,8 @@ export interface components {
             unsupported: components["schemas"]["Finding"][];
             /** @description Variáveis de ambiente do projeto; nenhum valor do repositório sai daqui, exceto `default_value` de valores não secretos. */
             config_variables: components["schemas"]["ConfigVariable"][];
+            /** @description Serviços auxiliares (PostgreSQL) que o código parece exigir (DEC-42). Só informam. */
+            service_needs: components["schemas"]["ServiceNeed"][];
             /** @description Caminhos que o código parece usar para guardar dados em disco (DEC-41). Só sugerem. */
             persistent_suggestions: components["schemas"]["PersistentSuggestion"][];
             /** @description Avisos que nunca bloqueiam (por exemplo, credencial exposta no repositório). */
@@ -2011,6 +2091,116 @@ export interface operations {
             401: components["responses"]["Unauthenticated"];
             404: components["responses"]["NotFound"];
             /** @description O volume ainda é usado por um caminho persistente (`volume_in_use`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getDatabase: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description O estado do banco. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatabaseView"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    chooseDatabase: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    choice: "managed" | "external" | "none";
+                    /** @description A variável de conexão. Padrão `DATABASE_URL`. */
+                    variable?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description A escolha foi registrada. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatabaseView"] & {
+                        requeued: number;
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+            /** @description A variável já tem valor digitado (`variable_defined`) ou já há um PostgreSQL gerenciado (`managed_exists`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    deleteDatabase: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    confirm_slug: string;
+                };
+            };
+        };
+        responses: {
+            /** @description A operação foi enfileirada. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Operation"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+            /** @description O projeto não tem um PostgreSQL gerenciado (`no_managed_database`). */
             409: {
                 headers: {
                     [name: string]: unknown;

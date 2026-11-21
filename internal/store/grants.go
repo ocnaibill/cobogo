@@ -60,6 +60,8 @@ var accessMatrix = map[string]TableAccess{
 	"releases":          {API: tbl("SELECT"), Worker: tbl("SELECT", "INSERT", "UPDATE")},
 	// DEC-41: quem cria e mede volumes é o worker; a API só lista.
 	"project_volumes": {API: tbl("SELECT"), Worker: tbl("SELECT", "INSERT", "UPDATE")},
+	// DEC-42: a API registra a escolha do usuário; o worker, o desfecho da criação.
+	"project_services": {API: tbl("SELECT", "INSERT", "UPDATE"), Worker: tbl("SELECT", "UPDATE")},
 	// A API pede (inserção) e acompanha (leitura); o worker executa e conclui.
 	"operations": {API: tbl("SELECT", "INSERT"), Worker: tbl("SELECT", "INSERT", "UPDATE")},
 	"env_variables": {

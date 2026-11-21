@@ -107,6 +107,9 @@ func (s *Server) handlePutEnv(w http.ResponseWriter, r *http.Request, user domai
 		return
 	}
 
+	if s.refuseLinked(w, r, projectID, name) {
+		return
+	}
 	v, err := s.store.PutEnvVariable(r.Context(), projectID, name, *req.Value, domain.EnvSourceUser)
 	if err != nil {
 		s.log.Error("gravar variável", "variavel", name, "erro", err)
@@ -120,6 +123,9 @@ func (s *Server) handlePutEnv(w http.ResponseWriter, r *http.Request, user domai
 func (s *Server) handleDeleteEnv(w http.ResponseWriter, r *http.Request, user domain.User) {
 	projectID, name, ok := s.envTarget(w, r, user)
 	if !ok {
+		return
+	}
+	if s.refuseLinked(w, r, projectID, name) {
 		return
 	}
 	switch err := s.store.DeleteEnvVariable(r.Context(), projectID, name); {
@@ -156,6 +162,9 @@ func (s *Server) handleGenerateEnv(w http.ResponseWriter, r *http.Request, user 
 		return
 	}
 
+	if s.refuseLinked(w, r, projectID, name) {
+		return
+	}
 	if _, err := s.store.GetEnvVariable(r.Context(), projectID, name); err == nil && !req.Replace {
 		writeError(w, http.StatusConflict, name+" já tem valor; gerar outro invalida o que foi assinado com o anterior. Envie {\"replace\": true} para substituir")
 		return
@@ -179,4 +188,16 @@ func (s *Server) handleGenerateEnv(w http.ResponseWriter, r *http.Request, user 
 	}
 	s.auditDetail(r, &user, "env.generate", projectID.String()+"/"+name, "ok", map[string]any{"version": v.Version, "source": string(v.Source)})
 	writeJSON(w, http.StatusOK, newEnvResponse(v))
+}
+
+// refuseLinked recusa mexer numa variável vinculada a um serviço do Cobogó
+// (DEC-42 item 5): ela só sai pelo desvínculo (apagar o banco). Devolve true,
+// depois de responder, quando recusou.
+func (s *Server) refuseLinked(w http.ResponseWriter, r *http.Request, projectID uuid.UUID, name string) bool {
+	v, err := s.store.GetEnvVariable(r.Context(), projectID, name)
+	if err != nil || v.Source != domain.EnvSourceLinked {
+		return false
+	}
+	writeCode(w, http.StatusConflict, codeVariableLinked, name+" é a conexão do PostgreSQL do Cobogó deste projeto e não se edita aqui; para trocá-la, apague o banco na aba Banco")
+	return true
 }

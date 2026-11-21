@@ -426,6 +426,14 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 	if err != nil {
 		return at("ANALYZING", err)
 	}
+	// Banco de dados (DEC-42): evidência forte sem escolha vira pendência, antes de
+	// gastar o build. Nada é criado aqui.
+	if finding, err := w.databaseFinding(ctx, project, result); err != nil {
+		return at("ANALYZING", err)
+	} else if finding != nil && result.Outcome != domain.AnalysisUnsupported {
+		result.Pending = append(result.Pending, *finding)
+		result.Outcome = domain.AnalysisNeedsInput
+	}
 	if _, err := o.SaveAnalysis(ctx, dep.ID, dep.ProjectID, ws.CommitSHA, result); err != nil {
 		return at("ANALYZING", err)
 	}
@@ -534,7 +542,18 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 	if err := o.Transition(ctx, dep.ID, domain.DeploymentProvisioning, ""); err != nil {
 		return at("PROVISIONING", err)
 	}
-	if err := w.emit(ctx, o, dep.ID, "provisioning", "completed", map[string]any{"services": []string{}}); err != nil {
+	services := []string{}
+	if svc, serr := w.store.GetService(ctx, project.ID, domain.ServicePostgres); serr == nil && svc.Mode == domain.ServiceManaged && svc.Status != domain.ServiceDeleting {
+		created, err := w.provisionPostgres(ctx, rt, project, svc)
+		if err != nil {
+			return at("PROVISIONING", err)
+		}
+		services = append(services, domain.ServicePostgres)
+		if err := w.emit(ctx, o, dep.ID, "provisioning", "postgres", map[string]any{"container": svc.ContainerName, "created": created, "variable": svc.Variable}); err != nil {
+			return err
+		}
+	}
+	if err := w.emit(ctx, o, dep.ID, "provisioning", "completed", map[string]any{"services": services}); err != nil {
 		return err
 	}
 

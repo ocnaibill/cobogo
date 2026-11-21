@@ -170,6 +170,8 @@ func (w *Worker) runOperation(ctx context.Context, op *domain.Operation) {
 		result, err = w.applyLimits(ctx, op)
 		var below *dockerrt.ErrBelowUsage
 		permanent = errors.Is(err, errNoActiveRelease) || errors.As(err, &below)
+	case domain.OpDeleteService:
+		result, err = w.deleteService(ctx, op)
 	case domain.OpDeleteVolume:
 		result, err = w.deleteVolume(ctx, op)
 		permanent = errors.Is(err, errVolumeInUse)

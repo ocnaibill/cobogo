@@ -54,8 +54,14 @@ type ProjectVolume struct {
 	ProjectDeleted bool `json:"project_deleted"`
 }
 
-const volumeColumns = `v.name, v.project_id, p.slug, v.path, v.size_bytes, v.measured_at, v.created_at,
-	(p.deleted_at IS NOT NULL OR NOT (v.path = ANY(p.persistent_paths))), p.deleted_at IS NOT NULL`
+// orphanExpr: sem projeto vivo; ou, num volume de dados, o caminho deixou de ser
+// persistente; ou, no volume de um serviço (DEC-42), o serviço gerenciado já não
+// existe.
+const orphanExpr = `(p.deleted_at IS NOT NULL
+	OR (v.service = '' AND NOT (v.path = ANY(p.persistent_paths)))
+	OR (v.service <> '' AND NOT EXISTS (SELECT 1 FROM project_services s WHERE s.project_id = v.project_id AND s.engine = v.service AND s.mode = 'managed' AND s.deleted_at IS NULL AND s.status <> 'deleting')))`
+
+const volumeColumns = `v.name, v.project_id, p.slug, v.path, v.size_bytes, v.measured_at, v.created_at, ` + orphanExpr + `, p.deleted_at IS NOT NULL`
 
 func scanVolume(row pgx.Row) (ProjectVolume, error) {
 	var v ProjectVolume
@@ -98,15 +104,22 @@ func (s *Store) ListVolumesFor(ctx context.Context, projectID, ownerID uuid.UUID
 // ListOrphanVolumesFor lista os volumes sem projeto do dono: de projeto
 // excluído, ou de um caminho que deixou de ser persistente.
 func (s *Store) ListOrphanVolumesFor(ctx context.Context, ownerID uuid.UUID) ([]ProjectVolume, error) {
-	return s.queryVolumes(ctx, `p.owner_id = $1 AND (p.deleted_at IS NOT NULL OR NOT (v.path = ANY(p.persistent_paths)))`, ownerID)
+	return s.queryVolumes(ctx, `p.owner_id = $1 AND `+orphanExpr, ownerID)
 }
 
 // UpsertProjectVolume registra (ou reabre) o volume de um caminho do projeto.
 // É do worker, que o cria no Docker.
 func (s *Store) UpsertProjectVolume(ctx context.Context, name string, projectID uuid.UUID, path string) error {
+	return s.UpsertServiceVolume(ctx, name, projectID, path, "")
+}
+
+// UpsertServiceVolume é UpsertProjectVolume para o volume de um serviço (DEC-42):
+// `service` é a engine, e o volume deixa de ser "sem projeto" por não estar nos
+// caminhos persistentes.
+func (s *Store) UpsertServiceVolume(ctx context.Context, name string, projectID uuid.UUID, path, service string) error {
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO project_volumes (name, project_id, path) VALUES ($1, $2, $3)
-		ON CONFLICT (name) DO UPDATE SET deleted_at = NULL`, name, projectID, path)
+		INSERT INTO project_volumes (name, project_id, path, service) VALUES ($1, $2, $3, $4)
+		ON CONFLICT (name) DO UPDATE SET deleted_at = NULL`, name, projectID, path, service)
 	if err != nil {
 		return fmt.Errorf("store: registrar volume: %w", err)
 	}

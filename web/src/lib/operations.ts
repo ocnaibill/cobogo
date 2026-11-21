@@ -12,6 +12,7 @@ export const OP_LABEL: Record<Operation["kind"], string> = {
   start_app: "Iniciar a aplicação",
   restart_app: "Reiniciar a aplicação",
   delete_volume: "Apagar volume sem projeto",
+  delete_service: "Apagar o PostgreSQL do projeto",
 };
 
 export const OP_STATE_LABEL: Record<Operation["state"], string> = {
@@ -41,6 +42,8 @@ export function summarize(op: Operation): string {
   switch (op.kind) {
     case "apply_limits":
       return r.changed === false ? `Nada mudou: o contêiner já tinha ${res(r.after)}.` : `De ${res(r.before)} para ${res(r.after)}.`;
+    case "delete_service":
+      return r.already_gone ? "O banco já não existia." : "Banco e dados apagados.";
     case "delete_volume":
       return r.already_gone ? "O volume já não existia." : `Volume apagado${r.path ? ` (${String(r.path)})` : ""}.`;
     case "stop_app":

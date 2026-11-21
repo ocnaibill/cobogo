@@ -2,8 +2,6 @@ package dockerrt
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -13,6 +11,8 @@ import (
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/errdefs"
+
+	"github.com/ocnaibill/cobogo/internal/domain"
 )
 
 // Volumes de dados (DEC-41). Todo volume leva os labels do Cobogó e do projeto;
@@ -23,14 +23,7 @@ const LabelVolumePath = "cobogo.volume.path"
 
 // VolumeName é o nome do volume de um caminho de um projeto: derivado do
 // identificador do projeto e do caminho, nunca de texto do repositório.
-func VolumeName(projectID, path string) string {
-	id := strings.ReplaceAll(projectID, "-", "")
-	if len(id) > 12 {
-		id = id[:12]
-	}
-	sum := sha256.Sum256([]byte(path))
-	return "cobogo-vol-" + id + "-" + hex.EncodeToString(sum[:])[:10]
-}
+func VolumeName(projectID, path string) string { return domain.VolumeName(projectID, path) }
 
 // WithVolumes monta volumes nomeados nos caminhos do contêiner (caminho -> nome
 // do volume). O repositório nunca decide isto: vem do projeto (DEC-41 item 1).

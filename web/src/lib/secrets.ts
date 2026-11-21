@@ -34,7 +34,7 @@ export const ACTION_LABEL: Record<ImportItem["action"], string> = {
   blocked: "bloqueada",
 };
 
-const SOURCE_PHRASE: Record<string, string> = { user: "digitada", generated: "gerada", imported: "importada" };
+const SOURCE_PHRASE: Record<string, string> = { user: "digitada", generated: "gerada", imported: "importada", linked: "vinculada ao banco" };
 
 /** "v3 · digitada por admin": a linha do histórico de uma variável. */
 export function describeChange(c: EnvChange): string {

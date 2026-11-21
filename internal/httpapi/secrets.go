@@ -44,6 +44,7 @@ const (
 	warnCredential  = "credential"
 	warnNotExpanded = "not_expanded"
 	warnReplaces    = "replaces_existing"
+	warnLinked      = "linked"
 )
 
 type importRequest struct {
@@ -96,7 +97,7 @@ type importResult struct {
 
 // previewImport classifica o que o texto traz. Os valores ficam só em memória:
 // o que sai são nomes, linhas, classes e códigos.
-func previewImport(text string, existing map[string]bool) (importPreview, map[string]envfile.Entry) {
+func previewImport(text string, existing map[string]bool, linked map[string]bool) (importPreview, map[string]envfile.Entry) {
 	entries, diags := envfile.Parse(text)
 	out := importPreview{Variables: []importItem{}, Diagnostics: []importDiagnostic{}}
 	for _, d := range diags {
@@ -111,6 +112,9 @@ func previewImport(text string, existing map[string]bool) (importPreview, map[st
 
 		risky := false // desmarcada por padrão
 		switch {
+		case linked[e.Name]:
+			item.Action = importBlocked
+			warn(warnLinked, e.Name+" é a conexão do PostgreSQL do Cobogó deste projeto e não pode ser importada")
 		case class == domain.ClassPlatform:
 			item.Action = importBlocked
 			warn(warnPlatform, e.Name+" é fornecida pela plataforma e não pode ser definida")
@@ -182,10 +186,14 @@ func (s *Server) handleImportEnv(w http.ResponseWriter, r *http.Request, user do
 		return
 	}
 	existing := make(map[string]bool, len(vars))
+	linked := map[string]bool{}
 	for _, v := range vars {
 		existing[v.Name] = true
+		if v.Source == domain.EnvSourceLinked {
+			linked[v.Name] = true
+		}
 	}
-	preview, entries := previewImport(req.Text, existing)
+	preview, entries := previewImport(req.Text, existing, linked)
 	if len(preview.Variables) > maxImportItems {
 		writeError(w, http.StatusBadRequest, "o texto tem mais de 200 variáveis; importe em partes")
 		return

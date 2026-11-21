@@ -11,10 +11,11 @@ import { AppButtons, ApplyLimits, DangerZone, OperationsTab, useAppControl } fro
 import { profileLabel } from "../lib/deploy";
 import { EnvHistory, ImportEnv, Suggestions } from "../components/Secrets";
 import { DataTab, usePersistent, withPath } from "../components/Data";
+import { DatabaseTab, useDatabase } from "../components/Database";
 import { missingLikely, withRequired } from "../lib/secrets";
 import { TRANSITION_LABEL } from "../lib/operations";
 
-type Tab = "deploys" | "variaveis" | "dados" | "limites" | "operacoes";
+type Tab = "deploys" | "variaveis" | "banco" | "dados" | "limites" | "operacoes";
 
 export function ProjectPage() {
   const { id = "" } = useParams();
@@ -26,6 +27,7 @@ export function ProjectPage() {
 
   const appControl = useAppControl(id);
   const persistent = usePersistent(id);
+  const database = useDatabase(id);
   const project = useQuery({
     queryKey: ["project", id],
     queryFn: () => unwrap(api.GET("/projects/{id}", { params: { path: { id } } })),
@@ -145,6 +147,14 @@ export function ProjectPage() {
           </span>
         </Notice>
       )}
+      {tab !== "banco" && database.data && !database.data.service && database.data.need && (
+        <Notice tone="warning" icon="sparkle" title="O código parece usar PostgreSQL">
+          <span>
+            {database.data.need.level === "required" ? "O próximo deploy vai perguntar onde está o banco." : "Só a dependência está no projeto, então nada é perguntado."}{" "}
+            <Link to={`/projetos/${id}?aba=banco`}>Escolher na aba Banco</Link>.
+          </span>
+        </Notice>
+      )}
       {candidateFailed && (
         <Notice tone="warning" title="O último deploy falhou, mas a versão anterior continua no ar.">
           A falha foi só na candidata: o tráfego só troca depois que uma versão passa na verificação. <Link to={`/deploys/${latest!.id}`}>Ver a falha</Link>
@@ -244,6 +254,7 @@ export function ProjectPage() {
           [
             ["deploys", "Histórico de deploys", "history"],
             ["variaveis", "Variáveis e segredos", "key"],
+            ["banco", "Banco", "server"],
             ["dados", "Dados", "server"],
             ["limites", "Limites", "sliders"],
             ["operacoes", "Operações", "activity"],
@@ -309,6 +320,7 @@ export function ProjectPage() {
         </section>
       )}
       {tab === "variaveis" && <VariablesTab projectId={id} discovered={(analysis.data?.result.config_variables ?? []).filter((v) => v.class !== "platform")} />}
+      {tab === "banco" && <DatabaseTab projectId={id} slug={p.slug} />}
       {tab === "dados" && <DataTab projectId={id} />}
       {tab === "limites" && <LimitsTab projectId={id} />}
       {tab === "operacoes" && <OperationsTab projectId={id} />}
@@ -464,7 +476,7 @@ function VariablesTab({ projectId, discovered }: { projectId: string; discovered
                       </td>
                       <td>
                         {s ? (
-                          <Badge tone="success">definida · v{s.version}{s.source === "generated" ? " · gerada" : s.source === "imported" ? " · importada" : ""}</Badge>
+                          <Badge tone="success">definida · v{s.version}{s.source === "generated" ? " · gerada" : s.source === "imported" ? " · importada" : s.source === "linked" ? " · vinculada ao banco" : ""}</Badge>
                         ) : d.hint?.code === "likely_required" ? (
                           <Badge tone="danger">falta</Badge>
                         ) : (
@@ -480,6 +492,9 @@ function VariablesTab({ projectId, discovered }: { projectId: string; discovered
                         <RequiredBox name={d.name} names={requiredNames} busy={busy === "required"} onChange={setRequired} />
                       </td>
                       <td>
+                        {s?.source === "linked" ? (
+                          <div className="row-end small muted">gerenciada pelo banco</div>
+                        ) : (
                         <div className="row-end">
                           <Button variant="ghost" onClick={() => setName(d.name)}>
                             Definir
@@ -495,6 +510,7 @@ function VariablesTab({ projectId, discovered }: { projectId: string; discovered
                             </Button>
                           )}
                         </div>
+                        )}
                       </td>
                     </tr>
                   );
@@ -536,7 +552,7 @@ function VariablesTab({ projectId, discovered }: { projectId: string; discovered
                       <Badge tone="success">definida · v{stored.get(n)!.version}</Badge>
                     </td>
                     <td className="mono faint">••••••••••••</td>
-                    <td className="small muted">não encontrada na última análise</td>
+                    <td className="small muted">{stored.get(n)?.source === "linked" ? "conexão do PostgreSQL do projeto" : "não encontrada na última análise"}</td>
                     <td>
                       <RequiredBox name={n} names={requiredNames} busy={busy === "required"} onChange={setRequired} />
                     </td>

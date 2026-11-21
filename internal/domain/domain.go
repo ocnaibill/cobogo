@@ -189,6 +189,9 @@ const (
 	EnvSourceGenerated EnvSource = "generated"
 	// EnvSourceImported: veio de um .env colado e revisado (DEC-39).
 	EnvSourceImported EnvSource = "imported"
+	// EnvSourceLinked: o valor é a conexão de um serviço do Cobogó (DEC-42) e não se
+	// edita como as demais; desvincular é uma ação própria.
+	EnvSourceLinked EnvSource = "linked"
 )
 
 // EnvVariable são os metadados de uma variável de ambiente do projeto. O
@@ -256,6 +259,8 @@ const (
 	// DEC-41: apagar o volume de um caminho que já não é persistente, ou de um
 	// projeto excluído.
 	OpDeleteVolume OperationKind = "delete_volume"
+	// DEC-42: apagar o PostgreSQL gerenciado de um projeto, com os dados.
+	OpDeleteService OperationKind = "delete_service"
 )
 
 // Estados da aplicação de um projeto (DEC-40): sem release ativa, no ar ou
@@ -289,4 +294,34 @@ type Operation struct {
 	NotBefore time.Time      `json:"not_before"`
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
+}
+
+// Modos e estados de um serviço auxiliar (DEC-42).
+const (
+	ServicePostgres = "postgres"
+
+	ServiceManaged  = "managed"  // o Cobogó cria e mantém o banco
+	ServiceExternal = "external" // o usuário informa a conexão de um banco que já tem
+	ServiceNone     = "none"     // o projeto não precisa de banco
+
+	ServicePending  = "pending"
+	ServiceReady    = "ready"
+	ServiceFailed   = "failed"
+	ServiceDeleting = "deleting"
+)
+
+// Service é a intenção de um projeto sobre um banco e, no modo gerenciado, a
+// identidade do serviço. A senha nunca está aqui: vive na variável cifrada.
+type Service struct {
+	ID            uuid.UUID `json:"id"`
+	ProjectID     uuid.UUID `json:"project_id"`
+	Engine        string    `json:"engine"`
+	Mode          string    `json:"mode"`
+	Variable      string    `json:"variable"`
+	ContainerName string    `json:"container_name,omitempty"`
+	VolumeName    string    `json:"volume_name,omitempty"`
+	Status        string    `json:"status"`
+	StatusDetail  string    `json:"status_detail,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }

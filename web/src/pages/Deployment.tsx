@@ -1,6 +1,7 @@
 // TEL-06 — Deploy em andamento e falha explicada, com TEL-04/05 — pendências,
 // plano e evidências. O progresso vem dos eventos incrementais (DEC-28); a
 // análise e o plano mostram o que o Cobogó decidiu e por quê.
+import { DatabaseChoice, useDatabase } from "../components/Database";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -191,6 +192,7 @@ export function DeploymentPage() {
           {state === "NEEDS_INPUT" && dep.analysis_id && (
             <PendingPanel
               deploymentId={id}
+              projectId={projectId}
               onAnswered={() => {
                 ev.resume();
                 qc.invalidateQueries({ queryKey: ["deployment", id] });
@@ -447,12 +449,15 @@ function useAnalysis(deploymentId: string, enabled = true) {
 }
 
 /** O formulário de uma pendência: opções sugeridas (com o tipo de cada uma) ou valor livre. */
-function PendingPanel({ deploymentId, onAnswered }: { deploymentId: string; onAnswered: () => void }) {
+function PendingPanel({ deploymentId, projectId, onAnswered }: { deploymentId: string; projectId?: string; onAnswered: () => void }) {
   const analysis = useAnalysis(deploymentId);
   const [values, setValues] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const pending = (analysis.data?.result.pending ?? []).filter((f): f is Finding & { field: string } => !!f.field);
+  const allPending = (analysis.data?.result.pending ?? []).filter((f): f is Finding & { field: string } => !!f.field);
+  // A pergunta do banco (DEC-42) não se responde por overrides: tem o próprio painel.
+  const databaseQuestion = allPending.find((f) => f.field === "database");
+  const pending = allPending.filter((f) => f.field !== "database");
   const open = pending.filter((f) => !(values[f.field] ?? "").trim());
 
   async function submit(evt: FormEvent) {
@@ -476,6 +481,14 @@ function PendingPanel({ deploymentId, onAnswered }: { deploymentId: string; onAn
 
   if (analysis.isLoading) return <Loading label="Carregando as pendências…" />;
   if (analysis.isError) return <ErrorBox error={analysis.error} onRetry={() => analysis.refetch()} />;
+  if (databaseQuestion && projectId) {
+    return (
+      <div className="stack">
+        <DatabaseQuestion projectId={projectId} message={databaseQuestion.message} onChosen={onAnswered} />
+        {pending.length > 0 && <Notice tone="info">Há outras pendências; elas aparecem depois que você escolher o banco.</Notice>}
+      </div>
+    );
+  }
 
   return (
     <Card title="Configuração necessária" icon="sliders" className="card-warning" actions={<Tag tone="warning">{pending.length} pendência(s)</Tag>}>
@@ -909,5 +922,21 @@ export function AnalysisDetail({ analysis }: { analysis: Analysis }) {
         </p>
       </Card>
     </div>
+  );
+}
+
+/** A pergunta do banco antes do build (HEU-06.6, DEC-42). */
+function DatabaseQuestion({ projectId, message, onChosen }: { projectId: string; message: string; onChosen: () => void }) {
+  const db = useDatabase(projectId);
+  return (
+    <Card title="Onde está o banco?" icon="server" className="card-warning" actions={<Tag tone="warning">antes do build</Tag>}>
+      <div className="stack">
+        <p>{message}</p>
+        <p className="small muted">O deploy espera a sua escolha, no mesmo commit, e nada foi construído ainda. O Cobogó só cria um banco se você escolher criar.</p>
+        {db.isLoading && <Loading />}
+        {db.isError && <ErrorBox error={db.error} onRetry={() => db.refetch()} />}
+        {db.data && <DatabaseChoice projectId={projectId} view={db.data} onChosen={onChosen} />}
+      </div>
+    </Card>
   );
 }
