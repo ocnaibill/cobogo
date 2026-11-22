@@ -62,6 +62,13 @@ func (s *Store) CreateProjectBackup(ctx context.Context, projectID, ownerID uuid
 	if len(p.PersistentPaths) == 0 && !managed {
 		return domain.ProjectBackup{}, ErrNothingToBackUp
 	}
+	// Durante uma restauração o projeto não aceita outro backup: o do meio da restauração
+	// pegaria os dados pela metade.
+	if active, err := s.RestoreActive(ctx, projectID); err != nil {
+		return domain.ProjectBackup{}, err
+	} else if active {
+		return domain.ProjectBackup{}, ErrRestoreActive
+	}
 	b, err := scanProjectBackup(s.pool.QueryRow(ctx, `
 		INSERT INTO project_backups (id, project_id, requested_by, reason, pause_app)
 		VALUES ($1, $2, $3, $4, $5) RETURNING `+projectBackupColumns, uuid.New(), projectID, ownerID, reason, pauseApp))
@@ -109,6 +116,12 @@ func (s *Store) RequestDeleteProjectBackup(ctx context.Context, projectID, id, o
 		return domain.ProjectBackup{}, err
 	}
 	if b.Active() {
+		return domain.ProjectBackup{}, ErrBackupBusy
+	}
+	// Um backup de que uma restauração em andamento depende não se apaga.
+	if protected, err := s.ProtectedBackupIDs(ctx, projectID); err != nil {
+		return domain.ProjectBackup{}, err
+	} else if protected[id] {
 		return domain.ProjectBackup{}, ErrBackupBusy
 	}
 	if _, err := s.pool.Exec(ctx, `UPDATE project_backups SET delete_requested = true WHERE id = $1`, id); err != nil {

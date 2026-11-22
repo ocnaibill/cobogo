@@ -4,9 +4,11 @@ import { useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, unwrap } from "../api/client";
 import { bytes } from "../lib/format";
-import { BACKUP_STATE_LABEL, BACKUP_STATE_TONE, canDelete, hasUsableBackup, isBackupActive, isUsable, itemsSummary, projectBackupUrl, REASON_LABEL, type ProjectBackup } from "../lib/projectBackups";
+import { BACKUP_STATE_LABEL, BACKUP_STATE_TONE, canDelete, hasUsableBackup, isBackupActive, isRestoreActive, isUsable, itemsSummary, projectBackupUrl, REASON_LABEL, RESTORE_STATE_LABEL, restorePlan, type ProjectBackup, type ProjectRestore } from "../lib/projectBackups";
 import { clock } from "../lib/commands";
 import { ReauthForm, useReauth } from "./Reauth";
+import { usePersistent } from "./Data";
+import { useDatabase } from "./Database";
 import { Badge, Button, Empty, ErrorBox, Loading, Notice, Tag, When } from "./ui";
 import { Icon } from "./icons";
 
@@ -17,7 +19,7 @@ export function useProjectBackups(projectId: string) {
     queryKey: ["project-backups", projectId],
     queryFn: () => unwrap(api.GET("/projects/{id}/backups", { params: { path: { id: projectId } } })),
     // Enquanto algum backup copia, a lista se atualiza sozinha.
-    refetchInterval: (q) => (q.state.data?.backups.some(isBackupActive) ? 2000 : false),
+    refetchInterval: (q) => (q.state.data?.backups.some(isBackupActive) || q.state.data?.restores.some(isRestoreActive) ? 2000 : false),
   });
 }
 
@@ -42,7 +44,7 @@ export function useRequestBackup(projectId: string) {
 }
 
 /** Cartão "Backups dos dados" da aba Dados. */
-export function ProjectBackupsCard({ projectId }: { projectId: string }) {
+export function ProjectBackupsCard({ projectId, slug }: { projectId: string; slug: string }) {
   const q = useProjectBackups(projectId);
   const reauth = useReauth();
   const { request, busy, error } = useRequestBackup(projectId);
@@ -51,7 +53,8 @@ export function ProjectBackupsCard({ projectId }: { projectId: string }) {
   if (q.isLoading) return <Loading />;
   if (q.isError) return <ErrorBox error={q.error} onRetry={() => q.refetch()} />;
   const view = q.data!;
-  const active = view.backups.find(isBackupActive);
+  const active = view.backups.find(isBackupActive) ?? (view.restores.some(isRestoreActive) ? view.backups[0] : undefined);
+  const restoring = view.restores.some(isRestoreActive);
   const blocked = !view.configured ? "O volume de backups não está disponível nesta instalação." : !view.has_content ? "O projeto não tem dados para copiar: declare um caminho persistente acima ou crie o banco do Cobogó." : null;
 
   return (
@@ -79,11 +82,12 @@ export function ProjectBackupsCard({ projectId }: { projectId: string }) {
                 <span className="small muted"> Sem isso, um arquivo em uso (como um SQLite) pode ser copiado no meio de uma escrita e não abrir. Pausar tira o projeto do ar até terminar. O banco do Cobogó não precisa: sai consistente de qualquer jeito.</span>
               </span>
             </label>
-            <Button variant="primary" icon="download" busy={busy} disabled={!!active || busy} onClick={() => request(pause, "manual")}>
-              {active ? "Backup em andamento…" : "Fazer backup agora"}
+            <Button variant="primary" icon="download" busy={busy} disabled={!!active || restoring || busy} onClick={() => request(pause, "manual")}>
+              {restoring ? "Restauração em andamento…" : active ? "Backup em andamento…" : "Fazer backup agora"}
             </Button>
           </div>
         )}
+        {view.restores.length > 0 && <RestoreStatus restore={view.restores[0]!} />}
         {view.backups.length > 0 && !reauth.unlocked && (
           <ReauthForm title="Digite a sua senha para baixar" reason="Um backup tem os dados do projeto sem cifra. Por isso a senha é pedida de novo." onDone={reauth.refresh} />
         )}
@@ -102,7 +106,7 @@ export function ProjectBackupsCard({ projectId }: { projectId: string }) {
       ) : (
         <ul className="cmd-list">
           {view.backups.map((b) => (
-            <BackupRow key={b.id} projectId={projectId} backup={b} unlocked={reauth.unlocked} />
+            <BackupRow key={b.id} projectId={projectId} slug={slug} backup={b} unlocked={reauth.unlocked} busyProject={!!active || restoring} />
           ))}
         </ul>
       )}
@@ -110,9 +114,10 @@ export function ProjectBackupsCard({ projectId }: { projectId: string }) {
   );
 }
 
-function BackupRow({ projectId, backup, unlocked }: { projectId: string; backup: ProjectBackup; unlocked: boolean }) {
+function BackupRow({ projectId, slug, backup, unlocked, busyProject }: { projectId: string; slug: string; backup: ProjectBackup; unlocked: boolean; busyProject: boolean }) {
   const qc = useQueryClient();
   const [confirming, setConfirming] = useState(false);
+  const [restoring, setRestoring] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const active = isBackupActive(backup);
@@ -165,6 +170,11 @@ function BackupRow({ projectId, backup, unlocked }: { projectId: string; backup:
                 Baixar
               </Button>
             ))}
+          {isUsable(backup) && !restoring && (
+            <Button variant="secondary" icon="activity" disabled={busyProject} title={busyProject ? "Espere o backup ou a restauração em andamento terminar" : undefined} onClick={() => setRestoring(true)}>
+              Restaurar…
+            </Button>
+          )}
           {!active && !backup.delete_requested && !confirming && (
             <Button variant="ghost" icon="x" onClick={() => setConfirming(true)}>
               Apagar
@@ -185,8 +195,108 @@ function BackupRow({ projectId, backup, unlocked }: { projectId: string; backup:
           </span>
         </div>
       )}
+      {restoring && <RestoreForm projectId={projectId} slug={slug} backup={backup} unlocked={unlocked} onClose={() => setRestoring(false)} />}
       {error && <Notice tone="danger">{error}</Notice>}
     </li>
+  );
+}
+
+/** O que a restauração mais recente fez, ou o passo em que está. */
+function RestoreStatus({ restore }: { restore: ProjectRestore }) {
+  const active = isRestoreActive(restore);
+  if (!active && restore.state === "succeeded" && Date.now() - new Date(restore.finished_at ?? restore.created_at).getTime() > 24 * 3600 * 1000) return null;
+  const r = restore.result;
+  return (
+    <Notice tone={restore.state === "failed" ? "danger" : restore.state === "succeeded" ? "success" : "info"} icon="activity" title={`Restauração: ${RESTORE_STATE_LABEL[restore.state]}`}>
+      <div className="stack-sm">
+        {active && (
+          <span>
+            {restore.state === "queued" ? "Primeiro o Cobogó faz um backup do estado atual (de segurança)." : `Passo: ${restore.step || "iniciando"}.`} A aplicação fica fora do ar enquanto os dados são trocados.
+          </span>
+        )}
+        {restore.state === "succeeded" && (
+          <span>
+            Restaurado: {[...r.volumes.map((v) => `volume ${v}`), ...(r.database ? ["banco"] : [])].join(" · ") || "nada"}.
+            {r.app_restarted ? " A aplicação foi iniciada de novo." : ""} <When iso={restore.finished_at ?? restore.created_at} />
+          </span>
+        )}
+        {restore.error && <span>{restore.error}</span>}
+        {r.skipped.map((s) => (
+          <span key={s} className="small">
+            <Icon name="alert" size={14} /> Ignorado: {s}
+          </span>
+        ))}
+        {r.warnings.map((s) => (
+          <span key={s} className="small">
+            <Icon name="alert" size={14} /> {s}
+          </span>
+        ))}
+        {restore.state !== "queued" && <span className="small muted">O backup de segurança do estado de antes está na lista abaixo (antes de restaurar).</span>}
+      </div>
+    </Notice>
+  );
+}
+
+/** Pede a restauração: mostra o que será trocado e o que será ignorado, e exige a senha e o nome do projeto. */
+function RestoreForm({ projectId, slug, backup, unlocked, onClose }: { projectId: string; slug: string; backup: ProjectBackup; unlocked: boolean; onClose: () => void }) {
+  const qc = useQueryClient();
+  const paths = usePersistent(projectId).data?.paths ?? [];
+  const managedDb = useDatabase(projectId).data?.service?.mode === "managed";
+  const plan = restorePlan(backup, paths, managedDb);
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    setBusy(true);
+    setError(null);
+    try {
+      await unwrap(api.POST("/projects/{id}/backups/{bid}/restore", { params: { path: { id: projectId, bid: backup.id } }, body: { confirm_slug: typed } }));
+      await qc.invalidateQueries({ queryKey: ["project-backups", projectId] });
+      onClose();
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="stack">
+      <Notice tone="danger" title={`Restaurar o backup de ${slug}?`}>
+        <div className="stack-sm">
+          <span>
+            Isto <strong>substitui o conteúdo atual</strong> pelo do backup. Antes, o Cobogó faz um <strong>backup de segurança do estado atual</strong> (que fica na lista, “antes de restaurar”); se ele falhar, nada é tocado. A aplicação fica <strong>fora do ar</strong> durante a troca e volta sozinha, se estava no ar.
+          </span>
+          {plan.restore.length > 0 ? (
+            <span>
+              <strong>Vai restaurar:</strong> {plan.restore.join(" · ")}
+            </span>
+          ) : (
+            <span>
+              <strong>Nada deste backup pode ser restaurado agora.</strong>
+            </span>
+          )}
+          {plan.skipped.map((s) => (
+            <span key={s} className="small">
+              <Icon name="alert" size={14} /> <strong>Será ignorado:</strong> {s}
+            </span>
+          ))}
+          <span className="small">O Cobogó não cria volumes que o projeto não declara nem apaga volumes. As variáveis de ambiente não fazem parte do backup e não mudam.</span>
+        </div>
+      </Notice>
+      {!unlocked && <Notice tone="warning">Digite a sua senha de novo no quadro acima para poder restaurar.</Notice>}
+      <div className="row wrap-gap">
+        <input className="mono" style={{ maxWidth: 260 }} value={typed} onChange={(e) => setTyped(e.target.value)} placeholder={`Digite ${slug}`} aria-label="Nome do projeto para confirmar" autoComplete="off" spellCheck={false} />
+        <Button variant="ghost" onClick={onClose}>
+          Cancelar
+        </Button>
+        <Button variant="danger" icon="activity" busy={busy} disabled={typed !== slug || !unlocked || plan.restore.length === 0 || busy} onClick={submit}>
+          Restaurar {slug}
+        </Button>
+      </div>
+      {error && <Notice tone="danger">{error}</Notice>}
+    </div>
   );
 }
 

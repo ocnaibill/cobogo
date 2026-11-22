@@ -40,7 +40,13 @@ type CopySpec struct {
 	Network string
 	// ReadAnyFile acrescenta CAP_DAC_READ_SEARCH (ler arquivos de qualquer dono, só leitura).
 	ReadAnyFile bool
-	MemoryMB    int
+	// SourceWritable monta o volume de dados para escrita (a restauração); sem isto é somente leitura.
+	SourceWritable bool
+	// OutReadOnly monta a subpasta do backup somente leitura (a restauração só lê dela).
+	OutReadOnly bool
+	// CapAdd são capacidades a acrescentar (a restauração devolve a posse dos arquivos).
+	CapAdd   []string
+	MemoryMB int
 }
 
 // RunCopy roda a cópia até o fim, com prazo, e a remove. Devolve o final da saída
@@ -65,11 +71,11 @@ func (r *Runtime) RunCopy(ctx context.Context, spec CopySpec, timeout time.Durat
 		return err
 	}
 	mounts := []mount.Mount{{
-		Type: mount.TypeVolume, Source: spec.BackupVolume, Target: "/out",
+		Type: mount.TypeVolume, Source: spec.BackupVolume, Target: "/out", ReadOnly: spec.OutReadOnly,
 		VolumeOptions: &mount.VolumeOptions{Subpath: spec.Subpath},
 	}}
 	if spec.SourceVolume != "" {
-		mounts = append(mounts, mount.Mount{Type: mount.TypeVolume, Source: spec.SourceVolume, Target: "/src", ReadOnly: true})
+		mounts = append(mounts, mount.Mount{Type: mount.TypeVolume, Source: spec.SourceVolume, Target: "/src", ReadOnly: !spec.SourceWritable})
 	}
 	netMode := container.NetworkMode("none")
 	var netCfg *network.NetworkingConfig
@@ -77,7 +83,7 @@ func (r *Runtime) RunCopy(ctx context.Context, spec CopySpec, timeout time.Durat
 		netMode = container.NetworkMode(spec.Network)
 		netCfg = &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{spec.Network: {}}}
 	}
-	capAdd := []string{}
+	capAdd := append([]string{}, spec.CapAdd...)
 	if spec.ReadAnyFile {
 		capAdd = append(capAdd, "DAC_READ_SEARCH")
 	}
@@ -148,6 +154,55 @@ func (r *Runtime) DumpPostgres(ctx context.Context, projectID, backupID, host, p
 		BackupVolume: backupVolume, Subpath: subpath, Network: projectNetwork, MemoryMB: 256,
 	}, timeout)
 }
+
+// restoreVolumeScript troca o conteúdo de um volume pelo de um .tar.gz **sem passar por um
+// estado pela metade**: extrai primeiro numa pasta de espera dentro do próprio volume (se a
+// extração falhar, o conteúdo de antes não foi tocado), e só então tira o conteúdo antigo e
+// move o novo para cima.
+const restoreVolumeScript = `set -e
+rm -rf /src/.cobogo-restore
+mkdir /src/.cobogo-restore
+tar xzf "/out/$1" -C /src/.cobogo-restore
+find /src -mindepth 1 -maxdepth 1 ! -name .cobogo-restore -exec rm -rf {} +
+cd /src/.cobogo-restore
+find . -mindepth 1 -maxdepth 1 -exec mv {} /src/ \;
+cd /
+rmdir /src/.cobogo-restore`
+
+// RestoreVolume restaura um volume de dados do projeto a partir do .tar.gz de um backup. O
+// volume tem de existir e ser do projeto. Roda como root com só as capacidades de devolver a
+// posse e as permissões dos arquivos (o tar as guarda), sem rede e sem acesso ao resto.
+func (r *Runtime) RestoreVolume(ctx context.Context, projectID, backupID, volumeName, backupVolume, subpath, file string, timeout time.Duration) error {
+	return r.RunCopy(ctx, CopySpec{
+		ProjectID: projectID, BackupID: backupID, Image: PostgresImage,
+		Command:      []string{"sh", "-c", shellQuote(restoreVolumeScript), "restore", shellQuote(file)},
+		User:         "0",
+		SourceVolume: volumeName, SourceWritable: true,
+		BackupVolume: backupVolume, Subpath: subpath, OutReadOnly: true,
+		CapAdd: []string{"CHOWN", "FOWNER", "DAC_OVERRIDE", "DAC_READ_SEARCH"}, MemoryMB: 256,
+	}, timeout)
+}
+
+// RestorePostgres restaura o banco gerenciado a partir do dump de um backup, **numa transação
+// só**: troca o esquema `public` pelo do dump; se qualquer comando falhar, nada muda. A senha vai
+// por ambiente do contêiner descartável. O banco tem de estar no ar.
+func (r *Runtime) RestorePostgres(ctx context.Context, projectID, backupID, host, password, projectNetwork, backupVolume, subpath, file string, timeout time.Duration) error {
+	script := `set -e; set -o pipefail
+pg_restore --list "/out/$1" > /dev/null
+{ echo 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'; pg_restore --no-owner --no-acl -f - "/out/$1"; } | psql -q -v ON_ERROR_STOP=1 --single-transaction -h "$2" -U app -d app`
+	return r.RunCopy(ctx, CopySpec{
+		ProjectID: projectID, BackupID: backupID, Image: PostgresImage,
+		Command:      []string{"sh", "-c", shellQuote(script), "restore", shellQuote(file), shellQuote(host)},
+		Env:          []string{"PGPASSWORD=" + password},
+		User:         "70",
+		BackupVolume: backupVolume, Subpath: subpath, OutReadOnly: true, Network: projectNetwork, MemoryMB: 256,
+	}, timeout)
+}
+
+// shellQuote põe um texto entre aspas simples para o `sh -c` (RunCopy junta os argumentos
+// numa linha). Os textos aqui são nomes derivados pela plataforma, mas o argumento passa por
+// uma linha de shell, então a regra é uma só: sempre entre aspas.
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
 // RemoveBackupCopyContainers remove os contêineres de cópia que sobraram (o worker
 // caiu no meio). Devolve quantos removeu.

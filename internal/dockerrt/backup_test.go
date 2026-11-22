@@ -114,3 +114,68 @@ func TestTarVolumeCopiesReadOnlyIntoTheSubpathOnly(t *testing.T) {
 		t.Errorf("timeout = %v", err)
 	}
 }
+
+// Restaurar um volume (DEC-47 C): troca o conteúdo pelo do backup, devolve a posse e as
+// permissões (inclusive de arquivo oculto), e uma extração que falha NÃO toca no conteúdo de antes.
+func TestRestoreVolumeReplacesContentKeepsOwnershipAndNeverHalfRestores(t *testing.T) {
+	rt := dockerForTest(t)
+	ctx := context.Background()
+	project, backupID := "projeto-restaura-teste", "backup-r1"
+	src, dst := "cobogo-test-rs-src", "cobogo-test-rs-dst"
+	for _, n := range []string{src, dst} {
+		opts := volume.CreateOptions{Name: n}
+		if n == src {
+			opts.Labels = map[string]string{LabelManaged: "true", LabelProject: project}
+		}
+		if _, err := rt.cli.VolumeCreate(ctx, opts); err != nil {
+			t.Fatal(err)
+		}
+		n := n
+		t.Cleanup(func() { _ = rt.cli.VolumeRemove(context.Background(), n, true) })
+	}
+	srcMount := []mount.Mount{{Type: mount.TypeVolume, Source: src, Target: "/v"}}
+	shWith(t, rt, []mount.Mount{{Type: mount.TypeVolume, Source: dst, Target: "/b"}}, `mkdir -p /b/projects/p/b1 && chmod -R 777 /b/projects`)
+	sub := "projects/p/b1"
+
+	// O estado do backup: arquivo fechado de outro dono, oculto e aninhado.
+	shWith(t, rt, srcMount, `mkdir -p /v/sub && echo original > /v/a.txt && chown 1000:1000 /v/a.txt && chmod 600 /v/a.txt && echo oculto > /v/.hidden && echo fundo > /v/sub/b.txt && chown -R 1000:1000 /v/sub /v/.hidden`)
+	if err := rt.TarVolume(ctx, project, backupID, src, dst, sub, "volume-x-aaaaaa.tar.gz", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	// Depois do backup, o volume muda: apaga, acrescenta e altera.
+	shWith(t, rt, srcMount, `rm -f /v/a.txt /v/.hidden && echo novo > /v/novo.txt && echo mudou > /v/sub/b.txt`)
+
+	if err := rt.RestoreVolume(ctx, project, backupID, src, dst, sub, "volume-x-aaaaaa.tar.gz", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	out := shWith(t, rt, srcMount, `ls -A /v | sort; stat -c '%n %u:%g %a' /v/a.txt /v/.hidden; cat /v/sub/b.txt; cat /v/a.txt`)
+	for _, want := range []string{"a.txt 1000:1000 600", ".hidden 1000:1000", "fundo", "original"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("restored volume misses %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "novo.txt") || strings.Contains(out, ".cobogo-restore") || strings.Contains(out, "mudou") {
+		t.Errorf("the restore must replace everything and clean its staging:\n%s", out)
+	}
+
+	// Um arquivo de backup corrompido: a extração falha e o conteúdo de antes fica como estava.
+	shWith(t, rt, []mount.Mount{{Type: mount.TypeVolume, Source: dst, Target: "/b"}}, `echo "isto nao e um tar" > /b/projects/p/b1/volume-bad-bbbbbb.tar.gz`)
+	shWith(t, rt, srcMount, `echo guardar > /v/guardar.txt`)
+	if err := rt.RestoreVolume(ctx, project, backupID, src, dst, sub, "volume-bad-bbbbbb.tar.gz", time.Minute); err == nil {
+		t.Fatal("a corrupt archive must fail")
+	}
+	after := shWith(t, rt, srcMount, `ls -A /v | sort`)
+	if !strings.Contains(after, "guardar.txt") || !strings.Contains(after, "a.txt") || !strings.Contains(after, "sub") {
+		t.Errorf("a failed extraction must leave the volume as it was:\n%s", after)
+	}
+	// Um volume de outro projeto, ou que não existe, é recusado (nunca criado).
+	if err := rt.RestoreVolume(ctx, "outro-projeto", backupID, src, dst, sub, "volume-x-aaaaaa.tar.gz", time.Minute); err == nil || !strings.Contains(err.Error(), "não é deste projeto") {
+		t.Errorf("another project's volume = %v", err)
+	}
+	if err := rt.RestoreVolume(ctx, project, backupID, "cobogo-test-rs-nao-existe", dst, sub, "volume-x-aaaaaa.tar.gz", time.Minute); err == nil {
+		t.Error("a missing volume must be refused")
+	}
+	if _, err := rt.cli.VolumeInspect(ctx, "cobogo-test-rs-nao-existe"); err == nil {
+		t.Error("a restore must not create the volume")
+	}
+}

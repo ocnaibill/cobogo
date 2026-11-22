@@ -85,6 +85,8 @@ var accessMatrix = map[string]TableAccess{
 		API:    Privileges{Table: []string{"SELECT", "INSERT"}, Columns: map[string][]string{"UPDATE": {"delete_requested"}}},
 		Worker: tbl("SELECT", "UPDATE"),
 	},
+	// DEC-47 parte C: a API cria o pedido de restauração; o worker o executa e grava o desfecho.
+	"project_restores": {API: tbl("SELECT", "INSERT"), Worker: tbl("SELECT", "UPDATE")},
 	// A API pede (inserção) e acompanha (leitura); o worker executa e conclui.
 	"operations": {API: tbl("SELECT", "INSERT"), Worker: tbl("SELECT", "INSERT", "UPDATE")},
 	"env_variables": {

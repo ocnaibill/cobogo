@@ -165,6 +165,7 @@ func (s *Server) routes() []route {
 		{"GET /api/v1/projects/{id}/backups", s.authed(s.handleListProjectBackups)},
 		{"POST /api/v1/projects/{id}/backups", s.authed(s.handleCreateProjectBackup)},
 		{"DELETE /api/v1/projects/{id}/backups/{bid}", s.authed(s.handleDeleteProjectBackup)},
+		{"POST /api/v1/projects/{id}/backups/{bid}/restore", s.authed(s.handleRestoreProjectBackup)},
 		{"GET /api/v1/projects/{id}/backups/{bid}/download", s.authed(s.handleDownloadProjectBackup)},
 		{"GET /api/v1/backups", s.authed(s.handleListBackups)},
 		{"GET /api/v1/backups/{name}/download", s.authed(s.handleDownloadBackup)},

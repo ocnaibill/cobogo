@@ -63,9 +63,10 @@ func ValidArtifact(name string) bool { return artifactName.MatchString(name) }
 
 // PrunePlan decide quais backups de projeto saem da retenção: só os bons, do mais
 // antigo ao mais novo, até sobrarem `keep`. Os `before_restore` contam no limite mas
-// **nunca saem por aqui** (a restauração depende deles; só a pessoa os apaga). Se só
-// restam esses, nada sai.
-func PrunePlan(backups []domain.ProjectBackup, keep int) []uuid.UUID {
+// **nunca saem por aqui** (a restauração depende deles; só a pessoa os apaga), nem os
+// `protected` (o que uma restauração em andamento está restaurando). Se só restam esses,
+// nada sai.
+func PrunePlan(backups []domain.ProjectBackup, keep int, protected map[uuid.UUID]bool) []uuid.UUID {
 	good := make([]domain.ProjectBackup, 0, len(backups))
 	for _, b := range backups {
 		if b.State == domain.BackupSucceeded && !b.DeleteRequested {
@@ -79,7 +80,8 @@ func PrunePlan(backups []domain.ProjectBackup, keep int) []uuid.UUID {
 		if excess <= 0 {
 			break
 		}
-		if b.Reason == domain.BackupBeforeRestore {
+		// Os de segurança da restauração e os de que uma restauração em andamento depende não saem.
+		if b.Reason == domain.BackupBeforeRestore || protected[b.ID] {
 			continue
 		}
 		out = append(out, b.ID)

@@ -27,7 +27,7 @@ export function usePersistent(projectId: string) {
 }
 
 /** Aba "Dados": declarar caminhos e ver os volumes. */
-export function DataTab({ projectId }: { projectId: string }) {
+export function DataTab({ projectId, slug }: { projectId: string; slug: string }) {
   const qc = useQueryClient();
   const q = usePersistent(projectId);
   const [text, setText] = useState<string | null>(null);
@@ -98,7 +98,7 @@ export function DataTab({ projectId }: { projectId: string }) {
         </div>
       </Card>
       <VolumesTable volumes={data.volumes} title="Volumes do projeto" empty="Nenhum volume ainda. Eles são criados no próximo deploy, depois de você declarar um caminho." />
-      <ProjectBackupsCard projectId={projectId} />
+      <ProjectBackupsCard projectId={projectId} slug={slug} />
     </div>
   );
 }

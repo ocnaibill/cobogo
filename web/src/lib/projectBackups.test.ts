@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canDelete, hasUsableBackup, isBackupActive, itemsSummary, projectBackupUrl, type ProjectBackup } from "./projectBackups";
+import { canDelete, hasUsableBackup, isBackupActive, isRestoreActive, itemsSummary, projectBackupUrl, restorePlan, type ProjectBackup } from "./projectBackups";
 
 const backup = (over: Partial<ProjectBackup> = {}): ProjectBackup => ({
   id: "b1", project_id: "p1", reason: "manual", pause_app: false, state: "succeeded", size_bytes: 100, delete_requested: false,
@@ -40,5 +40,25 @@ describe("backup dos dados do projeto", () => {
 
   it("monta o endereço de download", () => {
     expect(projectBackupUrl("p1", "b1")).toBe("/api/v1/projects/p1/backups/b1/download");
+  });
+
+  it("diz o que a restauração faria hoje e o que ignoraria", () => {
+    const b = backup({ manifest: { ...backup().manifest, items: [
+      { kind: "volume", path: "/app/data", file: "a", size_bytes: 1, sha256: "a" },
+      { kind: "volume", path: "/app/antigo", file: "b", size_bytes: 1, sha256: "b" },
+      { kind: "postgres", file: "database.dump", size_bytes: 1, sha256: "c" },
+    ] } });
+    expect(restorePlan(b, ["/app/data"], true)).toEqual({ restore: ["volume /app/data", "banco do Cobogó"], skipped: ["/app/antigo: o projeto não declara mais este caminho"] });
+    const noDb = restorePlan(b, ["/app/data", "/app/antigo"], false);
+    expect(noDb.restore).toEqual(["volume /app/data", "volume /app/antigo"]);
+    expect(noDb.skipped[0]).toContain("não tem banco gerenciado");
+    expect(restorePlan(b, [], false).restore).toEqual([]);
+  });
+
+  it("só na fila ou restaurando ocupa a vaga", () => {
+    expect(isRestoreActive({ state: "queued" })).toBe(true);
+    expect(isRestoreActive({ state: "running" })).toBe(true);
+    expect(isRestoreActive({ state: "succeeded" })).toBe(false);
+    expect(isRestoreActive({ state: "failed" })).toBe(false);
   });
 });

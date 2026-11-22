@@ -3,6 +3,7 @@ package httpapi_test
 import (
 	"archive/tar"
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"os"
@@ -167,5 +168,120 @@ func TestProjectBackupsWithoutTheVolumeAreUnavailable(t *testing.T) {
 	}
 	if rec := h.do("POST", base, `{}`); rec.Code != http.StatusConflict || decode[apiError](t, rec).Error.Code != "backups_unavailable" {
 		t.Errorf("create without the volume: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// Restaurar (DEC-47 C): exige a senha de novo e o nome do projeto, só de backup bom, só do que o
+// projeto ainda recebe, cria o backup de segurança junto e uma por vez.
+func TestRestoreAPIRequiresReauthAndTheSlugAndQueuesItsSafetyBackup(t *testing.T) {
+	dir := t.TempDir()
+	h := newHarness(t, func(o *options) { o.backupDir = dir })
+	h.login()
+	p := h.createProject("restauravel")
+	pid := p.ID.String()
+	base := "/api/v1/projects/" + pid + "/backups"
+	h.do("PUT", "/api/v1/projects/"+pid+"/persistent-paths", `{"paths":["/app/data"]}`)
+
+	// Um backup bom, com um volume e um dump, feito "pelo worker".
+	b := decode[pbBody](t, h.do("POST", base, `{}`))
+	h.st.ClaimNextProjectBackup(t.Context())
+	m := domain.BackupManifest{ProjectSlug: p.Slug, Items: []domain.BackupItem{
+		{Kind: domain.BackupItemVolume, Path: "/app/data", File: backup.VolumeFileName("/app/data"), Size: 1, SHA256: "a"},
+		{Kind: domain.BackupItemPostgres, File: "database.dump", Size: 1, SHA256: "b"}}}
+	if err := h.st.FinishProjectBackup(t.Context(), uuid.MustParse(b.ID), domain.BackupSucceeded, 2, m, ""); err != nil {
+		t.Fatal(err)
+	}
+	url := base + "/" + b.ID + "/restore"
+
+	// Sem a senha de novo e sem o nome certo: recusado, e nada é criado.
+	if rec := h.do("POST", url, `{"confirm_slug":"restauravel"}`); rec.Code != http.StatusForbidden || decode[apiError](t, rec).Error.Code != "reauth_required" {
+		t.Fatalf("without the window: %d %s", rec.Code, rec.Body)
+	}
+	h.do("POST", "/api/v1/auth/reauth", `{"password":"`+adminPass+`"}`)
+	for name, body := range map[string]string{"wrong name": `{"confirm_slug":"outro"}`, "empty": `{"confirm_slug":""}`, "not json": `oi`} {
+		if rec := h.do("POST", url, body); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: %d, want 400 (%s)", name, rec.Code, rec.Body)
+		}
+	}
+	if v := decode[pbBody](t, h.do("GET", base, "")); len(v.Backups) != 1 {
+		t.Fatalf("a refused restore must not create a safety backup: %d backups", len(v.Backups))
+	}
+
+	rec := h.do("POST", url, `{"confirm_slug":"restauravel"}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("restore: %d %s", rec.Code, rec.Body)
+	}
+	var got struct {
+		Restore struct {
+			ID, State, BackupID, SafetyBackupID string
+			Step                                string
+		} `json:"restore"`
+		SafetyBackup struct {
+			ID       string `json:"id"`
+			Reason   string `json:"reason"`
+			PauseApp bool   `json:"pause_app"`
+			State    string `json:"state"`
+		} `json:"safety_backup"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Restore.State != "queued" || got.SafetyBackup.Reason != "before_restore" || !got.SafetyBackup.PauseApp || got.SafetyBackup.State != "queued" {
+		t.Errorf("restore = %s", rec.Body)
+	}
+	// O painel acompanha pela lista: a restauração aparece, e o backup de segurança também.
+	var view struct {
+		Backups  []struct{ ID, Reason string } `json:"backups"`
+		Restores []struct{ ID, State string }  `json:"restores"`
+	}
+	json.Unmarshal(h.do("GET", base, "").Body.Bytes(), &view)
+	if len(view.Backups) != 2 || len(view.Restores) != 1 || view.Restores[0].State != "queued" {
+		t.Errorf("view = %+v", view)
+	}
+	// Uma por vez, e nenhum backup novo nem apagar o de origem enquanto ela está na fila.
+	if rec := h.do("POST", url, `{"confirm_slug":"restauravel"}`); rec.Code != http.StatusConflict || decode[apiError](t, rec).Error.Code != "restore_active" {
+		t.Errorf("a second restore: %d %s", rec.Code, rec.Body)
+	}
+	if rec := h.do("POST", base, `{}`); rec.Code != http.StatusConflict || decode[apiError](t, rec).Error.Code != "restore_active" {
+		t.Errorf("a backup during a restore: %d %s", rec.Code, rec.Body)
+	}
+	if rec := h.do("DELETE", base+"/"+b.ID, ""); rec.Code != http.StatusConflict {
+		t.Errorf("deleting the source during a restore: %d", rec.Code)
+	}
+}
+
+func TestRestoreAPIRefusesWhatTheProjectCannotReceive(t *testing.T) {
+	dir := t.TempDir()
+	h := newHarness(t, func(o *options) { o.backupDir = dir })
+	h.login()
+	p := h.createProject("sem-destino")
+	pid := p.ID.String()
+	base := "/api/v1/projects/" + pid + "/backups"
+	h.do("PUT", "/api/v1/projects/"+pid+"/persistent-paths", `{"paths":["/app/data"]}`)
+	b := decode[pbBody](t, h.do("POST", base, `{}`))
+	h.st.ClaimNextProjectBackup(t.Context())
+	m := domain.BackupManifest{Items: []domain.BackupItem{{Kind: domain.BackupItemVolume, Path: "/app/data", File: backup.VolumeFileName("/app/data"), Size: 1, SHA256: "a"}}}
+	h.st.FinishProjectBackup(t.Context(), uuid.MustParse(b.ID), domain.BackupSucceeded, 1, m, "")
+	h.do("POST", "/api/v1/auth/reauth", `{"password":"`+adminPass+`"}`)
+
+	// O projeto deixa de declarar o caminho: o backup não tem mais onde ser restaurado.
+	h.do("PUT", "/api/v1/projects/"+pid+"/persistent-paths", `{"paths":["/app/outro"]}`)
+	rec := h.do("POST", base+"/"+b.ID+"/restore", `{"confirm_slug":"sem-destino"}`)
+	if rec.Code != http.StatusConflict || decode[apiError](t, rec).Error.Code != "nothing_to_restore" {
+		t.Errorf("nothing to restore: %d %s", rec.Code, rec.Body)
+	}
+	if v := decode[pbBody](t, h.do("GET", base, "")); len(v.Backups) != 1 {
+		t.Errorf("a refused restore must not create a safety backup: %d", len(v.Backups))
+	}
+	if rec := h.do("POST", base+"/"+uuid.NewString()+"/restore", `{"confirm_slug":"sem-destino"}`); rec.Code != http.StatusNotFound {
+		t.Errorf("unknown backup: %d", rec.Code)
+	}
+	// Um backup que falhou não se restaura.
+	h.do("PUT", "/api/v1/projects/"+pid+"/persistent-paths", `{"paths":["/app/data"]}`)
+	failed := decode[pbBody](t, h.do("POST", base, `{}`))
+	h.st.ClaimNextProjectBackup(t.Context())
+	h.st.FinishProjectBackup(t.Context(), uuid.MustParse(failed.ID), domain.BackupFailed, 0, domain.BackupManifest{}, "x")
+	if rec := h.do("POST", base+"/"+failed.ID+"/restore", `{"confirm_slug":"sem-destino"}`); rec.Code != http.StatusConflict || decode[apiError](t, rec).Error.Code != "nothing_to_restore" && decode[apiError](t, rec).Error.Code != "backup_not_usable" {
+		t.Errorf("a failed backup: %d %s", rec.Code, rec.Body)
 	}
 }

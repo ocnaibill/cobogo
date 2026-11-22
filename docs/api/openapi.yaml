@@ -373,6 +373,72 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /projects/{id}/backups/{bid}/restore:
+    post:
+      tags: [backups]
+      summary: Restaura os dados do projeto a partir de um backup
+      description: |
+        Restaura um backup que está na VM (DEC-47, parte C). **Substitui o conteúdo atual**
+        dos volumes e do banco gerenciado que o projeto ainda tem: exige o nome do projeto
+        digitado (`confirm_slug`) e a senha digitada de novo nesta sessão (`403 reauth_required`).
+        Na mesma operação cria um **backup de segurança** (`before_restore`, com a aplicação
+        pausada) do estado atual, que o worker faz primeiro; se ele falhar, a restauração não
+        começa e nada é alterado. Depois o worker confere o tamanho e a soma de cada arquivo do
+        backup (corrompido, recusa sem tocar em nada), pausa a aplicação, troca cada volume sem
+        passar por um estado pela metade, restaura o banco numa transação só e inicia a
+        aplicação de novo se ela estava no ar. Um caminho do backup que o projeto não declara
+        mais é ignorado e dito (`result.skipped`); um dump sem banco gerenciado também. Nunca
+        cria volume que o projeto não declara nem apaga volumes. Uma por vez por projeto
+        (`409 restore_active`); acompanhe em `GET /projects/{id}/backups` (`restores`).
+      operationId: restoreProjectBackup
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/BackupId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm_slug]
+              properties:
+                confirm_slug:
+                  type: string
+      responses:
+        '202':
+          description: A restauração foi enfileirada, depois do backup de segurança.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [restore, safety_backup]
+                properties:
+                  restore:
+                    $ref: '#/components/schemas/ProjectRestore'
+                  safety_backup:
+                    $ref: '#/components/schemas/ProjectBackup'
+        '400':
+          description: O nome de confirmação não é o do projeto (`confirmation_mismatch`) ou o corpo é inválido.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          description: A senha não foi digitada de novo nesta sessão (`reauth_required`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Já há uma restauração (`restore_active`) ou um backup (`backup_active`) em andamento, o backup não pode ser restaurado (`backup_not_usable`), não há nada que o projeto possa receber (`nothing_to_restore`) ou o projeto não tem dados no momento (`nothing_to_back_up`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /projects/{id}/backups/{bid}/download:
     get:
       tags: [backups]
@@ -3159,7 +3225,7 @@ components:
           nullable: true
     ProjectBackupsView:
       type: object
-      required: [backups, configured, has_content, keep]
+      required: [backups, configured, has_content, keep, restores]
       properties:
         backups:
           type: array
@@ -3174,6 +3240,69 @@ components:
         keep:
           type: integer
           description: Quantos backups o projeto guarda.
+        restores:
+          type: array
+          description: As restaurações mais recentes, a em andamento primeiro (com o passo).
+          items:
+            $ref: '#/components/schemas/ProjectRestore'
+    RestoreResult:
+      type: object
+      required: [volumes, database, skipped, warnings, app_restarted]
+      properties:
+        volumes:
+          type: array
+          items:
+            type: string
+        database:
+          type: boolean
+        skipped:
+          type: array
+          description: O que o backup tinha e não foi restaurado, com o motivo.
+          items:
+            type: string
+        warnings:
+          type: array
+          items:
+            type: string
+        app_restarted:
+          type: boolean
+    ProjectRestore:
+      type: object
+      required: [id, project_id, backup_id, safety_backup_id, state, step, result, created_at, started_at, finished_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        backup_id:
+          type: string
+          format: uuid
+        safety_backup_id:
+          type: string
+          format: uuid
+        state:
+          type: string
+          enum: [queued, running, succeeded, failed]
+        step:
+          type: string
+          description: Em que passo está, enquanto roda (conferindo o backup, pausando a aplicação, restaurando o volume, restaurando o banco, iniciando a aplicação).
+        error:
+          type: string
+        result:
+          $ref: '#/components/schemas/RestoreResult'
+        created_at:
+          type: string
+          format: date-time
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
     CommandsView:
       type: object
       required: [commands, scripts, available, reauth_until, default_timeout, max_timeout]

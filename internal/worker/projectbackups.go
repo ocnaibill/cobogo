@@ -36,6 +36,11 @@ func (w *Worker) runProjectBackups(ctx context.Context) {
 	} else if n > 0 {
 		w.log.Warn("backups interrompidos pelo reinício do worker", "quantos", n)
 	}
+	if n, err := w.store.InterruptRunningRestores(ctx); err != nil {
+		w.log.Warn("interromper as restaurações que ficaram rodando", "erro", err)
+	} else if n > 0 {
+		w.log.Warn("restaurações interrompidas pelo reinício do worker", "quantas", n)
+	}
 	if n, err := w.runtime.RemoveBackupCopyContainers(ctx); err != nil {
 		w.log.Warn("remover contêineres de cópia sobrados", "erro", err)
 	} else if n > 0 {
@@ -43,6 +48,17 @@ func (w *Worker) runProjectBackups(ctx context.Context) {
 	}
 	for {
 		w.deleteMarkedBackups(ctx)
+		// A restauração vai antes de um backup novo, depois que o de segurança dela terminou;
+		// se o de segurança falhou, ela falha sem ter tocado em nada.
+		if _, err := w.store.FailBlockedRestores(ctx); err != nil && ctx.Err() == nil {
+			w.log.Warn("encerrar restaurações bloqueadas", "erro", err)
+		}
+		if r, err := w.store.ClaimNextReadyRestore(ctx); err != nil && ctx.Err() == nil {
+			w.log.Error("reivindicar restauração", "erro", err)
+		} else if r != nil {
+			w.executeRestore(ctx, r)
+			continue
+		}
 		b, err := w.store.ClaimNextProjectBackup(ctx)
 		if err != nil && ctx.Err() == nil {
 			w.log.Error("reivindicar backup de projeto", "erro", err)
@@ -249,7 +265,12 @@ func (w *Worker) pruneProjectBackups(ctx context.Context, projectID uuid.UUID) {
 		w.log.Warn("ler os backups para a retenção", "erro", err)
 		return
 	}
-	for _, id := range backup.PrunePlan(all, keep) {
+	protected, err := w.store.ProtectedBackupIDs(ctx, projectID)
+	if err != nil {
+		w.log.Warn("ler os backups protegidos", "erro", err)
+		return
+	}
+	for _, id := range backup.PrunePlan(all, keep, protected) {
 		if err := w.store.MarkProjectBackupForDelete(ctx, id); err != nil {
 			w.log.Warn("marcar backup antigo para apagar", "backup", id, "erro", err)
 		}

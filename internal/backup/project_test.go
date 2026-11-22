@@ -58,20 +58,20 @@ func TestPrunePlanKeepsTheNewestAndNeverTheBeforeRestoreOnes(t *testing.T) {
 	pending := pb(domain.BackupSucceeded, domain.BackupManual, 7*time.Hour, true)
 	all := []domain.ProjectBackup{newest, oldest, failed, safety, running, fourth, second, pending}
 
-	got := PrunePlan(all, 3)
+	got := PrunePlan(all, 3, nil)
 	if len(got) != 2 || got[0] != oldest.ID || got[1] != second.ID {
 		t.Fatalf("keep 3 of 5 good: remove the 2 oldest (not the safety one) = %v", got)
 	}
-	if got := PrunePlan(all, 10); len(got) != 0 {
+	if got := PrunePlan(all, 10, nil); len(got) != 0 {
 		t.Errorf("under the limit nothing goes: %v", got)
 	}
 	// Se só sobram os de segurança, nada sai, mesmo acima do limite.
 	onlySafety := []domain.ProjectBackup{safety, pb(domain.BackupSucceeded, domain.BackupBeforeRestore, time.Hour, false)}
-	if got := PrunePlan(onlySafety, 1); len(got) != 0 {
+	if got := PrunePlan(onlySafety, 1, nil); len(got) != 0 {
 		t.Errorf("a before_restore backup is never pruned: %v", got)
 	}
 	// Falhos, em andamento e já pedidos para apagar não contam.
-	if got := PrunePlan([]domain.ProjectBackup{failed, running, pending}, 1); len(got) != 0 {
+	if got := PrunePlan([]domain.ProjectBackup{failed, running, pending}, 1, nil); len(got) != 0 {
 		t.Errorf("not good backups are not counted: %v", got)
 	}
 }
@@ -161,5 +161,21 @@ func TestRemoveProjectDirOnlyRemovesTheBackupFolder(t *testing.T) {
 	}
 	if free, err := FreeBytes(root); err != nil || free == 0 {
 		t.Errorf("free = %d, %v", free, err)
+	}
+}
+
+// O backup que uma restauração em andamento restaura não sai da retenção, mesmo sendo o mais antigo.
+func TestPrunePlanNeverRemovesTheBackupBeingRestored(t *testing.T) {
+	source := pb(domain.BackupSucceeded, domain.BackupManual, 9*time.Hour, false)
+	b2 := pb(domain.BackupSucceeded, domain.BackupManual, 8*time.Hour, false)
+	b3 := pb(domain.BackupSucceeded, domain.BackupManual, 7*time.Hour, false)
+	b4 := pb(domain.BackupSucceeded, domain.BackupManual, 6*time.Hour, false)
+	all := []domain.ProjectBackup{source, b2, b3, b4}
+	if got := PrunePlan(all, 3, nil); len(got) != 1 || got[0] != source.ID {
+		t.Fatalf("without protection the oldest goes: %v", got)
+	}
+	got := PrunePlan(all, 3, map[uuid.UUID]bool{source.ID: true})
+	if len(got) != 1 || got[0] != b2.ID {
+		t.Errorf("the protected backup stays and the next oldest goes: %v", got)
 	}
 }

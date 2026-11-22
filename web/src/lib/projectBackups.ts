@@ -3,6 +3,7 @@ import type { Schemas } from "../api/client";
 
 export type ProjectBackup = Schemas["ProjectBackup"];
 export type ProjectBackupsView = Schemas["ProjectBackupsView"];
+export type ProjectRestore = Schemas["ProjectRestore"];
 
 export const BACKUP_STATE_LABEL: Record<ProjectBackup["state"], string> = {
   queued: "na fila",
@@ -47,4 +48,42 @@ export const projectBackupUrl = (projectId: string, backupId: string) => `/api/v
  */
 export function canDelete(hasData: boolean, list: ProjectBackup[], skip: boolean): boolean {
   return !hasData || hasUsableBackup(list) || skip;
+}
+
+export const RESTORE_STATE_LABEL: Record<ProjectRestore["state"], string> = {
+  queued: "esperando o backup de segurança",
+  running: "restaurando",
+  succeeded: "restaurado",
+  failed: "falhou",
+};
+
+export const RESTORE_STATE_TONE: Record<ProjectRestore["state"], "success" | "danger" | "info" | "neutral"> = {
+  queued: "neutral",
+  running: "info",
+  succeeded: "success",
+  failed: "danger",
+};
+
+/** A restauração ainda ocupa a vaga do projeto. */
+export const isRestoreActive = (r: Pick<ProjectRestore, "state">) => r.state === "queued" || r.state === "running";
+
+/**
+ * O que a restauração de um backup faria hoje: os volumes do backup que o projeto ainda declara e o
+ * banco (só se o projeto tem banco gerenciado); o resto é ignorado, com o motivo. É o que o painel
+ * mostra antes de pedir, e é a mesma conta que a API e o worker fazem.
+ */
+export function restorePlan(backup: ProjectBackup, declaredPaths: string[], hasManagedDb: boolean): { restore: string[]; skipped: string[] } {
+  const restore: string[] = [];
+  const skipped: string[] = [];
+  for (const it of backup.manifest.items) {
+    if (it.kind === "volume") {
+      if (declaredPaths.includes(it.path ?? "")) restore.push(`volume ${it.path}`);
+      else skipped.push(`${it.path}: o projeto não declara mais este caminho`);
+    } else if (hasManagedDb) {
+      restore.push("banco do Cobogó");
+    } else {
+      skipped.push("banco: o projeto não tem banco gerenciado (crie-o na aba Banco e restaure de novo)");
+    }
+  }
+  return { restore, skipped };
 }

@@ -213,6 +213,37 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/projects/{id}/backups/{bid}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restaura os dados do projeto a partir de um backup
+         * @description Restaura um backup que está na VM (DEC-47, parte C). **Substitui o conteúdo atual**
+         *     dos volumes e do banco gerenciado que o projeto ainda tem: exige o nome do projeto
+         *     digitado (`confirm_slug`) e a senha digitada de novo nesta sessão (`403 reauth_required`).
+         *     Na mesma operação cria um **backup de segurança** (`before_restore`, com a aplicação
+         *     pausada) do estado atual, que o worker faz primeiro; se ele falhar, a restauração não
+         *     começa e nada é alterado. Depois o worker confere o tamanho e a soma de cada arquivo do
+         *     backup (corrompido, recusa sem tocar em nada), pausa a aplicação, troca cada volume sem
+         *     passar por um estado pela metade, restaura o banco numa transação só e inicia a
+         *     aplicação de novo se ela estava no ar. Um caminho do backup que o projeto não declara
+         *     mais é ignorado e dito (`result.skipped`); um dump sem banco gerenciado também. Nunca
+         *     cria volume que o projeto não declara nem apaga volumes. Uma por vez por projeto
+         *     (`409 restore_active`); acompanhe em `GET /projects/{id}/backups` (`restores`).
+         */
+        post: operations["restoreProjectBackup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/projects/{id}/backups/{bid}/download": {
         parameters: {
             query?: never;
@@ -1717,6 +1748,38 @@ export interface components {
             has_content: boolean;
             /** @description Quantos backups o projeto guarda. */
             keep: number;
+            /** @description As restaurações mais recentes, a em andamento primeiro (com o passo). */
+            restores: components["schemas"]["ProjectRestore"][];
+        };
+        RestoreResult: {
+            volumes: string[];
+            database: boolean;
+            /** @description O que o backup tinha e não foi restaurado, com o motivo. */
+            skipped: string[];
+            warnings: string[];
+            app_restarted: boolean;
+        };
+        ProjectRestore: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            project_id: string;
+            /** Format: uuid */
+            backup_id: string;
+            /** Format: uuid */
+            safety_backup_id: string;
+            /** @enum {string} */
+            state: "queued" | "running" | "succeeded" | "failed";
+            /** @description Em que passo está, enquanto roda (conferindo o backup, pausando a aplicação, restaurando o volume, restaurando o banco, iniciando a aplicação). */
+            step: string;
+            error?: string;
+            result: components["schemas"]["RestoreResult"];
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            started_at: string | null;
+            /** Format: date-time */
+            finished_at: string | null;
         };
         CommandsView: {
             commands: components["schemas"]["Command"][];
@@ -2379,6 +2442,67 @@ export interface operations {
             401: components["responses"]["Unauthenticated"];
             404: components["responses"]["NotFound"];
             /** @description O backup ainda está em andamento (`backup_busy`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    restoreProjectBackup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+                bid: components["parameters"]["BackupId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    confirm_slug: string;
+                };
+            };
+        };
+        responses: {
+            /** @description A restauração foi enfileirada, depois do backup de segurança. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        restore: components["schemas"]["ProjectRestore"];
+                        safety_backup: components["schemas"]["ProjectBackup"];
+                    };
+                };
+            };
+            /** @description O nome de confirmação não é o do projeto (`confirmation_mismatch`) ou o corpo é inválido. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            /** @description A senha não foi digitada de novo nesta sessão (`reauth_required`). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description Já há uma restauração (`restore_active`) ou um backup (`backup_active`) em andamento, o backup não pode ser restaurado (`backup_not_usable`), não há nada que o projeto possa receber (`nothing_to_restore`) ou o projeto não tem dados no momento (`nothing_to_back_up`). */
             409: {
                 headers: {
                     [name: string]: unknown;

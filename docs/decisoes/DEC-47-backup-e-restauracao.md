@@ -1,6 +1,6 @@
 # DEC-47 — Backup e restauração: da plataforma e dos dados de cada projeto
 
-> **Estado:** respostas do autor registradas em 22/11/2026 (ao fim). **Parte A implementada e na VM**; **parte B implementada** (verificação no fim; ainda não está na VM); C segue depois, com a sua subida na VM.
+> **Estado:** respostas do autor registradas em 22/11/2026 (ao fim). **Parte A implementada e na VM**; **parte B implementada e na VM**; **parte C implementada** (verificação no fim; ainda não está na VM). A DEC-47 está completa.
 >
 > **Escopo:** (A) cópia automática e restauração do banco interno do Cobogó, com a chave tratada à parte; (B) cópia, download e exclusão dos **dados de um projeto** (volumes e PostgreSQL gerenciado) pelo painel; (C) restauração dos dados de um projeto a partir de uma cópia que está na VM.
 >
@@ -109,3 +109,19 @@ Os números cabem folgados: o banco do Cobogó tem 27 MB, e os volumes de aplica
 - Os dados dos backups **não são cifrados** na VM.
 - Backup de projeto não leva as variáveis (estão no backup da plataforma) nem o histórico de deploys.
 - O backup copia os volumes **declarados**; um caminho que a aplicação grava e que não está declarado não tem volume e não entra.
+
+## Verificação da parte C (22/11/2026)
+
+- **Pedido e fila (store):** o pedido cria, na mesma transação, o backup de segurança (`before_restore`, com a aplicação pausada) e a restauração; ela só é reivindicada depois que o de segurança termina bem; se ele falha, a restauração falha **sem ter tocado em nada**; uma por vez; durante ela não entra outro backup nem se apaga o de origem; um worker que cai deixa a restauração "falha" apontando o backup de segurança. A retenção **nunca remove o backup que está sendo restaurado**.
+- **Volume (Docker de verdade):** o conteúdo é trocado pelo do backup, a posse e as permissões voltam (inclusive arquivo oculto e de outro dono com modo fechado), arquivo criado depois some; um arquivo de backup **corrompido** falha na extração e **deixa o volume como estava** (extrai antes numa pasta de espera dentro do volume e só então troca); volume de outro projeto ou inexistente é recusado, nunca criado.
+- **Worker (fim a fim):** o volume e o banco voltaram ao estado do backup (uma tabela criada depois do backup também sumiu: o esquema `public` é trocado numa transação só); o **backup de segurança guarda o estado de antes** da restauração; um arquivo do backup com a soma errada é recusado antes de tocar em qualquer coisa ("Nada foi alterado"); um caminho que o projeto não declara mais é ignorado e dito, e o banco ainda é restaurado.
+- **API:** exige a senha digitada de novo e o nome do projeto; só de backup bom; recusa o que o projeto não pode receber (`nothing_to_restore`); não cria o backup de segurança se o pedido é recusado.
+- **Pilha completa em contêineres, com um deploy real e a aplicação no ar:** com dados no volume e 3 linhas no banco, um backup; depois o volume e o banco foram alterados; a restauração passou pelos passos (backup de segurança → "restaurando o volume /app/data" → "iniciando a aplicação") com o projeto `stopped` durante a troca e `running` depois, **respondendo 200**; o volume e o banco voltaram ao estado do backup (`notas.txt`, `sub/a.txt`, as 3 linhas, sem a tabela criada depois) e o backup de segurança guardou o "depois". Nome do projeto errado: 400.
+- **Painel:** "Restaurar…" em cada backup bom mostra o que será restaurado e o que será ignorado, exige a senha (quadro acima) e o nome do projeto, e o status mostra o passo e o resultado.
+
+## Limites da parte C
+
+- Restaurar **substitui** o conteúdo atual; o que se perde é o que mudou depois do backup, e o estado de antes fica só no backup de segurança.
+- Se um volume é trocado e o seguinte falha, o estado fica misto: a aplicação **continua parada** e a mensagem aponta o backup de segurança para voltar.
+- Só se restaura de um backup que está na VM; levar um backup a outra VM é copiar o arquivo para a pasta de backups (o upload pelo painel fica para depois, por causa do limite do túnel).
+- As variáveis de ambiente não fazem parte do backup do projeto e não mudam.

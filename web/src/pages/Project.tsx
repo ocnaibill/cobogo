@@ -329,7 +329,7 @@ export function ProjectPage() {
       {tab === "recursos" && <ResourcesTab projectId={id} />}
       {tab === "logs" && <LogsTab projectId={id} />}
       {tab === "banco" && <DatabaseTab projectId={id} slug={p.slug} />}
-      {tab === "dados" && <DataTab projectId={id} />}
+      {tab === "dados" && <DataTab projectId={id} slug={p.slug} />}
       {tab === "comandos" && <CommandsTab projectId={id} />}
       {tab === "limites" && <LimitsTab projectId={id} />}
       {tab === "operacoes" && <OperationsTab projectId={id} />}

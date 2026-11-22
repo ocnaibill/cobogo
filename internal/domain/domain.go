@@ -512,3 +512,43 @@ type ProjectBackup struct {
 
 // Active diz se o backup ainda ocupa a vaga do projeto.
 func (b ProjectBackup) Active() bool { return b.State == BackupQueued || b.State == BackupRunning }
+
+// Restauração dos dados de um projeto (DEC-47, parte C).
+const (
+	RestoreQueued    = "queued"
+	RestoreRunning   = "running"
+	RestoreSucceeded = "succeeded"
+	RestoreFailed    = "failed"
+)
+
+// RestoreResult é o que uma restauração fez.
+type RestoreResult struct {
+	// Volumes são os caminhos restaurados; Database diz se o banco foi restaurado.
+	Volumes  []string `json:"volumes"`
+	Database bool     `json:"database"`
+	// Skipped é o que o backup tinha e não foi restaurado, com o motivo.
+	Skipped []string `json:"skipped"`
+	// Warnings são avisos que não impedem o sucesso (por exemplo, a aplicação não ficou pronta).
+	Warnings []string `json:"warnings"`
+	// AppRestarted diz se a aplicação foi iniciada de novo (se estava no ar antes).
+	AppRestarted bool `json:"app_restarted"`
+}
+
+// ProjectRestore é o registro de uma restauração.
+type ProjectRestore struct {
+	ID             uuid.UUID     `json:"id"`
+	ProjectID      uuid.UUID     `json:"project_id"`
+	BackupID       uuid.UUID     `json:"backup_id"`
+	SafetyBackupID uuid.UUID     `json:"safety_backup_id"`
+	State          string        `json:"state"`
+	Step           string        `json:"step"`
+	Error          string        `json:"error,omitempty"`
+	Result         RestoreResult `json:"result"`
+	RequestedBy    *uuid.UUID    `json:"-"`
+	CreatedAt      time.Time     `json:"created_at"`
+	StartedAt      *time.Time    `json:"started_at"`
+	FinishedAt     *time.Time    `json:"finished_at"`
+}
+
+// Active diz se a restauração ainda ocupa a vaga do projeto.
+func (r ProjectRestore) Active() bool { return r.State == RestoreQueued || r.State == RestoreRunning }
