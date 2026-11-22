@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import { Link } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, unwrap, type Schemas } from "../api/client";
+import { useBackupGate } from "./ProjectBackups";
 import { bytes } from "../lib/format";
 import { Badge, Button, Card, ErrorBox, Field, Loading, Notice, Tag } from "./ui";
 import { Icon } from "./icons";
@@ -235,6 +236,8 @@ function ManagedDatabase({ projectId, slug, view }: { projectId: string; slug: s
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  // O banco tem dados a perder: a exclusão pede um backup antes (DEC-47 item 10).
+  const gate = useBackupGate(projectId, true, "o banco");
 
   async function remove(ev: FormEvent) {
     ev.preventDefault();
@@ -301,6 +304,7 @@ function ManagedDatabase({ projectId, slug, view }: { projectId: string; slug: s
         ) : (
           <form className="stack" onSubmit={remove}>
             <Notice tone="danger" title="Apagar o banco?">Os dados não podem ser recuperados. Para confirmar, digite o nome do projeto.</Notice>
+            {gate.panel}
             <Field label={`Digite ${slug}`} htmlFor="confirm-db-slug">
               <input id="confirm-db-slug" className="mono" value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" spellCheck={false} autoFocus />
             </Field>
@@ -309,7 +313,7 @@ function ManagedDatabase({ projectId, slug, view }: { projectId: string; slug: s
               <Button variant="ghost" onClick={() => { setOpen(false); setTyped(""); setError(null); }}>
                 Cancelar
               </Button>
-              <Button type="submit" variant="danger" busy={busy} disabled={typed !== slug}>
+              <Button type="submit" variant="danger" busy={busy} disabled={typed !== slug || !gate.allowed}>
                 Apagar o banco de {slug}
               </Button>
             </div>

@@ -161,6 +161,81 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/projects/{id}/backups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Backups dos dados do projeto
+         * @description Os backups dos dados de um projeto (volumes declarados e PostgreSQL gerenciado), do
+         *     mais novo ao mais antigo, com o que cada um guarda (`manifest`). DEC-47, parte B.
+         */
+        get: operations["listProjectBackups"];
+        put?: never;
+        /**
+         * Faz um backup dos dados do projeto
+         * @description Enfileira o backup. O worker o faz com contêineres descartáveis: um `tar` de cada
+         *     volume declarado, **somente leitura**, e um `pg_dump` do banco gerenciado (nunca
+         *     copia o arquivo de um banco em uso). `pause_app` para a aplicação durante a cópia
+         *     dos volumes (padrão `false`: a cópia de um arquivo em uso, como um SQLite, pode
+         *     não abrir). O backup falha inteiro se qualquer parte falhar, e fica sem pasta.
+         *     Um por vez por projeto (`409 backup_active`); sem o que copiar,
+         *     `409 nothing_to_back_up`. `reason` é `manual` ou `before_delete` (o "backup antes de
+         *     apagar"). Guarda os últimos 3 por projeto (configurável: `backup_project_keep`).
+         */
+        post: operations["createProjectBackup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{id}/backups/{bid}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Apaga um backup do projeto
+         * @description Marca o pedido; o worker apaga os arquivos. Um backup em andamento não se apaga (`409 backup_busy`).
+         */
+        delete: operations["deleteProjectBackup"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{id}/backups/{bid}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Baixa um backup do projeto
+         * @description Entrega o backup como um `.tar` montado na hora, em fluxo (o `manifest.json`
+         *     primeiro, depois os `.tar.gz` dos volumes e o `database.dump`). Exige a senha digitada
+         *     de novo nesta sessão (`POST /auth/reauth`): sem ela, `403 reauth_required`. Cada dono
+         *     baixa só os backups dos seus projetos.
+         */
+        get: operations["downloadProjectBackup"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/backups": {
         parameters: {
             query?: never;
@@ -1589,6 +1664,60 @@ export interface components {
             /** Format: int64 */
             total_bytes: number;
         };
+        BackupItem: {
+            /** @enum {string} */
+            kind: "volume" | "postgres";
+            /** @description O caminho do contêiner de um volume; ausente no banco. */
+            path?: string;
+            file: string;
+            /** Format: int64 */
+            size_bytes: number;
+            sha256: string;
+        };
+        BackupManifest: {
+            version: number;
+            project_id: string;
+            project_slug: string;
+            /** Format: date-time */
+            created_at: string;
+            paused_app: boolean;
+            reason: string;
+            postgres_major?: string;
+            items: components["schemas"]["BackupItem"][];
+            /** @description Caminhos declarados que não foram copiados, com o motivo. */
+            skipped?: string[];
+        };
+        ProjectBackup: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            project_id: string;
+            /** @enum {string} */
+            reason: "manual" | "before_delete" | "before_restore";
+            pause_app: boolean;
+            /** @enum {string} */
+            state: "queued" | "running" | "succeeded" | "failed";
+            error?: string;
+            /** Format: int64 */
+            size_bytes: number;
+            manifest: components["schemas"]["BackupManifest"];
+            delete_requested: boolean;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            started_at: string | null;
+            /** Format: date-time */
+            finished_at: string | null;
+        };
+        ProjectBackupsView: {
+            backups: components["schemas"]["ProjectBackup"][];
+            /** @description O painel enxerga o volume de backups. */
+            configured: boolean;
+            /** @description O projeto tem o que copiar (caminho persistente ou banco gerenciado). */
+            has_content: boolean;
+            /** @description Quantos backups o projeto guarda. */
+            keep: number;
+        };
         CommandsView: {
             commands: components["schemas"]["Command"][];
             scripts: components["schemas"]["ScriptOption"][];
@@ -1889,6 +2018,7 @@ export interface components {
         };
     };
     parameters: {
+        BackupId: string;
         CommandId: string;
         SettingKey: "app_memory_mb" | "app_cpus" | "app_pids" | "build_memory_mb" | "build_cpus" | "extra_git_hosts" | "apps_domain" | "apps_scheme" | "retire_grace_seconds" | "release_images_kept" | "backup_keep_daily" | "backup_keep_weekly" | "backup_project_keep";
         Id: string;
@@ -2155,6 +2285,143 @@ export interface operations {
                 };
             };
             429: components["responses"]["RateLimited"];
+        };
+    };
+    listProjectBackups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Os backups e o que o painel precisa para oferecê-los. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectBackupsView"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    createProjectBackup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    pause_app?: boolean;
+                    /** @enum {string} */
+                    reason?: "manual" | "before_delete";
+                };
+            };
+        };
+        responses: {
+            /** @description O backup foi enfileirado. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectBackup"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+            /** @description Já há um backup em andamento (`backup_active`), não há o que copiar (`nothing_to_back_up`) ou o volume de backups não está montado (`backups_unavailable`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    deleteProjectBackup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+                bid: components["parameters"]["BackupId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description O pedido foi registrado. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectBackup"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+            /** @description O backup ainda está em andamento (`backup_busy`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    downloadProjectBackup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+                bid: components["parameters"]["BackupId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description O arquivo. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/x-tar": string;
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            /** @description A senha não foi digitada de novo nesta sessão (`reauth_required`). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            404: components["responses"]["NotFound"];
         };
     };
     listBackups: {

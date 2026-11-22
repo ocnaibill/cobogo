@@ -449,3 +449,66 @@ type LogLine struct {
 	At            time.Time  `json:"at"`
 	Line          string     `json:"line"`
 }
+
+// Backup dos dados de um projeto (DEC-47, parte B).
+const (
+	BackupManual        = "manual"
+	BackupBeforeDelete  = "before_delete"
+	BackupBeforeRestore = "before_restore"
+
+	BackupQueued    = "queued"
+	BackupRunning   = "running"
+	BackupSucceeded = "succeeded"
+	BackupFailed    = "failed"
+
+	// BackupItemVolume e BackupItemPostgres são o que um backup guarda.
+	BackupItemVolume   = "volume"
+	BackupItemPostgres = "postgres"
+
+	// BackupMinFreeBytes é o que tem de sobrar livre no disco depois de um backup.
+	BackupMinFreeBytes = 5 << 30
+)
+
+// BackupItem é um arquivo de um backup de projeto.
+type BackupItem struct {
+	Kind string `json:"kind"`
+	// Path é o caminho do contêiner de um volume; vazio no banco.
+	Path   string `json:"path,omitempty"`
+	File   string `json:"file"`
+	Size   int64  `json:"size_bytes"`
+	SHA256 string `json:"sha256"`
+}
+
+// BackupManifest é o manifest.json de um backup de projeto.
+type BackupManifest struct {
+	Version     int          `json:"version"`
+	ProjectID   string       `json:"project_id"`
+	ProjectSlug string       `json:"project_slug"`
+	CreatedAt   time.Time    `json:"created_at"`
+	PausedApp   bool         `json:"paused_app"`
+	Reason      string       `json:"reason"`
+	Postgres    string       `json:"postgres_major,omitempty"`
+	Items       []BackupItem `json:"items"`
+	// Skipped são caminhos declarados que não foram copiados, com o motivo.
+	Skipped []string `json:"skipped,omitempty"`
+}
+
+// ProjectBackup é o registro de um backup dos dados de um projeto.
+type ProjectBackup struct {
+	ID              uuid.UUID      `json:"id"`
+	ProjectID       uuid.UUID      `json:"project_id"`
+	Reason          string         `json:"reason"`
+	PauseApp        bool           `json:"pause_app"`
+	State           string         `json:"state"`
+	Error           string         `json:"error,omitempty"`
+	SizeBytes       int64          `json:"size_bytes"`
+	Manifest        BackupManifest `json:"manifest"`
+	DeleteRequested bool           `json:"delete_requested"`
+	RequestedBy     *uuid.UUID     `json:"-"`
+	CreatedAt       time.Time      `json:"created_at"`
+	StartedAt       *time.Time     `json:"started_at"`
+	FinishedAt      *time.Time     `json:"finished_at"`
+}
+
+// Active diz se o backup ainda ocupa a vaga do projeto.
+func (b ProjectBackup) Active() bool { return b.State == BackupQueued || b.State == BackupRunning }

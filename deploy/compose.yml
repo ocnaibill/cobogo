@@ -253,6 +253,13 @@ services:
       COBOGO_PROBE: network
       COBOGO_APPS_DOMAIN: ${COBOGO_APPS_DOMAIN:-}
       COBOGO_APPS_SCHEME: ${COBOGO_APPS_SCHEME:-https}
+      # Backup dos dados dos projetos (DEC-47 B): o worker monta o volume de backups em
+      # /backups para gravar o manifest e apagar; os contêineres de cópia montam o mesmo
+      # volume (pelo nome no Docker) só na subpasta do backup.
+      COBOGO_BACKUP_DIR: /backups
+      COBOGO_BACKUP_VOLUME: cobogo_backups
+    volumes:
+      - backups:/backups
     # O workspace de clonagem: só aqui o worker escreve.
     tmpfs: ["/tmp:size=4g,mode=1777"]
     depends_on:
@@ -306,3 +313,4 @@ volumes:
   # Os backups da plataforma (DEC-47). Fica na mesma VM: só protege de erro, não de
   # perda do disco; a cópia de fora se baixa pelo painel.
   backups:
+    name: cobogo_backups

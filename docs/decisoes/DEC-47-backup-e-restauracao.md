@@ -1,6 +1,6 @@
 # DEC-47 — Backup e restauração: da plataforma e dos dados de cada projeto
 
-> **Estado:** respostas do autor registradas em 22/11/2026 (ao fim). **Parte A implementada** (verificação no fim; ainda não está na VM); B e C seguem depois, cada uma com a sua subida na VM.
+> **Estado:** respostas do autor registradas em 22/11/2026 (ao fim). **Parte A implementada e na VM**; **parte B implementada** (verificação no fim; ainda não está na VM); C segue depois, com a sua subida na VM.
 >
 > **Escopo:** (A) cópia automática e restauração do banco interno do Cobogó, com a chave tratada à parte; (B) cópia, download e exclusão dos **dados de um projeto** (volumes e PostgreSQL gerenciado) pelo painel; (C) restauração dos dados de um projeto a partir de uma cópia que está na VM.
 >
@@ -31,7 +31,7 @@ Os números cabem folgados: o banco do Cobogó tem 27 MB, e os volumes de aplica
    - Cada backup é uma pasta `projects/<projeto>/<data>/` com os arquivos, as somas SHA-256 e um `manifest.json` (projeto, caminhos, tamanhos, versão do esquema, se a aplicação foi pausada). **Não leva variáveis de ambiente**: elas estão no banco interno (A), cifradas.
 8. **Limites.** No máximo **3 backups por projeto** por padrão, configurável (`backup_project_keep`; o mais antigo sai quando entra um além do limite) e **um backup por vez** na máquina. O pedido é **recusado** se, depois dele, sobrariam menos de 5 GiB livres no disco. O tamanho esperado vem do que a varredura já mede (DEC-41).
 9. **Baixar, e quem baixa o quê.** **Cada dono baixa os backups dos seus projetos**: a API confere o dono em toda rota de backup, como em todo o resto, então, quando houver mais de um usuário, cada um vê e baixa só o que é seu. **Os backups da plataforma** (o banco interno, que tem os segredos cifrados de todos) são **só do administrador**, e também se baixam pelo painel, com a senha de novo. `GET /projects/{id}/backups/{bid}/download` entrega o backup como um `.tar` montado na hora, em fluxo, a partir do volume de backups que a API monta **somente para leitura**; a API não ganha acesso ao Docker nem ao volume dos projetos. Exige **a senha digitada de novo** (DEC-45), porque os dados de um projeto não são cifrados e podem ter dado de gente. A soma SHA-256 vai no cabeçalho. Subir arquivo **não** existe nesta versão (o túnel da Cloudflare limita o envio a 100 MB, e esse é o caso do autor): para levar um backup a uma VM nova, copia-se o arquivo para a pasta de backups. **Pendência combinada com o autor:** estudar depois como subir backups maiores que o limite (envio em partes, ou pela rede local).
-10. **Antes de apagar.** Na exclusão do projeto (DEC-38) e na do banco gerenciado (DEC-42), o painel oferece **"fazer backup antes de apagar"** e só habilita a exclusão dos dados depois que um backup existe ou a pessoa escolhe apagar sem. A pergunta que o autor fez na DEC-41.
+10. **Antes de apagar.** Na exclusão do projeto (DEC-38) e na do banco gerenciado (DEC-42), o painel oferece **"fazer backup antes de apagar"** e só habilita a exclusão depois que um backup bom existe ou a pessoa escolhe apagar sem. A pergunta que o autor fez na DEC-41. **Excluir o projeto apaga também os backups dele** (o worker os recolhe): dado de um projeto que se foi não fica para trás sem dono, e o painel avisa na exclusão que se baixe antes.
 
 ### C. Restaurar os dados de um projeto
 
@@ -92,3 +92,20 @@ Os números cabem folgados: o banco do Cobogó tem 27 MB, e os volumes de aplica
 - O `update.sh` fica por provar na VM: aqui só se verificou a sintaxe e o `backup once`, que ele chama; o `git pull` não foi executado na máquina de desenvolvimento.
 - Numa VM que já existe, o role `cobogo_backup` e a senha dele precisam ser criados uma vez à mão (o script de roles não roda sozinho de novo), como foi com o coletor; está no roteiro.
 - O painel só tem um usuário (o administrador); quando houver mais de um, a rota dos backups da plataforma passa a exigir o papel de administrador.
+
+## Verificação da parte B (22/11/2026)
+
+- **Arquivos e retenção (unidade):** os nomes dos arquivos de volume derivam do caminho (com um sufixo de soma contra colisão) e só os nomes fechados entram no `.tar`; a retenção por projeto tira os bons mais antigos, **nunca o `before_restore`** (conta no limite, não sai), e não conta falhos, em andamento nem os já marcados; o `.tar` de download sai em fluxo, com o `manifest.json` primeiro, **sem** arquivo estranho nem link simbólico, e o `Content-Length` é exato.
+- **Store e privilégios:** a API só cria o pedido e marca `delete_requested`; o worker conduz o estado; um por vez por projeto (índice parcial no banco); só o dono; os backups de um projeto excluído viram "a apagar".
+- **Docker (contêiner de verdade):** o `tar` lê o volume **somente leitura** (a fonte fica intocada), entra arquivo de outro dono com permissão fechada (`CAP_DAC_READ_SEARCH`, e só ela), o contêiner só enxerga a **subpasta** do próprio backup (a vizinha não aparece), o prazo curto mata a cópia, e uma falha devolve o motivo sem deixar contêiner. **Um volume que não existe é recusado** (o Docker o criaria vazio e o backup pareceria bom), e o de **outro projeto** também.
+- **Worker (fim a fim, no worker de verdade):** um volume com arquivo fechado e um PostgreSQL gerenciado com dados saíram numa pasta do volume de backups, com `manifest.json` e somas que **batem**; o dump abre (`pg_restore --list`) e tem as linhas; um caminho declarado sem volume é dito no manifest e **não derruba**; a retenção marcou o mais antigo e o worker apagou os arquivos; com o **banco parado, o backup inteiro falhou e não deixou pasta** (nenhum backup incompleto parecendo bom).
+- **Pilha completa em contêineres, com um deploy real:** um backup **com pausa** deixou o projeto `stopped` durante a cópia e `running` depois; o download (403 sem a senha de novo; com ela, um `.tar` de 6 656 bytes, igual ao `Content-Length`) trouxe o `manifest.json`, `sha256sums.txt` (que o `shasum -c` conferiu: **OK**), o `.tar.gz` do volume (`notas.txt` e `sub/a.txt`) e o `database.dump` com as 3 linhas; **excluir o projeto levou os backups dele** e deixou o backup da plataforma.
+- **O que a pilha real pegou:** o worker tentava `chmod` na pasta `projects`, que é do serviço de backup (outro usuário): "operation not permitted". Agora ele só abre o que criou, e um teste cobre isso.
+- **Painel:** a aba "Dados" tem o cartão de backups (fazer, pausar, lista com o que guardou, baixar com a senha de novo, apagar com confirmação), e a exclusão do projeto e a do banco mostram a trava: sem backup bom, "Fazer backup agora" ou "Apagar sem backup"; a trava vira verde quando o backup termina.
+
+## Limites da parte B
+
+- Dois contêineres no mesmo volume (a aplicação e o backup) é a escolha padrão do autor: o `tar` de um arquivo em uso (SQLite) pode não abrir; a pausa resolve.
+- Os dados dos backups **não são cifrados** na VM.
+- Backup de projeto não leva as variáveis (estão no backup da plataforma) nem o histórico de deploys.
+- O backup copia os volumes **declarados**; um caminho que a aplicação grava e que não está declarado não tem volume e não entra.

@@ -1,6 +1,7 @@
 // Dados persistentes (DEC-41): os caminhos que o usuário declara, os volumes que o
 // Cobogó cria para eles e os volumes que ficaram sem projeto. Nada aqui é
 // inferido: quem declara é a pessoa.
+import { ProjectBackupsCard } from "./ProjectBackups";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, unwrap, type Schemas } from "../api/client";
@@ -97,6 +98,7 @@ export function DataTab({ projectId }: { projectId: string }) {
         </div>
       </Card>
       <VolumesTable volumes={data.volumes} title="Volumes do projeto" empty="Nenhum volume ainda. Eles são criados no próximo deploy, depois de você declarar um caminho." />
+      <ProjectBackupsCard projectId={projectId} />
     </div>
   );
 }

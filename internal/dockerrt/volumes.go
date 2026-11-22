@@ -62,6 +62,18 @@ func (r *Runtime) EnsureVolume(ctx context.Context, name, projectID, path string
 	return true, nil
 }
 
+// VolumeExists diz se o volume existe (sem criar nada).
+func (r *Runtime) VolumeExists(ctx context.Context, name string) (bool, error) {
+	_, err := r.cli.VolumeInspect(ctx, name)
+	if errdefs.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("dockerrt: inspecionar volume: %w", err)
+	}
+	return true, nil
+}
+
 // RemoveVolume remove um volume do Cobogó. O de outro, ou sem os labels, é
 // recusado; um volume que já não existe não é erro; um em uso é recusado pelo
 // daemon.

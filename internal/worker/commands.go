@@ -39,7 +39,7 @@ func (w *Worker) runCommands(ctx context.Context) {
 	} else if n > 0 {
 		w.log.Warn("comandos interrompidos pelo reinício do worker", "quantos", n)
 	}
-	if n, err := w.runtime.RemoveCommandContainers(ctx); err != nil {
+	if n, err := w.runtime.RemoveCommandContainers(ctx, ""); err != nil {
 		w.log.Warn("remover contêineres de comando sobrados", "erro", err)
 	} else if n > 0 {
 		w.log.Info("contêineres de comando sobrados removidos", "quantos", n)

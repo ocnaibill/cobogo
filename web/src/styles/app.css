@@ -470,3 +470,7 @@ details summary { cursor: pointer; font-weight: 600; }
 .log-divider { margin: 8px 14px; padding-top: 6px; border-top: 1px dashed var(--terminal-faint); color: var(--terminal-faint); font-size: 12px; }
 .log-older { display: flex; justify-content: center; padding: 6px 0 10px; }
 .log-empty { padding: 14px 18px; }
+
+/* Backups dos dados do projeto (DEC-47 B) */
+.wrap-gap { flex-wrap: wrap; gap: 12px; }
+.danger-text { color: var(--danger); }

@@ -59,6 +59,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	svc := &service{log: log, dir: dir, dsn: dsn, env: cfg}
+	// A pasta dos backups de projeto (DEC-47 B): o worker, que roda com outro usuário,
+	// cria as subpastas dentro dela. Os backups da plataforma ficam na raiz.
+	if err := ensureProjectsDir(dir); err != nil {
+		log.Warn("criar a pasta dos backups de projeto", "erro", err)
+	}
 
 	if len(os.Args) > 1 && os.Args[1] == "once" {
 		label := ""
@@ -260,4 +265,13 @@ func (s *service) serve(ctx context.Context, at time.Duration) {
 		}
 		next = nextRun(time.Now(), at)
 	}
+}
+
+// ensureProjectsDir cria <dir>/projects aberta para escrita.
+func ensureProjectsDir(dir string) error {
+	p := dir + "/projects"
+	if err := os.MkdirAll(p, 0o777); err != nil {
+		return err
+	}
+	return os.Chmod(p, 0o777)
 }

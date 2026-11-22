@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -50,6 +51,7 @@ func main() {
 	w := worker.New(st, rt, log, settings.NewResolver(st, settings.Env{Limits: cfg.Limits, GitHosts: cfg.ExtraGitHosts, AppsDomain: cfg.AppsDomain, AppsScheme: cfg.AppsScheme}))
 
 	w.SetProbeMode(cfg.ProbeMode)
+	w.SetBackup(strings.TrimSpace(os.Getenv("COBOGO_BACKUP_DIR")), strings.TrimSpace(os.Getenv("COBOGO_BACKUP_VOLUME")))
 
 	log.Info("worker Cobogó no ar", "sonda", cfg.ProbeMode)
 	if err := w.Run(ctx); err != nil && err != context.Canceled {

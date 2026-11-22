@@ -79,6 +79,12 @@ var accessMatrix = map[string]TableAccess{
 	},
 	// DEC-46: o worker captura e apaga o que passa da retenção; a API só lê.
 	"runtime_logs": {API: tbl("SELECT"), Worker: tbl("SELECT", "INSERT", "DELETE")},
+	// DEC-47 parte B: a API pede o backup e só marca o pedido de apagar; o worker copia,
+	// grava o desfecho e apaga os arquivos.
+	"project_backups": {
+		API:    Privileges{Table: []string{"SELECT", "INSERT"}, Columns: map[string][]string{"UPDATE": {"delete_requested"}}},
+		Worker: tbl("SELECT", "UPDATE"),
+	},
 	// A API pede (inserção) e acompanha (leitura); o worker executa e conclui.
 	"operations": {API: tbl("SELECT", "INSERT"), Worker: tbl("SELECT", "INSERT", "UPDATE")},
 	"env_variables": {

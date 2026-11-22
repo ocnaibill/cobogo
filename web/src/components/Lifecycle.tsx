@@ -7,6 +7,8 @@ import { api, ApiError, unwrap } from "../api/client";
 import { appTransition, isSettled, OP_LABEL, OP_STATE_LABEL, summarize, TRANSITION_NOTICE, type AppTransition, type Operation } from "../lib/operations";
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Notice, Tag, When } from "./ui";
 import { Icon } from "./icons";
+import { useDatabase } from "./Database";
+import { useBackupGate } from "./ProjectBackups";
 import { usePersistent } from "./Data";
 import { bytes } from "../lib/format";
 
@@ -135,6 +137,9 @@ export function DangerZone({ projectId, slug }: { projectId: string; slug: strin
   const [error, setError] = useState<string | null>(null);
   // Os volumes de dados do projeto: a exclusão pergunta o que fazer com eles (DEC-41).
   const volumes = usePersistent(projectId).data?.volumes ?? [];
+  const managedDb = useDatabase(projectId).data?.service?.mode === "managed";
+  // Com dados a perder, a exclusão pede um backup antes (DEC-47 item 10).
+  const gate = useBackupGate(projectId, volumes.length > 0 || managedDb, "o projeto");
 
   async function remove(ev: FormEvent) {
     ev.preventDefault();
@@ -191,9 +196,15 @@ export function DangerZone({ projectId, slug }: { projectId: string; slug: strin
                 </span>
               </label>
               <span className="small">
-                Sem marcar, os volumes ficam em "Volumes sem projeto" na visão geral, e você pode apagá-los depois. Baixar os dados antes ainda não existe no painel (issue #28).
+                Sem marcar, os volumes ficam em "Volumes sem projeto" na visão geral, e você pode apagá-los depois.
               </span>
             </Notice>
+          )}
+          {gate.panel}
+          {(volumes.length > 0 || managedDb) && (
+            <span className="small muted">
+              Os <strong>backups deste projeto também são apagados</strong> com ele. Baixe antes o que quiser guardar.
+            </span>
           )}
           <Field label={`Digite ${slug}`} htmlFor="confirm-slug">
             <input id="confirm-slug" className="mono" value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" spellCheck={false} autoFocus />
@@ -211,7 +222,7 @@ export function DangerZone({ projectId, slug }: { projectId: string; slug: strin
             >
               Cancelar
             </Button>
-            <Button type="submit" variant="danger" icon="x" busy={busy} disabled={typed !== slug}>
+            <Button type="submit" variant="danger" icon="x" busy={busy} disabled={typed !== slug || !gate.allowed}>
               Excluir {slug}
             </Button>
           </div>

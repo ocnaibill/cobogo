@@ -276,6 +276,136 @@ paths:
                 $ref: '#/components/schemas/Error'
         '429':
           $ref: '#/components/responses/RateLimited'
+  /projects/{id}/backups:
+    get:
+      tags: [backups]
+      summary: Backups dos dados do projeto
+      description: |
+        Os backups dos dados de um projeto (volumes declarados e PostgreSQL gerenciado), do
+        mais novo ao mais antigo, com o que cada um guarda (`manifest`). DEC-47, parte B.
+      operationId: listProjectBackups
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Os backups e o que o painel precisa para oferecê-los.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectBackupsView'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [backups]
+      summary: Faz um backup dos dados do projeto
+      description: |
+        Enfileira o backup. O worker o faz com contêineres descartáveis: um `tar` de cada
+        volume declarado, **somente leitura**, e um `pg_dump` do banco gerenciado (nunca
+        copia o arquivo de um banco em uso). `pause_app` para a aplicação durante a cópia
+        dos volumes (padrão `false`: a cópia de um arquivo em uso, como um SQLite, pode
+        não abrir). O backup falha inteiro se qualquer parte falhar, e fica sem pasta.
+        Um por vez por projeto (`409 backup_active`); sem o que copiar,
+        `409 nothing_to_back_up`. `reason` é `manual` ou `before_delete` (o "backup antes de
+        apagar"). Guarda os últimos 3 por projeto (configurável: `backup_project_keep`).
+      operationId: createProjectBackup
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pause_app:
+                  type: boolean
+                reason:
+                  type: string
+                  enum: [manual, before_delete]
+      responses:
+        '202':
+          description: O backup foi enfileirado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectBackup'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Já há um backup em andamento (`backup_active`), não há o que copiar (`nothing_to_back_up`) ou o volume de backups não está montado (`backups_unavailable`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /projects/{id}/backups/{bid}:
+    delete:
+      tags: [backups]
+      summary: Apaga um backup do projeto
+      description: Marca o pedido; o worker apaga os arquivos. Um backup em andamento não se apaga (`409 backup_busy`).
+      operationId: deleteProjectBackup
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/BackupId'
+      responses:
+        '202':
+          description: O pedido foi registrado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectBackup'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: O backup ainda está em andamento (`backup_busy`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /projects/{id}/backups/{bid}/download:
+    get:
+      tags: [backups]
+      summary: Baixa um backup do projeto
+      description: |
+        Entrega o backup como um `.tar` montado na hora, em fluxo (o `manifest.json`
+        primeiro, depois os `.tar.gz` dos volumes e o `database.dump`). Exige a senha digitada
+        de novo nesta sessão (`POST /auth/reauth`): sem ela, `403 reauth_required`. Cada dono
+        baixa só os backups dos seus projetos.
+      operationId: downloadProjectBackup
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/BackupId'
+      responses:
+        '200':
+          description: O arquivo.
+          content:
+            application/x-tar:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          description: A senha não foi digitada de novo nesta sessão (`reauth_required`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /backups:
     get:
       tags: [backups]
@@ -1925,6 +2055,13 @@ components:
       schema:
         type: string
   parameters:
+    BackupId:
+      name: bid
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
     CommandId:
       name: cid
       in: path
@@ -2937,6 +3074,106 @@ components:
         total_bytes:
           type: integer
           format: int64
+    BackupItem:
+      type: object
+      required: [kind, file, size_bytes, sha256]
+      properties:
+        kind:
+          type: string
+          enum: [volume, postgres]
+        path:
+          type: string
+          description: O caminho do contêiner de um volume; ausente no banco.
+        file:
+          type: string
+        size_bytes:
+          type: integer
+          format: int64
+        sha256:
+          type: string
+    BackupManifest:
+      type: object
+      required: [version, project_id, project_slug, created_at, paused_app, reason, items]
+      properties:
+        version:
+          type: integer
+        project_id:
+          type: string
+        project_slug:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        paused_app:
+          type: boolean
+        reason:
+          type: string
+        postgres_major:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/BackupItem'
+        skipped:
+          type: array
+          description: Caminhos declarados que não foram copiados, com o motivo.
+          items:
+            type: string
+    ProjectBackup:
+      type: object
+      required: [id, project_id, reason, pause_app, state, size_bytes, manifest, delete_requested, created_at, started_at, finished_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        reason:
+          type: string
+          enum: [manual, before_delete, before_restore]
+        pause_app:
+          type: boolean
+        state:
+          type: string
+          enum: [queued, running, succeeded, failed]
+        error:
+          type: string
+        size_bytes:
+          type: integer
+          format: int64
+        manifest:
+          $ref: '#/components/schemas/BackupManifest'
+        delete_requested:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+    ProjectBackupsView:
+      type: object
+      required: [backups, configured, has_content, keep]
+      properties:
+        backups:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectBackup'
+        configured:
+          type: boolean
+          description: O painel enxerga o volume de backups.
+        has_content:
+          type: boolean
+          description: O projeto tem o que copiar (caminho persistente ou banco gerenciado).
+        keep:
+          type: integer
+          description: Quantos backups o projeto guarda.
     CommandsView:
       type: object
       required: [commands, scripts, available, reauth_until, default_timeout, max_timeout]

@@ -113,7 +113,7 @@ func TestCommandRunsInTheSandboxAndReportsOutputAndExitCode(t *testing.T) {
 	}
 	// Os órfãos saem, e só eles.
 	orphan := start("44444444-dddd", `sleep 300`, nil)
-	if n, err := rt.RemoveCommandContainers(ctx); err != nil || n < 1 || exists(t, rt, orphan) || !exists(t, rt, app) {
+	if n, err := rt.RemoveCommandContainers(ctx, project); err != nil || n < 1 || exists(t, rt, orphan) || !exists(t, rt, app) {
 		t.Errorf("orphans removed = %d, %v (orphan exists=%v, app exists=%v)", n, err, exists(t, rt, orphan), exists(t, rt, app))
 	}
 }

@@ -488,6 +488,17 @@ func (r *Resolver) Lifecycle(ctx context.Context) (Lifecycle, error) {
 	return Lifecycle{GraceSeconds: g, ImagesKept: k}, nil
 }
 
+// BackupProjectKeep devolve quantos backups de dados cada projeto guarda (DEC-47).
+func (r *Resolver) BackupProjectKeep(ctx context.Context) (int, error) {
+	stored, err := r.stored(ctx)
+	if err != nil {
+		return 0, err
+	}
+	raw, _ := r.pick(stored, BackupProjectKeep)
+	n, _ := strconv.Atoi(raw)
+	return n, nil
+}
+
 // Apps devolve o roteamento efetivo.
 func (r *Resolver) Apps(ctx context.Context) (Routing, error) {
 	stored, err := r.stored(ctx)

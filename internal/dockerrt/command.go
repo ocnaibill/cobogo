@@ -163,12 +163,16 @@ func (r *Runtime) RemoveCommand(ctx context.Context, id string) error {
 	return nil
 }
 
-// RemoveCommandContainers remove todos os contêineres de comando que sobraram
-// (o worker caiu no meio). Devolve quantos removeu.
-func (r *Runtime) RemoveCommandContainers(ctx context.Context) (int, error) {
-	list, err := r.cli.ContainerList(ctx, container.ListOptions{All: true, Filters: filters.NewArgs(
-		filters.Arg("label", LabelManaged+"=true"), filters.Arg("label", LabelRole+"="+RoleCommand),
-	)})
+// RemoveCommandContainers remove os contêineres de comando que sobraram (o worker caiu
+// no meio). projectID vazio remove os de todos os projetos (é o que o worker faz ao
+// subir); com um projeto, só os dele (os testes, que rodam ao lado de outros, usam isto).
+// Devolve quantos removeu.
+func (r *Runtime) RemoveCommandContainers(ctx context.Context, projectID string) (int, error) {
+	args := filters.NewArgs(filters.Arg("label", LabelManaged+"=true"), filters.Arg("label", LabelRole+"="+RoleCommand))
+	if projectID != "" {
+		args.Add("label", LabelProject+"="+projectID)
+	}
+	list, err := r.cli.ContainerList(ctx, container.ListOptions{All: true, Filters: args})
 	if err != nil {
 		return 0, fmt.Errorf("dockerrt: listar comandos: %w", err)
 	}

@@ -55,7 +55,15 @@ type Worker struct {
 	// probeNetwork faz a sonda falar com o contêiner pelo nome, na rede do
 	// projeto, em vez da porta publicada no loopback (DEC-32 item 5).
 	probeNetwork bool
+	// backupDir é onde o volume de backups está montado no worker, e backupVolume o nome
+	// dele no Docker, para os contêineres de cópia o montarem (DEC-47). Vazios desligam o
+	// backup dos dados dos projetos.
+	backupDir, backupVolume string
 }
+
+// SetBackup liga o backup dos dados dos projetos: a pasta do volume de backups no
+// worker e o nome do volume no Docker.
+func (w *Worker) SetBackup(dir, volume string) { w.backupDir, w.backupVolume = dir, volume }
 
 // SetProbeMode escolhe como a sonda alcança a aplicação: "host" (padrão) ou
 // "network". Em "network" o worker se conecta à rede do projeto durante o deploy.
@@ -76,6 +84,7 @@ func (w *Worker) Run(ctx context.Context) error {
 	go w.warmUp(ctx)
 	go w.runCommands(ctx)
 	go w.runLogCapture(ctx)
+	go w.runProjectBackups(ctx)
 	nextSweep := time.Now().Add(firstSweepAfter)
 
 	for {
