@@ -209,6 +209,9 @@ const (
 	HintPrefilled      = "prefilled"
 	HintUndeclared     = "undeclared"
 	HintReferencedOnly = "referenced_only"
+	// HintLocalhostDefault: o código cai para um endereço local quando a variável
+	// falta (DEC-49).
+	HintLocalhostDefault = "localhost_default"
 )
 
 // ConfigHint é um aviso não bloqueante sobre uma variável.

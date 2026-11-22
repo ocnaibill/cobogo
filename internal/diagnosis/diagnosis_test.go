@@ -131,3 +131,17 @@ func TestPlatformPortIgnoredPointsAtThePortField(t *testing.T) {
 		t.Errorf("without a source the message must still read well: %q", d.Message)
 	}
 }
+
+func TestProbeCause(t *testing.T) {
+	if got := ProbeCause(400, "django"); !strings.Contains(got, "ALLOWED_HOSTS") {
+		t.Errorf("django 400: %q", got)
+	}
+	for _, tc := range []struct {
+		status    int
+		framework string
+	}{{200, "django"}, {404, "django"}, {400, "flask"}, {400, ""}} {
+		if got := ProbeCause(tc.status, tc.framework); got != "" {
+			t.Errorf("ProbeCause(%d, %q) = %q, want empty", tc.status, tc.framework, got)
+		}
+	}
+}

@@ -666,6 +666,9 @@ func ruleHEU045() Rule {
 			if e := setting("ALLOWED_HOSTS_ENV"); len(e) > 0 {
 				warn(fmt.Sprintf("ALLOWED_HOSTS vem da variável %s: defina-a com o domínio do projeto na aba Variáveis (sem ele, o Django responde 400 pelo endereço público)", e[0].Value), e[0])
 			}
+			if e := setting("CSRF_TRUSTED_ORIGINS_LITERAL"); len(e) > 0 {
+				warn(fmt.Sprintf("CSRF_TRUSTED_ORIGINS está fixo no código (%s) e não inclui o endereço do projeto: o login do admin e os formulários podem ser recusados com 403 (CSRF). Leia a lista de uma variável de ambiente e defina-a com a URL do projeto na aba Variáveis", orDash(e[0].Value)), e[0])
+			}
 			if len(setting("CSRF_TRUSTED_ORIGINS")) == 0 {
 				warn("o settings não define CSRF_TRUSTED_ORIGINS: atrás do proxy com HTTPS, o Django pode recusar formulários (o login do admin) com 403 CSRF. Defina-o com https://<domínio do projeto>, de preferência por variável")
 			}
@@ -674,6 +677,12 @@ func ruleHEU045() Rule {
 			}
 			if e := setting("SECRET_KEY_LITERAL"); len(e) > 0 {
 				warn("a SECRET_KEY está escrita no código (e no repositório): leia-a de uma variável e gere uma nova na aba Variáveis", e[0])
+			}
+			if e := setting("SECRET_KEY_DEFAULT"); len(e) > 0 {
+				warn(fmt.Sprintf("a SECRET_KEY tem um valor padrão no código, que vale se a variável %s não for definida: a chave do repositório é pública e qualquer pessoa pode forjar sessões e tokens com ela. Defina %s na aba Variáveis (o Cobogó oferece gerar uma)", e[0].Value, e[0].Value), e[0])
+			}
+			if e := setting("MEDIA_URLS_STATIC"); len(e) > 0 && len(setting("MEDIA_ROOT")) > 0 && len(setting("DEBUG_TRUE")) == 0 {
+				warn("os arquivos enviados (MEDIA_ROOT) são servidos só por static(MEDIA_URL…) nas URLs, que não faz nada com DEBUG desligado: em produção, imagens e PDFs em /media/ respondem 404 mesmo com o arquivo no disco. Sirva-os por outro meio (armazenamento de objetos ou um servidor de arquivos)", e[0])
 			}
 			sr := setting("STATIC_ROOT")
 			switch {

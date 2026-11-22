@@ -106,7 +106,19 @@ func TestPythonAnalysis(t *testing.T) {
 				domain.FieldDjangoSettings: "mysite.settings", domain.FieldBuildCommand: "python manage.py collectstatic --noinput",
 			},
 			warnings:   []string{"CSRF_TRUSTED_ORIGINS", "ALLOWED_HOSTS vem da variável ALLOWED_HOSTS", "manage.py migrate"},
-			noWarnings: []string{"DEBUG = True", "SECRET_KEY está escrita", "whitenoise", "STATIC_ROOT"},
+			noWarnings: []string{"DEBUG = True", "SECRET_KEY está escrita", "whitenoise", "STATIC_ROOT", "valor padrão no código", "respondem 404", "CSRF_TRUSTED_ORIGINS está fixo"},
+		},
+		{
+			name: "django com valores fixos de outro ambiente", outcome: domain.AnalysisReady,
+			files: djangoRepo(map[string]string{
+				"mysite/settings.py": strings.NewReplacer(
+					`SECRET_KEY = os.environ["DJANGO_SECRET_KEY"]`, `SECRET_KEY = os.environ.get('SECRET_KEY', 'chave-padrao-segura')`,
+					`STATIC_URL = "static/"`, "STATIC_URL = 'static/'\nROOT_URLCONF = 'mysite.urls'\nCSRF_TRUSTED_ORIGINS = ['https://exemplo.edu.br']",
+				).Replace(djangoSettings),
+				"mysite/urls.py": "from django.conf import settings\nfrom django.conf.urls.static import static\nurlpatterns = [] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)\n",
+			}),
+			warnings:   []string{"CSRF_TRUSTED_ORIGINS está fixo no código (https://exemplo.edu.br)", "valor padrão no código, que vale se a variável SECRET_KEY não for definida", "respondem 404 mesmo com o arquivo no disco"},
+			noWarnings: []string{"chave-padrao-segura", "não define CSRF_TRUSTED_ORIGINS"},
 		},
 		{
 			name: "django de tutorial", outcome: domain.AnalysisReady,
@@ -128,7 +140,7 @@ func TestPythonAnalysis(t *testing.T) {
 				"mysite/settings/production.py": "from .base import *\nCSRF_TRUSTED_ORIGINS = ['https://x.example']\n",
 			}),
 			pending:    []string{domain.FieldDjangoSettings},
-			noWarnings: []string{"DEBUG = True", "CSRF_TRUSTED_ORIGINS"},
+			noWarnings: []string{"DEBUG = True", "não define CSRF_TRUSTED_ORIGINS"},
 		},
 		{
 			name: "django: settings de produção escolhido", outcome: domain.AnalysisReady,

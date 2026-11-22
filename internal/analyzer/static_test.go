@@ -258,3 +258,32 @@ func TestNodeSassIsWarnedBeforeTheBuild(t *testing.T) {
 		t.Error("no node-sass warning without the dependency")
 	}
 }
+
+func TestLocalhostDefaultHint(t *testing.T) {
+	files := map[string]string{
+		"package.json":      `{"scripts":{"build":"vite build"},"dependencies":{"react":"19.0.0"},"devDependencies":{"vite":"6.0.0"}}`,
+		"package-lock.json": `{"lockfileVersion":3}`,
+		"index.html":        "<div id=root></div>",
+		"src/api.js":        "const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';\nconst other = import.meta.env.VITE_TITLE || 'Meu site';\n",
+		"src/test.spec.js":  "const u = import.meta.env.VITE_TEST_URL || 'http://localhost:1/x';\n",
+	}
+	res, err := Analyze(toFS(files), Input{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, v := range res.ConfigVariables {
+		if v.Hint != nil {
+			got[v.Name] = v.Hint.Code
+		}
+	}
+	if got["VITE_API_URL"] != domain.HintLocalhostDefault {
+		t.Errorf("VITE_API_URL hint = %q (%v)", got["VITE_API_URL"], got)
+	}
+	if got["VITE_TITLE"] == domain.HintLocalhostDefault {
+		t.Errorf("a default that is not local got the localhost hint")
+	}
+	if _, ok := got["VITE_TEST_URL"]; ok {
+		t.Errorf("test files must not produce hints: %v", got)
+	}
+}

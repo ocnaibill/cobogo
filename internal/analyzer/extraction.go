@@ -22,6 +22,9 @@ const (
 	kindNvmrc           = "runtime.nvmrc"
 	kindEnvDeclared     = "env.declared"
 	kindEnvReference    = "env.reference"
+	// kindEnvLocalhostDefault: Name = a variável; Value = o endereço local usado
+	// quando ela falta (DEC-49).
+	kindEnvLocalhostDefault = "env.localhost_default"
 	// kindEntryField: campo module ou main do package.json (DEC-36).
 	kindEntryField = "manifest.entry"
 	// kindPackageManagerField: campo packageManager ("bun@1.1.38").

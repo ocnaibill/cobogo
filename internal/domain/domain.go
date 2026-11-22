@@ -161,6 +161,13 @@ type DeploymentEvent struct {
 	Payload      map[string]any `json:"payload"`
 }
 
+// Saúde de uma release segundo a sonda do deploy: `degraded` quando a aplicação
+// respondeu 4xx (está no ar, mas não serve o que se espera; DEC-49).
+const (
+	ReleaseHealthy  = "healthy"
+	ReleaseDegraded = "degraded"
+)
+
 // Release é o resultado operacional de um deployment bem-sucedido.
 type Release struct {
 	ID               uuid.UUID `json:"id"`

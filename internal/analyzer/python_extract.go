@@ -88,18 +88,24 @@ var (
 	djangoStaticRoot      = regexp.MustCompile(`(?m)^\s*STATIC_ROOT\s*=`)
 	djangoDebugTrue       = regexp.MustCompile(`(?m)^DEBUG\s*=\s*True\b`)
 	djangoSecretLiteral   = regexp.MustCompile(`(?m)^SECRET_KEY\s*=\s*["']`)
-	djangoSecretEnv       = regexp.MustCompile(`(?m)^SECRET_KEY\s*=.*?["']([A-Z_][A-Z0-9_]*)["']`)
-	djangoHostsLiteral    = regexp.MustCompile(`(?m)^ALLOWED_HOSTS\s*=\s*\[([^\]]*)\]`)
-	djangoHostsEnv        = regexp.MustCompile(`(?m)^ALLOWED_HOSTS\s*=.*?["']([A-Z_][A-Z0-9_]*)["']`)
-	djangoCSRFEnv         = regexp.MustCompile(`(?m)^CSRF_TRUSTED_ORIGINS\s*=.*?["']([A-Z_][A-Z0-9_]*)["']`)
-	djangoCSRF            = regexp.MustCompile(`(?m)^CSRF_TRUSTED_ORIGINS\s*=`)
-	djangoWhitenoise      = regexp.MustCompile(`whitenoise\.middleware\.WhiteNoiseMiddleware`)
-	djangoSQLite          = regexp.MustCompile(`django\.db\.backends\.sqlite3`)
-	djangoPostgres        = regexp.MustCompile(`django\.db\.backends\.postgresql`)
-	djangoMediaRoot       = regexp.MustCompile(`(?m)^\s*MEDIA_ROOT\s*=`)
-	djangoMediaDir        = regexp.MustCompile(`(?m)^\s*MEDIA_ROOT\s*=.*?["']([\w./-]+)["']`)
-	djangoHostsExtended   = regexp.MustCompile(`(?m)^\s*ALLOWED_HOSTS\s*(?:\+=|\.append\(|\.extend\()`)
-	pyStringValue         = regexp.MustCompile(`["']([^"']*)["']`)
+	// SECRET_KEY = os.environ.get('SECRET_KEY', 'literal') e config('SECRET_KEY', default='literal'):
+	// a falta da variável não falha, e a chave que vale é a do repositório.
+	djangoSecretDefault = regexp.MustCompile(`(?m)^\s*SECRET_KEY\s*=\s*[\w.]+\(\s*["']([A-Z_][A-Z0-9_]*)["']\s*,\s*(?:default\s*=\s*)?["'][^"'\n]+["']`)
+	djangoCSRFLiteral   = regexp.MustCompile(`(?m)^\s*CSRF_TRUSTED_ORIGINS\s*=\s*\[([^\]]*)\]`)
+	djangoRootURLConf   = regexp.MustCompile(`(?m)^\s*ROOT_URLCONF\s*=\s*["']([A-Za-z_][\w.]*)["']`)
+	djangoMediaStatic   = regexp.MustCompile(`\bstatic\(\s*(?:settings\.)?MEDIA_URL\b`)
+	djangoSecretEnv     = regexp.MustCompile(`(?m)^SECRET_KEY\s*=.*?["']([A-Z_][A-Z0-9_]*)["']`)
+	djangoHostsLiteral  = regexp.MustCompile(`(?m)^ALLOWED_HOSTS\s*=\s*\[([^\]]*)\]`)
+	djangoHostsEnv      = regexp.MustCompile(`(?m)^ALLOWED_HOSTS\s*=.*?["']([A-Z_][A-Z0-9_]*)["']`)
+	djangoCSRFEnv       = regexp.MustCompile(`(?m)^CSRF_TRUSTED_ORIGINS\s*=.*?["']([A-Z_][A-Z0-9_]*)["']`)
+	djangoCSRF          = regexp.MustCompile(`(?m)^CSRF_TRUSTED_ORIGINS\s*=`)
+	djangoWhitenoise    = regexp.MustCompile(`whitenoise\.middleware\.WhiteNoiseMiddleware`)
+	djangoSQLite        = regexp.MustCompile(`django\.db\.backends\.sqlite3`)
+	djangoPostgres      = regexp.MustCompile(`django\.db\.backends\.postgresql`)
+	djangoMediaRoot     = regexp.MustCompile(`(?m)^\s*MEDIA_ROOT\s*=`)
+	djangoMediaDir      = regexp.MustCompile(`(?m)^\s*MEDIA_ROOT\s*=.*?["']([\w./-]+)["']`)
+	djangoHostsExtended = regexp.MustCompile(`(?m)^\s*ALLOWED_HOSTS\s*(?:\+=|\.append\(|\.extend\()`)
+	pyStringValue       = regexp.MustCompile(`["']([^"']*)["']`)
 )
 
 // normalizePy normaliza o nome de um pacote (PEP 503): minúsculas e um hífen.
@@ -526,6 +532,29 @@ func extractDjango(fsys fs.FS, x *Extraction, srcLayout bool) {
 		}
 		if m := djangoCSRFEnv.FindSubmatchIndex(data); m != nil {
 			set("CSRF_TRUSTED_ORIGINS_ENV", string(data[m[2]:m[3]]), file, data, m[0])
+		} else if m := djangoCSRFLiteral.FindSubmatchIndex(data); m != nil {
+			var origins []string
+			for _, o := range pyStringValue.FindAllSubmatch(data[m[2]:m[3]], -1) {
+				origins = append(origins, string(o[1]))
+			}
+			set("CSRF_TRUSTED_ORIGINS_LITERAL", strings.Join(origins, ","), file, data, m[0])
+		}
+		if m := djangoSecretDefault.FindSubmatchIndex(data); m != nil {
+			set("SECRET_KEY_DEFAULT", string(data[m[2]:m[3]]), file, data, m[0])
+		}
+		// O módulo de URLs: a mídia servida só por static(MEDIA_URL…).
+		if m := djangoRootURLConf.FindSubmatch(data); m != nil {
+			urls := strings.ReplaceAll(string(m[1]), ".", "/")
+			for _, f := range []string{urls + ".py", urls + "/__init__.py", "src/" + urls + ".py"} {
+				ud, st, err := readSmallFile(fsys, f)
+				if err != nil || st != fileOK {
+					continue
+				}
+				if loc := djangoMediaStatic.FindIndex(ud); loc != nil {
+					set("MEDIA_URLS_STATIC", "", f, ud, loc[0])
+				}
+				break
+			}
 		}
 	}
 }

@@ -764,6 +764,16 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 	if !probe.Healthy() {
 		probePayload["warning"] = fmt.Sprintf("a aplicação respondeu %d em %s: está no ar, mas não respondeu 2xx; se a rota certa for outra, informe health_path", probe.Status, probe.Path)
 	}
+	// Uma resposta 4xx passa na sonda, mas a release fica marcada como degradada, e
+	// o motivo conhecido é dito aqui (DEC-49 item 5).
+	releaseHealth := domain.ReleaseHealthy
+	if probe.Status >= 400 {
+		releaseHealth = domain.ReleaseDegraded
+		probePayload["degraded"] = true
+		if cause := diagnosis.ProbeCause(probe.Status, result.Fields[domain.FieldPythonFramework].Value); cause != "" {
+			probePayload["cause"] = cause
+		}
+	}
 	if err := w.emit(ctx, o, dep.ID, "verifying", "probe", probePayload); err != nil {
 		return err
 	}
@@ -772,7 +782,7 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 	// transação, o deploy vai a SUCCEEDED e a release vira a ativa do projeto.
 	// Uma falha antes disso remove a candidata e deixa a release anterior no ar.
 	spec := store.ReleaseSpec{
-		ImageID: buildResult.ImageID, ContainerID: runResult.ContainerID, Health: "healthy", HostPort: runResult.HostPort,
+		ImageID: buildResult.ImageID, ContainerID: runResult.ContainerID, Health: releaseHealth, HostPort: runResult.HostPort,
 	}
 	if routing.Enabled() {
 		if err := o.Check(ctx); err != nil {

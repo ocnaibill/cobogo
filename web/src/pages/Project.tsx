@@ -137,6 +137,12 @@ export function ProjectPage() {
       </PageHead>
       {error && <Notice tone="danger">{error}</Notice>}
       {appControl.notice && <Notice tone={appControl.notice.tone}>{appControl.notice.text}</Notice>}
+      {release?.health === "degraded" && lastOk && (
+        <Notice tone="warning" title="A última verificação respondeu 4xx">
+          A aplicação está no ar, mas a sonda do deploy não recebeu uma resposta de sucesso. Veja o motivo provável no{" "}
+          <Link to={`/deploys/${lastOk.id}`}>deploy {lastOk.id.slice(0, 8)}</Link>.
+        </Notice>
+      )}
       {p.app_state === "stopped" && !appControl.transition && (
         <Notice tone="warning" title="A aplicação está parada.">
           <span>O endereço público mostra a página de projeto inativo. Parar não é uma falha: o contêiner foi mantido, e Iniciar o traz de volta. Um novo deploy também o coloca no ar.</span>
@@ -226,7 +232,11 @@ export function ProjectPage() {
                     publicada <When iso={lastOk.updated_at} /> · <Link to={`/deploys/${lastOk.id}`}>deploy {lastOk.id.slice(0, 8)}</Link>
                   </span>
                 </div>
-                {release && <Tag tone={release.health === "healthy" ? "success" : "neutral"}>{release.operational_state}</Tag>}
+                {release && (
+                  <Tag tone={release.health === "healthy" ? "success" : release.health === "degraded" ? "warning" : "neutral"}>
+                    {release.health === "degraded" ? `${release.operational_state} · degradada` : release.operational_state}
+                  </Tag>
+                )}
               </div>
               <div className="tiles">
                 <div className="tile">

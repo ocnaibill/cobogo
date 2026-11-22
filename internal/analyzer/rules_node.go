@@ -308,12 +308,22 @@ func ruleHEU09() Rule {
 			}
 
 			hasExampleFile := len(in.Of(kindEnvExampleFile)) > 0
+			localDefault := map[string]domain.Evidence{}
+			for _, e := range in.Of(kindEnvLocalhostDefault) {
+				if _, ok := localDefault[e.Name]; !ok {
+					localDefault[e.Name] = e
+				}
+			}
 			var out RuleOutput
 			for _, v := range byName {
 				if v.Example == domain.ExampleDefault {
 					v.DefaultValue = defaults[v.Name]
 				}
 				v.Hint = configHint(*v, hasExampleFile)
+				if e, ok := localDefault[v.Name]; ok && v.Class != domain.ClassPlatform {
+					v.Hint = &domain.ConfigHint{Code: domain.HintLocalhostDefault, Message: fmt.Sprintf(
+						"O código usa %s quando esta variável falta (%s:%d). Sem valor no build, o site publicado chama esse endereço do navegador de quem o visita, e não o seu servidor. Defina a variável com o endereço público do backend.", e.Value, e.Source, e.Line)}
+				}
 				out.ConfigVariables = append(out.ConfigVariables, *v)
 			}
 

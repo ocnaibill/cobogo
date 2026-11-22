@@ -137,7 +137,7 @@ export function eventToLines(e: DeploymentEvent): LogLine[] {
       return [{ ...base, kind: "step", text: `✓ ${stage}: concluído${extra}` }];
     }
     case "probe":
-      return [{ ...base, kind: p.healthy ? "step" : "warning", text: `✓ verificação: ${str(p.path)} respondeu ${str(p.status)}${p.warning ? ` — ${str(p.warning)}` : ""}` }];
+      return [{ ...base, kind: p.healthy ? "step" : "warning", text: `✓ verificação: ${str(p.path)} respondeu ${str(p.status)}${p.warning ? ` — ${str(p.warning)}` : ""}${p.cause ? ` ${str(p.cause)}` : ""}` }];
     case "promoted":
       return [{ ...base, kind: "success", text: `✓ roteamento: publicado em ${str(p.url)}` }];
     case "succeeded":

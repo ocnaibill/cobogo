@@ -153,3 +153,14 @@ func Unset(inventory []domain.ConfigVariable, have map[string]string) []domain.C
 	}
 	return out
 }
+
+// ProbeCause explica uma resposta da sonda que passou (abaixo de 500) mas indica
+// um problema conhecido, ou devolve "" quando não há o que dizer (DEC-49 item 5).
+// Um Django com DEBUG desligado não escreve a causa de um host não permitido no
+// log: a explicação precisa vir daqui.
+func ProbeCause(status int, framework string) string {
+	if status == 400 && framework == domain.FrameworkDjango {
+		return "O Django responde 400 (Bad Request) quando o endereço pelo qual é acessado não está em ALLOWED_HOSTS, e com DEBUG desligado não registra isso no log. Veja os avisos da análise sobre ALLOWED_HOSTS e CSRF_TRUSTED_ORIGINS: a lista precisa incluir o endereço deste projeto, lida de uma variável de ambiente."
+	}
+	return ""
+}

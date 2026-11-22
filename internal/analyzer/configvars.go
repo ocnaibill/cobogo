@@ -37,6 +37,8 @@ var (
 
 	// import.meta.env.X: configuração de build no Vite e afins (DEC-37).
 	importMetaEnv = regexp.MustCompile(`import\.meta\.env\.([A-Za-z_][A-Za-z0-9_]*)`)
+	// Variável de build com um endereço local como padrão: VITE_API_URL || 'http://localhost:8000/api'.
+	localhostDefault = regexp.MustCompile("(?:import\\.meta\\.env|process\\.env)\\.([A-Za-z_][A-Za-z0-9_]*)\\s*(?:\\|\\||\\?\\?)\\s*[\"'`](https?://(?:localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0|\\[::1\\])(?::\\d+)?[^\"'`\\s]*)[\"'`]")
 
 	// Servidor do Bun sem porta explícita (DEC-36 item 5).
 	bunServeCall  = regexp.MustCompile(`\bBun\.serve\s*\(`)
@@ -100,6 +102,11 @@ func extractSource(fsys fs.FS, x *Extraction) error {
 			varName := string(data[m[2]:m[3]])
 			if !viteBuiltins[varName] && scope != domain.ScopeTest {
 				x.emit(extractorSource, domain.Evidence{Kind: kindEnvReference, Name: varName, Source: name, Line: lineAt(data, m[0]), Scope: domain.ScopeBuild})
+			}
+		}
+		if scope != domain.ScopeTest {
+			for _, m := range localhostDefault.FindAllSubmatchIndex(data, -1) {
+				x.emit(extractorSource, domain.Evidence{Kind: kindEnvLocalhostDefault, Name: string(data[m[2]:m[3]]), Value: string(data[m[4]:m[5]]), Source: name, Line: lineAt(data, m[0]), Scope: scope})
 			}
 		}
 		if scope == domain.ScopeRuntime && !portWord.Match(data) {

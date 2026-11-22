@@ -2550,6 +2550,10 @@ components:
           type: string
         health:
           type: string
+          description: |
+            `healthy`, ou `degraded` quando a sonda do deploy teve resposta 4xx: a
+            aplicação está no ar, mas não serve o que se espera (por exemplo, um
+            Django que responde 400 por `ALLOWED_HOSTS`; DEC-49).
         host_port:
           type: integer
           description: Porta no loopback do host, para acesso direto ao contêiner.
