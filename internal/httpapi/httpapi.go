@@ -53,6 +53,9 @@ type Options struct {
 	SetupToken *auth.SetupToken
 	Hasher     *auth.Hasher
 	Limiter    *auth.LoginLimiter
+	// BackupDir é onde o volume de backups está montado, somente leitura (DEC-47).
+	// Vazio desliga a leitura de backups.
+	BackupDir string
 }
 
 type Server struct {
@@ -65,6 +68,7 @@ type Server struct {
 	setup          *auth.SetupToken
 	hasher         *auth.Hasher
 	limiter        *auth.LoginLimiter
+	backupDir      string
 	lastProxyWarn  atomic.Int64
 }
 
@@ -90,6 +94,7 @@ func NewRouter(o Options) (http.Handler, error) {
 		setup:          o.SetupToken,
 		hasher:         o.Hasher,
 		limiter:        o.Limiter,
+		backupDir:      o.BackupDir,
 	}
 
 	mux := http.NewServeMux()
@@ -157,6 +162,8 @@ func (s *Server) routes() []route {
 		{"GET /api/v1/projects/{id}/commands/{cid}", s.authed(s.handleGetCommand)},
 		{"POST /api/v1/projects/{id}/commands/{cid}/cancel", s.authed(s.handleCancelCommand)},
 		{"GET /api/v1/projects/{id}/logs", s.authed(s.handleRuntimeLogs)},
+		{"GET /api/v1/backups", s.authed(s.handleListBackups)},
+		{"GET /api/v1/backups/{name}/download", s.authed(s.handleDownloadBackup)},
 		{"GET /api/v1/projects/{id}/deployments", s.authed(s.handleListDeployments)},
 		{"POST /api/v1/projects/{id}/deployments", s.authed(s.handleCreateDeployment)},
 		{"GET /api/v1/deployments/{id}", s.authed(s.handleGetDeployment)},

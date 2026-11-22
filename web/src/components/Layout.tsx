@@ -1,5 +1,6 @@
 // Casca do painel (TEL-02 do Stitch): barra superior com a instância e a
 // conta, navegação lateral por grupos (§18.1) e a guarda de sessão.
+import { useBackups } from "../pages/Backups";
 import { useEffect, useState } from "react";
 import { Link, Navigate, NavLink, Outlet, useLocation } from "react-router";
 import { useSession } from "../session";
@@ -79,6 +80,9 @@ function Layout() {
 function Sidebar() {
   const projects = useProjectNav();
   const list = projects.data?.projects ?? [];
+  const backups = useBackups();
+  // O ponto vermelho só acende com o volume visível e o backup velho ou ausente.
+  const backupAlert = !!backups.data && backups.data.configured && backups.data.stale;
   return (
     <aside className="sidebar" id="navegacao">
       <nav aria-label="Principal" className="nav">
@@ -112,6 +116,17 @@ function Sidebar() {
           </div>
           <NavLink to="/importar" className="nav-link">
             <span>Importar repositório</span>
+          </NavLink>
+        </div>
+
+        <div className="nav-group">
+          <div className="nav-group-title">
+            <Icon name="shieldCheck" size={16} />
+            Plataforma
+          </div>
+          <NavLink to="/backups" className="nav-link">
+            <span>Backups</span>
+            {backupAlert && <span className="dot dot-danger" role="img" aria-label="backup atrasado" title="Backup atrasado ou ausente" />}
           </NavLink>
         </div>
       </nav>

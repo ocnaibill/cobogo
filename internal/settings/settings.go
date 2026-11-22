@@ -32,6 +32,10 @@ const (
 	// Política do ciclo de vida (DEC-38).
 	RetireGraceSeconds = "retire_grace_seconds"
 	ReleaseImagesKept  = "release_images_kept"
+	// Retenção dos backups (DEC-47).
+	BackupKeepDaily   = "backup_keep_daily"
+	BackupKeepWeekly  = "backup_keep_weekly"
+	BackupProjectKeep = "backup_project_keep"
 )
 
 // Kind é o tipo do valor de uma chave.
@@ -78,6 +82,9 @@ var Defs = []Def{
 	{Key: AppsScheme, Kind: KindChoice, EnvVar: "COBOGO_APPS_SCHEME", Choices: []string{"https", "http"}, Default: "https"},
 	{Key: RetireGraceSeconds, Kind: KindInt, Min: 5, Max: 3600, Default: "30", Policy: true},
 	{Key: ReleaseImagesKept, Kind: KindInt, Min: 1, Max: 20, Default: "2", Policy: true},
+	{Key: BackupKeepDaily, Kind: KindInt, Min: 1, Max: 90, Default: "7", Policy: true},
+	{Key: BackupKeepWeekly, Kind: KindInt, Min: 0, Max: 52, Default: "4", Policy: true},
+	{Key: BackupProjectKeep, Kind: KindInt, Min: 1, Max: 20, Default: "3", Policy: true},
 }
 
 // Lookup acha a definição de uma chave.

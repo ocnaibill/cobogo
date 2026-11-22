@@ -39,6 +39,8 @@ tags:
     description: Ciclo de vida (excluir projeto, aplicar limites, aposentar releases), executado pelo worker
   - name: settings
     description: Política operacional editável (limites de recursos e hosts de repositório)
+  - name: backups
+    description: Backups do banco interno da plataforma (DEC-47)
   - name: health
     description: Disponibilidade
   - name: observability
@@ -274,6 +276,66 @@ paths:
                 $ref: '#/components/schemas/Error'
         '429':
           $ref: '#/components/responses/RateLimited'
+  /backups:
+    get:
+      tags: [backups]
+      summary: Backups da plataforma
+      description: |
+        Os backups do banco interno do Cobogó (DEC-47): o estado do serviço de backup,
+        os arquivos (do mais novo ao mais antigo, com a soma SHA-256) e o aviso `stale`
+        quando o último backup bem-sucedido tem mais de 36 horas ou não há nenhum.
+        O dump leva os segredos **cifrados**; a chave das variáveis não está nele e
+        deve ser guardada à parte. Uma cópia no mesmo disco não protege da perda
+        dele: a cópia de fora é o download.
+      operationId: listBackups
+      responses:
+        '200':
+          description: O estado e os arquivos.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackupsView'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+  /backups/{name}/download:
+    get:
+      tags: [backups]
+      summary: Baixa um backup da plataforma
+      description: |
+        Entrega o arquivo do backup (formato custom do `pg_dump`) em fluxo, com a soma
+        no cabeçalho `X-Content-SHA256`. Exige a senha digitada de novo nesta sessão
+        (`POST /auth/reauth`); sem ela, `403 reauth_required`. O prazo de escrita vale
+        por falta de progresso, não pelo tempo total.
+      operationId: downloadBackup
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^cobogo-core-\d{8}-\d{6}(-[a-z0-9][a-z0-9._-]{0,47})?\.dump$'
+      responses:
+        '200':
+          description: O arquivo.
+          headers:
+            X-Content-SHA256:
+              schema:
+                type: string
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          description: A senha não foi digitada de novo nesta sessão (`reauth_required`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /projects:
     get:
       tags: [projects]
@@ -1876,7 +1938,7 @@ components:
       required: true
       schema:
         type: string
-        enum: [app_memory_mb, app_cpus, app_pids, build_memory_mb, build_cpus, extra_git_hosts, apps_domain, apps_scheme]
+        enum: [app_memory_mb, app_cpus, app_pids, build_memory_mb, build_cpus, extra_git_hosts, apps_domain, apps_scheme, retire_grace_seconds, release_images_kept, backup_keep_daily, backup_keep_weekly, backup_project_keep]
     Id:
       name: id
       in: path
@@ -2039,6 +2101,10 @@ components:
       properties:
         user:
           $ref: '#/components/schemas/User'
+        reauth_until:
+          type: string
+          format: date-time
+          description: Só em `GET /auth/me`, e só se a senha digitada de novo vale nesta sessão (DEC-45).
     Limits:
       type: object
       description: |
@@ -2809,6 +2875,68 @@ components:
           type: integer
         retention_lines:
           type: integer
+    BackupFile:
+      type: object
+      required: [name, size_bytes, created_at, label, sha256]
+      properties:
+        name:
+          type: string
+        size_bytes:
+          type: integer
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+        label:
+          type: string
+          description: Vazio nos automáticos; `pre-<commit>` nos pedidos antes de uma atualização.
+        sha256:
+          type: string
+    BackupStatus:
+      type: object
+      required: [last_run_at, last_ok_at, last_file, last_error, next_run_at, keep_daily, keep_weekly]
+      properties:
+        last_run_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_ok_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_file:
+          type: string
+        last_error:
+          type: string
+        next_run_at:
+          type: string
+          format: date-time
+          nullable: true
+        keep_daily:
+          type: integer
+        keep_weekly:
+          type: integer
+    BackupsView:
+      type: object
+      required: [configured, status, backups, stale, stale_after, total_bytes]
+      properties:
+        configured:
+          type: boolean
+          description: O painel enxerga o volume de backups.
+        status:
+          $ref: '#/components/schemas/BackupStatus'
+        backups:
+          type: array
+          items:
+            $ref: '#/components/schemas/BackupFile'
+        stale:
+          type: boolean
+        stale_after:
+          type: string
+          description: A idade a partir da qual o aviso vale, como duração (36h0m0s).
+        total_bytes:
+          type: integer
+          format: int64
     CommandsView:
       type: object
       required: [commands, scripts, available, reauth_until, default_timeout, max_timeout]

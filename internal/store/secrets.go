@@ -195,3 +195,43 @@ func (s *Store) RotateSecrets(ctx context.Context) (RotationReport, error) {
 	}
 	return report, nil
 }
+
+// SecretsVerification é o resultado de abrir toda variável cifrada.
+type SecretsVerification struct {
+	// Total é quantas variáveis há; Unreadable, as que a chave do chaveiro não abre,
+	// como "projeto/NOME" (nunca o valor).
+	Total      int
+	Unreadable []string
+}
+
+// VerifySecrets tenta abrir **todas** as variáveis cifradas com o chaveiro
+// carregado, sem alterar nada. É a prova de que uma restauração serve: com a
+// chave certa nenhuma fica ilegível; com a errada, todas (DEC-47). Precisa do
+// role dono ou do worker, que leem o texto cifrado.
+func (s *Store) VerifySecrets(ctx context.Context) (SecretsVerification, error) {
+	if s.cipher == nil {
+		return SecretsVerification{}, ErrNoCipher
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT p.slug, e.project_id, e.name, e.version, e.key_version, e.ciphertext
+		FROM env_variables e JOIN projects p ON p.id = e.project_id ORDER BY p.slug, e.name`)
+	if err != nil {
+		return SecretsVerification{}, fmt.Errorf("store: ler variáveis para conferir: %w", err)
+	}
+	defer rows.Close()
+	var out SecretsVerification
+	for rows.Next() {
+		var slug, name string
+		var projectID uuid.UUID
+		var version, keyVersion int
+		var sealed []byte
+		if err := rows.Scan(&slug, &projectID, &name, &version, &keyVersion, &sealed); err != nil {
+			return SecretsVerification{}, fmt.Errorf("store: ler variável: %w", err)
+		}
+		out.Total++
+		if _, err := s.cipher.OpenVersion(keyVersion, sealed, envAAD(projectID, name, version)); err != nil {
+			out.Unreadable = append(out.Unreadable, slug+"/"+name)
+		}
+	}
+	return out, rows.Err()
+}

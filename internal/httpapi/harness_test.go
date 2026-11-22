@@ -50,6 +50,7 @@ type options struct {
 	publicURL      string
 	setupToken     *auth.SetupToken
 	limiter        *auth.LoginLimiter
+	backupDir      string
 }
 
 func newHarness(t *testing.T, opts ...func(*options)) *harness {
@@ -68,7 +69,7 @@ func newHarness(t *testing.T, opts ...func(*options)) *harness {
 	router, err := httpapi.NewRouter(httpapi.Options{
 		Store: st, Log: slog.New(slog.NewTextHandler(io.MultiWriter(sink, io.Discard), nil)),
 		PublicURL: o.publicURL, CookieInsecure: o.cookieInsecure, TrustedProxies: o.trusted,
-		SetupToken: o.setupToken, Hasher: hasher, Limiter: o.limiter,
+		SetupToken: o.setupToken, Hasher: hasher, Limiter: o.limiter, BackupDir: o.backupDir,
 	})
 	if err != nil {
 		t.Fatal(err)

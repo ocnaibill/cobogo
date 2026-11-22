@@ -2,6 +2,7 @@
 // contêiner descartável da imagem da release ativa. A senha digitada de novo vale
 // por uma janela curta, nesta sessão.
 import { useEffect, useState, type FormEvent } from "react";
+import { ReauthForm } from "./Reauth";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, unwrap } from "../api/client";
 import { clock, COMMAND_STATE_LABEL, COMMAND_STATE_TONE, isActive, reauthSecondsLeft, type CommandRun } from "../lib/commands";
@@ -85,7 +86,7 @@ export function CommandsTab({ projectId }: { projectId: string }) {
         </Notice>
       )}
 
-      {view.available && !unlocked && <ReauthForm onDone={() => qc.invalidateQueries({ queryKey: ["commands", projectId] })} />}
+      {view.available && !unlocked && <ReauthForm title="Digite a sua senha para liberar comandos" reason="Um comando enxerga as variáveis do projeto, e o painel nunca mostra os valores dos segredos. Por isso a senha é pedida de novo." onDone={() => qc.invalidateQueries({ queryKey: ["commands", projectId] })} />}
 
       {view.available && unlocked && (
         <Card
@@ -192,47 +193,6 @@ export function CommandsTab({ projectId }: { projectId: string }) {
         )}
       </section>
     </div>
-  );
-}
-
-/** Pede a senha de novo e abre a janela de 10 minutos. */
-function ReauthForm({ onDone }: { onDone: () => void }) {
-  const [password, setPassword] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function submit(ev: FormEvent) {
-    ev.preventDefault();
-    setBusy(true);
-    setError(null);
-    try {
-      await unwrap(api.POST("/auth/reauth", { body: { password } }));
-      setPassword("");
-      onDone();
-    } catch (e) {
-      setError(errText(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Card title="Digite a sua senha para liberar comandos" icon="key">
-      <form className="stack" onSubmit={submit}>
-        <p className="small muted card-text">
-          Um comando enxerga as variáveis do projeto, e o painel nunca mostra os valores dos segredos. Por isso a senha é pedida de novo; ela vale por <strong>10 minutos</strong>, só nesta sessão.
-        </p>
-        {error && <Notice tone="danger">{error}</Notice>}
-        <Field label="Senha" htmlFor="reauth-password">
-          <input id="reauth-password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />
-        </Field>
-        <div className="row-end">
-          <Button type="submit" variant="primary" icon="shieldCheck" busy={busy} disabled={!password}>
-            Liberar por 10 minutos
-          </Button>
-        </div>
-      </form>
-    </Card>
   );
 }
 

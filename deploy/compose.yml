@@ -30,6 +30,7 @@ services:
       COBOGO_API_PASSWORD: ${COBOGO_API_PASSWORD:?defina COBOGO_API_PASSWORD}
       COBOGO_WORKER_PASSWORD: ${COBOGO_WORKER_PASSWORD:?defina COBOGO_WORKER_PASSWORD}
       COBOGO_COLLECTOR_PASSWORD: ${COBOGO_COLLECTOR_PASSWORD:?defina COBOGO_COLLECTOR_PASSWORD}
+      COBOGO_BACKUP_PASSWORD: ${COBOGO_BACKUP_PASSWORD:?defina COBOGO_BACKUP_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/10-roles.sh:/docker-entrypoint-initdb.d/10-roles.sh:ro
@@ -169,6 +170,10 @@ services:
       COBOGO_PANEL_TARGET: http://api:8080
       COBOGO_APPS_DOMAIN: ${COBOGO_APPS_DOMAIN:-}
       COBOGO_APPS_SCHEME: ${COBOGO_APPS_SCHEME:-https}
+      # Os backups da plataforma só se leem aqui (DEC-47); quem os escreve é o serviço backup.
+      COBOGO_BACKUP_DIR: /backups
+    volumes:
+      - backups:/backups:ro
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
       interval: 10s
@@ -208,6 +213,28 @@ services:
         condition: service_started
     mem_limit: 128m
     networks: [control, routing]
+
+  # O backup do banco interno (DEC-47): todo dia às 03:00 (COBOGO_BACKUP_AT, no fuso
+  # do contêiner), um dump consistente num volume próprio, com um role só de leitura.
+  # A chave das variáveis NÃO entra aqui: o dump leva os segredos cifrados e a chave
+  # se guarda à parte. Um backup agora: `docker compose ... run --rm backup once pre-x`.
+  backup:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.backup
+    <<: *hardened
+    environment:
+      DATABASE_URL: postgres://cobogo_backup:${COBOGO_BACKUP_PASSWORD:?defina COBOGO_BACKUP_PASSWORD}@postgres:5432/cobogo_core?sslmode=disable
+      COBOGO_BACKUP_DIR: /backups
+      COBOGO_BACKUP_AT: ${COBOGO_BACKUP_AT:-03:00}
+      TZ: ${COBOGO_BACKUP_TZ:-UTC}
+    volumes:
+      - backups:/backups
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    mem_limit: 256m
+    networks: [control]
 
   worker:
     build:
@@ -276,3 +303,6 @@ networks:
 
 volumes:
   postgres_data:
+  # Os backups da plataforma (DEC-47). Fica na mesma VM: só protege de erro, não de
+  # perda do disco; a cópia de fora se baixa pelo painel.
+  backups:

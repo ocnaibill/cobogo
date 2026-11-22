@@ -309,3 +309,37 @@ func TestThePlaintextIsNowhereInTheDatabase(t *testing.T) {
 		t.Error("the ciphertext must not contain the value")
 	}
 }
+
+// DEC-47: a prova de que uma restauração serve. Com a chave certa todas as
+// variáveis abrem; com outra chave, todas ficam ilegíveis, e o relatório nomeia
+// projeto e variável, nunca o valor.
+func TestVerifySecretsProvesTheKeyReadsEverything(t *testing.T) {
+	st := storetest.New(t)
+	own := owner(t, st)
+	p := newProject(t, st)
+	_ = own
+	with := st.WithCipher(keyring(t, 1, 1))
+	for name, value := range map[string]string{"DATABASE_URL": "postgres://x:senha-secreta@h/db", "API_KEY": "valor-secreto-2"} {
+		if _, err := with.PutEnvVariable(ctx, p.ID, name, value, domain.EnvSourceUser); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ok, err := with.VerifySecrets(ctx)
+	if err != nil || ok.Total != 2 || len(ok.Unreadable) != 0 {
+		t.Fatalf("right key = %+v, %v", ok, err)
+	}
+	// A chave de antes mais uma nova (rotação) ainda abre.
+	if rot, err := st.WithCipher(keyring(t, 2, 1, 2)).VerifySecrets(ctx); err != nil || len(rot.Unreadable) != 0 {
+		t.Errorf("old key still in the ring = %+v, %v", rot, err)
+	}
+	// Outra chave, sem a de antes: tudo ilegível.
+	bad, err := st.WithCipher(keyring(t, 2, 2)).VerifySecrets(ctx)
+	if err != nil || bad.Total != 2 || len(bad.Unreadable) != 2 {
+		t.Fatalf("wrong key = %+v, %v", bad, err)
+	}
+	for _, name := range bad.Unreadable {
+		if !strings.HasPrefix(name, p.Slug+"/") || strings.Contains(name, "senha-secreta") || strings.Contains(name, "valor-secreto") {
+			t.Errorf("the report must name project/variable only: %q", name)
+		}
+	}
+}

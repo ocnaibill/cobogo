@@ -129,6 +129,7 @@ func main() {
 		SetupToken:     setupToken,
 		Hasher:         hasher,
 		Limiter:        auth.NewLoginLimiter(),
+		BackupDir:      strings.TrimSpace(os.Getenv("COBOGO_BACKUP_DIR")),
 	})
 	if err != nil {
 		log.Error("montar a API", "erro", err)
@@ -328,12 +329,16 @@ func migrateCommand(log *slog.Logger) error {
 // dono: a API e o worker não leem nem reescrevem texto cifrado fora do uso
 // normal (DEC-33, DEC-39).
 func rotateSecretsCommand(log *slog.Logger, args []string) error {
-	check := false
+	check, verify := false, false
 	for _, a := range args {
-		if a != "--check" {
-			return fmt.Errorf("argumento desconhecido %q (use --check para só contar)", a)
+		switch a {
+		case "--check":
+			check = true
+		case "--verify":
+			verify = true
+		default:
+			return fmt.Errorf("argumento desconhecido %q (use --check para só contar ou --verify para abrir todas)", a)
 		}
-		check = true
 	}
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -352,6 +357,23 @@ func rotateSecretsCommand(log *slog.Logger, args []string) error {
 	defer pool.Close()
 	st := store.New(pool).WithCipher(ring)
 
+	// --verify abre todas as variáveis com a chave carregada e sai com código 3 se
+	// alguma não abrir: é a prova de que uma restauração serve (DEC-47).
+	if verify {
+		res, err := st.VerifySecrets(ctx)
+		if err != nil {
+			return err
+		}
+		if len(res.Unreadable) == 0 {
+			fmt.Printf("OK: as %d variável(is) cifrada(s) abrem com a chave carregada\n", res.Total)
+			return nil
+		}
+		fmt.Printf("%d de %d variável(is) NÃO abrem com a chave carregada:\n", len(res.Unreadable), res.Total)
+		for _, name := range res.Unreadable {
+			fmt.Println("  " + name)
+		}
+		os.Exit(3)
+	}
 	counts, err := st.KeyVersionCounts(ctx)
 	if err != nil {
 		return err

@@ -1,3 +1,4 @@
+import { BackupsPage } from "./pages/Backups";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Link, RouterProvider } from "react-router";
@@ -43,6 +44,7 @@ const router = createBrowserRouter([
     children: [
       { path: "/", element: <OverviewPage /> },
       { path: "/importar", element: <ImportPage /> },
+      { path: "/backups", element: <BackupsPage /> },
       { path: "/projetos/:id", element: <ProjectPage /> },
       { path: "/deploys/:id", element: <DeploymentPage /> },
       { path: "*", element: <NotFound /> },

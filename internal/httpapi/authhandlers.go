@@ -277,7 +277,12 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request, user domai
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request, user domain.User) {
-	writeJSON(w, http.StatusOK, map[string]any{"user": user})
+	out := map[string]any{"user": user}
+	// Até quando a senha digitada de novo vale nesta sessão (DEC-45), se vale.
+	if sess, _, ok := s.sessionOf(r); ok && reauthActive(sess) {
+		out["reauth_until"] = sess.ReauthUntil
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 type changePasswordRequest struct {

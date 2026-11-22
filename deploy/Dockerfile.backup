@@ -1,0 +1,20 @@
+# Backup do banco interno do Cobogó (DEC-47). Contexto de build: a raiz do repositório.
+#   docker build -f deploy/Dockerfile.backup -t cobogo-backup .
+# Precisa do pg_dump e do pg_restore, então parte da imagem do PostgreSQL (a mesma,
+# fixada por digest, do banco da pilha). Só lê o banco, com o role cobogo_backup, e
+# só escreve no volume de backups.
+FROM golang:1.26-alpine@sha256:ecb67f987aa1a57794c91d19ade7ae0209f2f0f5496aaef9e6ae85ddf92d02ab AS build
+ENV CGO_ENABLED=0 GOTOOLCHAIN=local GOFLAGS=-mod=readonly
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd ./cmd
+COPY internal ./internal
+RUN go build -trimpath -ldflags="-s -w" -o /out/cobogo-backup ./cmd/backup
+
+FROM postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+COPY --from=build /out/cobogo-backup /usr/local/bin/cobogo-backup
+# O volume nasce com este dono (cópia da imagem) e o usuário `postgres` (70) escreve nele.
+RUN mkdir -p /backups && chown 70:70 /backups && chmod 755 /backups
+USER 70:70
+ENTRYPOINT ["/usr/local/bin/cobogo-backup"]

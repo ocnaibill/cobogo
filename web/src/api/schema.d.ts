@@ -161,6 +161,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/backups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Backups da plataforma
+         * @description Os backups do banco interno do Cobogó (DEC-47): o estado do serviço de backup,
+         *     os arquivos (do mais novo ao mais antigo, com a soma SHA-256) e o aviso `stale`
+         *     quando o último backup bem-sucedido tem mais de 36 horas ou não há nenhum.
+         *     O dump leva os segredos **cifrados**; a chave das variáveis não está nele e
+         *     deve ser guardada à parte. Uma cópia no mesmo disco não protege da perda
+         *     dele: a cópia de fora é o download.
+         */
+        get: operations["listBackups"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/backups/{name}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Baixa um backup da plataforma
+         * @description Entrega o arquivo do backup (formato custom do `pg_dump`) em fluxo, com a soma
+         *     no cabeçalho `X-Content-SHA256`. Exige a senha digitada de novo nesta sessão
+         *     (`POST /auth/reauth`); sem ela, `403 reauth_required`. O prazo de escrita vale
+         *     por falta de progresso, não pelo tempo total.
+         */
+        get: operations["downloadBackup"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/projects": {
         parameters: {
             query?: never;
@@ -1072,6 +1120,11 @@ export interface components {
         };
         UserEnvelope: {
             user: components["schemas"]["User"];
+            /**
+             * Format: date-time
+             * @description Só em `GET /auth/me`, e só se a senha digitada de novo vale nesta sessão (DEC-45).
+             */
+            reauth_until?: string;
         };
         /**
          * @description Tetos de recursos. Todos os campos são opcionais; ausente (ou zero)
@@ -1503,6 +1556,39 @@ export interface components {
             retention_hours: number;
             retention_lines: number;
         };
+        BackupFile: {
+            name: string;
+            /** Format: int64 */
+            size_bytes: number;
+            /** Format: date-time */
+            created_at: string;
+            /** @description Vazio nos automáticos; `pre-<commit>` nos pedidos antes de uma atualização. */
+            label: string;
+            sha256: string;
+        };
+        BackupStatus: {
+            /** Format: date-time */
+            last_run_at: string | null;
+            /** Format: date-time */
+            last_ok_at: string | null;
+            last_file: string;
+            last_error: string;
+            /** Format: date-time */
+            next_run_at: string | null;
+            keep_daily: number;
+            keep_weekly: number;
+        };
+        BackupsView: {
+            /** @description O painel enxerga o volume de backups. */
+            configured: boolean;
+            status: components["schemas"]["BackupStatus"];
+            backups: components["schemas"]["BackupFile"][];
+            stale: boolean;
+            /** @description A idade a partir da qual o aviso vale, como duração (36h0m0s). */
+            stale_after: string;
+            /** Format: int64 */
+            total_bytes: number;
+        };
         CommandsView: {
             commands: components["schemas"]["Command"][];
             scripts: components["schemas"]["ScriptOption"][];
@@ -1804,7 +1890,7 @@ export interface components {
     };
     parameters: {
         CommandId: string;
-        SettingKey: "app_memory_mb" | "app_cpus" | "app_pids" | "build_memory_mb" | "build_cpus" | "extra_git_hosts" | "apps_domain" | "apps_scheme";
+        SettingKey: "app_memory_mb" | "app_cpus" | "app_pids" | "build_memory_mb" | "build_cpus" | "extra_git_hosts" | "apps_domain" | "apps_scheme" | "retire_grace_seconds" | "release_images_kept" | "backup_keep_daily" | "backup_keep_weekly" | "backup_project_keep";
         Id: string;
         EnvName: string;
         Limit: number;
@@ -2069,6 +2155,61 @@ export interface operations {
                 };
             };
             429: components["responses"]["RateLimited"];
+        };
+    };
+    listBackups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description O estado e os arquivos. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupsView"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+        };
+    };
+    downloadBackup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description O arquivo. */
+            200: {
+                headers: {
+                    "X-Content-SHA256"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            /** @description A senha não foi digitada de novo nesta sessão (`reauth_required`). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            404: components["responses"]["NotFound"];
         };
     };
     listProjects: {

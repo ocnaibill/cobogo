@@ -13,6 +13,7 @@ import { FleetResources } from "../components/Resources";
 import { isActive } from "../lib/deploy";
 import { repoName } from "../lib/format";
 import { useAppsDomain } from "../hooks/useInstance";
+import { useBackups } from "./Backups";
 
 type Bucket = "ok" | "attention" | "running" | "none" | "stopped";
 
@@ -40,6 +41,7 @@ export function OverviewPage() {
   const [filter, setFilter] = useState<Bucket | "all">("all");
   const [query, setQuery] = useState("");
   const apps = useAppsDomain();
+  const backups = useBackups();
   const q = useInfiniteQuery({
     queryKey: ["projects"],
     queryFn: ({ pageParam }) => unwrap(api.GET("/projects", { params: { query: { limit: 50, before: pageParam || undefined } } })),
@@ -91,6 +93,13 @@ export function OverviewPage() {
       {deleted && (
         <Notice tone="success" title={`${deleted} foi excluído.`}>
           O endereço saiu do ar e a limpeza segue em segundo plano. O histórico dos deploys foi preservado.
+        </Notice>
+      )}
+      {backups.data?.configured && backups.data.stale && (
+        <Notice tone="danger" icon="alert" title="O backup da plataforma está atrasado">
+          <span>
+            O último backup bem-sucedido tem mais de {backups.data.stale_after.replace("h0m0s", " horas")} (ou não há nenhum). <Link to="/backups">Ver os backups</Link>.
+          </span>
         </Notice>
       )}
       <OrphanVolumes />
