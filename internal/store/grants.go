@@ -71,6 +71,12 @@ var accessMatrix = map[string]TableAccess{
 	"metric_rollups":      {API: tbl("SELECT"), Collector: tbl("SELECT", "INSERT", "UPDATE", "DELETE")},
 	"metric_probes":       {API: tbl("SELECT"), Collector: tbl("SELECT", "INSERT", "DELETE")},
 	"collector_heartbeat": {API: tbl("SELECT"), Collector: tbl("SELECT", "INSERT", "UPDATE")},
+	// DEC-45: a API cria o pedido e só pode marcar o cancelamento; o worker executa
+	// e grava o desfecho.
+	"project_commands": {
+		API:    Privileges{Table: []string{"SELECT", "INSERT"}, Columns: map[string][]string{"UPDATE": {"cancel_requested"}}},
+		Worker: tbl("SELECT", "UPDATE"),
+	},
 	// A API pede (inserção) e acompanha (leitura); o worker executa e conclui.
 	"operations": {API: tbl("SELECT", "INSERT"), Worker: tbl("SELECT", "INSERT", "UPDATE")},
 	"env_variables": {

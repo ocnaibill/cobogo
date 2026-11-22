@@ -74,6 +74,7 @@ func New(st *store.Store, rt *dockerrt.Runtime, log *slog.Logger, cfg *settings.
 // simultâneo em M1), até ctx ser cancelado.
 func (w *Worker) Run(ctx context.Context) error {
 	go w.warmUp(ctx)
+	go w.runCommands(ctx)
 	nextSweep := time.Now().Add(firstSweepAfter)
 
 	for {

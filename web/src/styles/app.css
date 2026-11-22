@@ -442,3 +442,10 @@ details summary { cursor: pointer; font-weight: 600; }
 .probe-ok { background: var(--success); }
 .probe-bad { background: var(--danger); }
 .probe-stop { background: var(--neutral); }
+
+/* Comandos pontuais (DEC-45) */
+.cmd-list { list-style: none; margin: 0; padding: 0; }
+.cmd-item { display: grid; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--border); }
+.cmd-item:first-child { border-top: 0; }
+.linklike { background: none; border: 0; padding: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; min-width: 0; }
+.linklike:hover .strong { text-decoration: underline; }

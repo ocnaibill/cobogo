@@ -157,11 +157,11 @@ func (s *Store) GetSession(ctx context.Context, tokenHash []byte, idle time.Dura
 	var sess domain.Session
 	var u domain.User
 	err := s.pool.QueryRow(ctx, `
-		SELECT s.id, s.user_id, s.created_at, s.last_seen_at, s.expires_at, u.login, u.created_at
+		SELECT s.id, s.user_id, s.created_at, s.last_seen_at, s.expires_at, s.reauth_until, u.login, u.created_at
 		FROM sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = $1 AND s.expires_at > now() AND s.last_seen_at > now() - make_interval(secs => $2)`,
 		tokenHash, idle.Seconds(),
-	).Scan(&sess.ID, &sess.UserID, &sess.CreatedAt, &sess.LastSeenAt, &sess.ExpiresAt, &u.Login, &u.CreatedAt)
+	).Scan(&sess.ID, &sess.UserID, &sess.CreatedAt, &sess.LastSeenAt, &sess.ExpiresAt, &sess.ReauthUntil, &u.Login, &u.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Session{}, domain.User{}, ErrNotFound
 	}

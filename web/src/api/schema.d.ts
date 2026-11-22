@@ -138,6 +138,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/reauth": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Digita a senha de novo (janela de 10 minutos)
+         * @description Confere a senha, com o mesmo limite de tentativas do login, e abre por
+         *     10 minutos uma janela de reautenticação **nesta sessão**. É o que permite
+         *     rodar comandos (DEC-45): um cookie roubado não ganha a janela sem a senha.
+         *     A janela some ao sair e não passa para outra sessão.
+         */
+        post: operations["reauth"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/projects": {
         parameters: {
             query?: never;
@@ -480,6 +503,83 @@ export interface paths {
         get: operations["projectMetrics"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{id}/commands": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Comandos pontuais do projeto
+         * @description Os comandos recentes (sem a saída), os scripts do `package.json` que servem
+         *     de botão, se o projeto aceita comandos agora (`available`, com o motivo
+         *     quando não) e até quando a senha digitada de novo vale nesta sessão.
+         *     DEC-45.
+         */
+        get: operations["listCommands"];
+        put?: never;
+        /**
+         * Roda um comando no ambiente do projeto
+         * @description Enfileira um comando pontual (DEC-45). O worker o executa num **contêiner
+         *     descartável** da imagem da release ativa, na jaula da aplicação (sem
+         *     capacidades, limites de memória, CPU e processos, só a rede do projeto, sem
+         *     porta publicada), com as variáveis do projeto, e o remove ao terminar.
+         *     Nunca é um `exec` no contêiner da aplicação. Exige a senha digitada de novo
+         *     nesta sessão (`POST /auth/reauth`): sem a janela, `403 reauth_required`.
+         *     Informe `script` (um dos scripts que o projeto oferece) **ou** `command`
+         *     (texto livre, executado por `sh -c`). Um por vez por projeto
+         *     (`409 command_active`); sem release no ar ou em site estático,
+         *     `409 commands_unavailable`. A saída e o texto do comando saem com os valores
+         *     das variáveis do projeto trocados por `[REDIGIDO]`.
+         */
+        post: operations["createCommand"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{id}/commands/{cid}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Um comando, com a saída
+         * @description A saída parcial enquanto roda e a final (cabeça e cauda, até 256 KiB) ao terminar.
+         */
+        get: operations["getCommand"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{id}/commands/{cid}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancela um comando em andamento
+         * @description Marca o cancelamento; o worker encerra o contêiner. Um comando que já terminou volta como está.
+         */
+        post: operations["cancelCommand"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1312,6 +1412,48 @@ export interface components {
                 [key: string]: number;
             };
         };
+        Command: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            project_id: string;
+            /** @description O texto rodado, com os valores das variáveis do projeto trocados por `[REDIGIDO]` ao concluir. */
+            command: string;
+            /** @enum {string} */
+            source: "script" | "custom";
+            pause_app: boolean;
+            /** @enum {string} */
+            state: "queued" | "running" | "succeeded" | "failed" | "timed_out" | "canceled" | "interrupted";
+            cancel_requested: boolean;
+            timeout_seconds: number;
+            exit_code: number | null;
+            output: string;
+            output_truncated: boolean;
+            error?: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            started_at: string | null;
+            /** Format: date-time */
+            finished_at: string | null;
+        };
+        ScriptOption: {
+            name: string;
+            /** @description O que o botão roda (`npm run <nome>` ou `bun run <nome>`). */
+            command: string;
+            /** @description O que o script executa, para a pessoa ver antes de rodar. */
+            runs: string;
+        };
+        CommandsView: {
+            commands: components["schemas"]["Command"][];
+            scripts: components["schemas"]["ScriptOption"][];
+            available: boolean;
+            reason?: string;
+            /** Format: date-time */
+            reauth_until: string | null;
+            default_timeout: number;
+            max_timeout: number;
+        };
         ServiceNeed: {
             /** @enum {string} */
             engine: "postgres";
@@ -1602,6 +1744,7 @@ export interface components {
         };
     };
     parameters: {
+        CommandId: string;
         SettingKey: "app_memory_mb" | "app_cpus" | "app_pids" | "build_memory_mb" | "build_cpus" | "extra_git_hosts" | "apps_domain" | "apps_scheme";
         Id: string;
         EnvName: string;
@@ -1818,6 +1961,46 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             /** @description Sessão ausente (`unauthenticated`) ou senha atual incorreta (`invalid_credentials`). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    reauth: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    password: string;
+                };
+            };
+        };
+        responses: {
+            /** @description A janela está aberta. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: date-time */
+                        reauth_until: string;
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            /** @description Sessão ausente (`unauthenticated`) ou senha incorreta (`invalid_credentials`). */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -2454,6 +2637,139 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProjectMetrics"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    listCommands: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Os comandos e o que o painel precisa para oferecê-los. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommandsView"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    createCommand: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Nome de um script de `package.json` oferecido pelo projeto. */
+                    script?: string;
+                    /** @description Comando livre, de até 2000 caracteres. */
+                    command?: string;
+                    /** @description Para a aplicação durante o comando e a inicia de novo depois. Padrão `false` (roda com a aplicação no ar). */
+                    pause_app?: boolean;
+                    /** @description Prazo do comando. Padrão 300. */
+                    timeout_seconds?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description O comando foi enfileirado. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Command"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            /** @description A senha não foi digitada de novo nesta sessão (`reauth_required`). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description Já há um comando em andamento (`command_active`), o projeto não tem release (`no_release`) ou não aceita comandos (`commands_unavailable`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getCommand: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+                cid: components["parameters"]["CommandId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description O comando. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Command"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    cancelCommand: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+                cid: components["parameters"]["CommandId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description O pedido foi registrado. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Command"];
                 };
             };
             400: components["responses"]["BadRequest"];

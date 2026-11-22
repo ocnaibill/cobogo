@@ -34,6 +34,8 @@ import (
 const (
 	LabelManaged    = "cobogo.managed"
 	LabelDeployment = "cobogo.deployment"
+	// LabelRole marca um contêiner passageiro do Cobogó (valor: command, volume-init, tls-init).
+	LabelRole = "cobogo.role"
 )
 
 const mib = 1 << 20

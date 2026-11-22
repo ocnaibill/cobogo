@@ -232,6 +232,48 @@ paths:
                 $ref: '#/components/schemas/Error'
         '429':
           $ref: '#/components/responses/RateLimited'
+  /auth/reauth:
+    post:
+      tags: [auth]
+      summary: Digita a senha de novo (janela de 10 minutos)
+      description: |
+        Confere a senha, com o mesmo limite de tentativas do login, e abre por
+        10 minutos uma janela de reautenticação **nesta sessão**. É o que permite
+        rodar comandos (DEC-45): um cookie roubado não ganha a janela sem a senha.
+        A janela some ao sair e não passa para outra sessão.
+      operationId: reauth
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password:
+                  type: string
+      responses:
+        '200':
+          description: A janela está aberta.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [reauth_until]
+                properties:
+                  reauth_until:
+                    type: string
+                    format: date-time
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Sessão ausente (`unauthenticated`) ou senha incorreta (`invalid_credentials`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /projects:
     get:
       tags: [projects]
@@ -865,6 +907,139 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProjectMetrics'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/commands:
+    get:
+      tags: [projects]
+      summary: Comandos pontuais do projeto
+      description: |
+        Os comandos recentes (sem a saída), os scripts do `package.json` que servem
+        de botão, se o projeto aceita comandos agora (`available`, com o motivo
+        quando não) e até quando a senha digitada de novo vale nesta sessão.
+        DEC-45.
+      operationId: listCommands
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Os comandos e o que o painel precisa para oferecê-los.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandsView'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [projects]
+      summary: Roda um comando no ambiente do projeto
+      description: |
+        Enfileira um comando pontual (DEC-45). O worker o executa num **contêiner
+        descartável** da imagem da release ativa, na jaula da aplicação (sem
+        capacidades, limites de memória, CPU e processos, só a rede do projeto, sem
+        porta publicada), com as variáveis do projeto, e o remove ao terminar.
+        Nunca é um `exec` no contêiner da aplicação. Exige a senha digitada de novo
+        nesta sessão (`POST /auth/reauth`): sem a janela, `403 reauth_required`.
+        Informe `script` (um dos scripts que o projeto oferece) **ou** `command`
+        (texto livre, executado por `sh -c`). Um por vez por projeto
+        (`409 command_active`); sem release no ar ou em site estático,
+        `409 commands_unavailable`. A saída e o texto do comando saem com os valores
+        das variáveis do projeto trocados por `[REDIGIDO]`.
+      operationId: createCommand
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                script:
+                  type: string
+                  description: Nome de um script de `package.json` oferecido pelo projeto.
+                command:
+                  type: string
+                  description: Comando livre, de até 2000 caracteres.
+                pause_app:
+                  type: boolean
+                  description: Para a aplicação durante o comando e a inicia de novo depois. Padrão `false` (roda com a aplicação no ar).
+                timeout_seconds:
+                  type: integer
+                  minimum: 5
+                  maximum: 600
+                  description: Prazo do comando. Padrão 300.
+      responses:
+        '202':
+          description: O comando foi enfileirado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Command'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          description: A senha não foi digitada de novo nesta sessão (`reauth_required`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Já há um comando em andamento (`command_active`), o projeto não tem release (`no_release`) ou não aceita comandos (`commands_unavailable`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /projects/{id}/commands/{cid}:
+    get:
+      tags: [projects]
+      summary: Um comando, com a saída
+      description: A saída parcial enquanto roda e a final (cabeça e cauda, até 256 KiB) ao terminar.
+      operationId: getCommand
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/CommandId'
+      responses:
+        '200':
+          description: O comando.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Command'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/commands/{cid}/cancel:
+    post:
+      tags: [projects]
+      summary: Cancela um comando em andamento
+      description: Marca o cancelamento; o worker encerra o contêiner. Um comando que já terminou volta como está.
+      operationId: cancelCommand
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/CommandId'
+      responses:
+        '202':
+          description: O pedido foi registrado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Command'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -1625,6 +1800,13 @@ components:
       schema:
         type: string
   parameters:
+    CommandId:
+      name: cid
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
     SettingKey:
       name: key
       in: path
@@ -2462,6 +2644,87 @@ components:
           type: object
           additionalProperties:
             type: integer
+    Command:
+      type: object
+      required: [id, project_id, command, source, pause_app, state, cancel_requested, timeout_seconds, exit_code, output, output_truncated, created_at, started_at, finished_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        command:
+          type: string
+          description: O texto rodado, com os valores das variáveis do projeto trocados por `[REDIGIDO]` ao concluir.
+        source:
+          type: string
+          enum: [script, custom]
+        pause_app:
+          type: boolean
+        state:
+          type: string
+          enum: [queued, running, succeeded, failed, timed_out, canceled, interrupted]
+        cancel_requested:
+          type: boolean
+        timeout_seconds:
+          type: integer
+        exit_code:
+          type: integer
+          nullable: true
+        output:
+          type: string
+        output_truncated:
+          type: boolean
+        error:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+    ScriptOption:
+      type: object
+      required: [name, command, runs]
+      properties:
+        name:
+          type: string
+        command:
+          type: string
+          description: O que o botão roda (`npm run <nome>` ou `bun run <nome>`).
+        runs:
+          type: string
+          description: O que o script executa, para a pessoa ver antes de rodar.
+    CommandsView:
+      type: object
+      required: [commands, scripts, available, reauth_until, default_timeout, max_timeout]
+      properties:
+        commands:
+          type: array
+          items:
+            $ref: '#/components/schemas/Command'
+        scripts:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScriptOption'
+        available:
+          type: boolean
+        reason:
+          type: string
+        reauth_until:
+          type: string
+          format: date-time
+          nullable: true
+        default_timeout:
+          type: integer
+        max_timeout:
+          type: integer
     ServiceNeed:
       type: object
       required: [engine, level, variable, reason, evidence]

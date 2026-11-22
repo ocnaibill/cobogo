@@ -30,9 +30,12 @@ type ManagedContainer struct {
 	Name         string
 	DeploymentID string
 	ProjectID    string
-	Created      time.Time
-	Running      bool
-	InIngress    bool
+	// Role é o papel de um contêiner auxiliar e passageiro (comando pontual, posse de
+	// volume, certificado); vazio nas aplicações e nos bancos.
+	Role      string
+	Created   time.Time
+	Running   bool
+	InIngress bool
 }
 
 func toManaged(c types.Container) ManagedContainer {
@@ -45,7 +48,7 @@ func toManaged(c types.Container) ManagedContainer {
 	}
 	_, inIngress := c.NetworkSettings.Networks[IngressNetwork]
 	return ManagedContainer{
-		ID: c.ID, Name: name, DeploymentID: c.Labels[LabelDeployment], ProjectID: c.Labels[LabelProject],
+		ID: c.ID, Name: name, DeploymentID: c.Labels[LabelDeployment], ProjectID: c.Labels[LabelProject], Role: c.Labels[LabelRole],
 		Created: time.Unix(c.Created, 0).UTC(), Running: c.State == "running", InIngress: inIngress,
 	}
 }

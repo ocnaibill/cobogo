@@ -215,11 +215,13 @@ type User struct {
 
 // Session é uma sessão autenticada. O token em si nunca é guardado.
 type Session struct {
-	ID         uuid.UUID `json:"id"`
-	UserID     uuid.UUID `json:"-"`
-	CreatedAt  time.Time `json:"created_at"`
-	LastSeenAt time.Time `json:"last_seen_at"`
-	ExpiresAt  time.Time `json:"expires_at"`
+	ID uuid.UUID `json:"id"`
+	// ReauthUntil é até quando a senha digitada de novo vale (DEC-45); nulo se não valeu.
+	ReauthUntil *time.Time `json:"-"`
+	UserID      uuid.UUID  `json:"-"`
+	CreatedAt   time.Time  `json:"created_at"`
+	LastSeenAt  time.Time  `json:"last_seen_at"`
+	ExpiresAt   time.Time  `json:"expires_at"`
 }
 
 // AuditEvent registra uma ação com ator, alvo e resultado. Nunca carrega
@@ -367,3 +369,50 @@ const (
 
 // DBCAPath é onde o certificado do banco é injetado na aplicação (DEC-44 item 5).
 const DBCAPath = "/etc/cobogo/db-ca.pem"
+
+// Comandos pontuais (DEC-45).
+const (
+	CommandQueued      = "queued"
+	CommandRunning     = "running"
+	CommandSucceeded   = "succeeded"
+	CommandFailed      = "failed"
+	CommandTimedOut    = "timed_out"
+	CommandCanceled    = "canceled"
+	CommandInterrupted = "interrupted"
+
+	// CommandScript: um botão dos scripts do package.json; CommandCustom: o campo livre.
+	CommandScript = "script"
+	CommandCustom = "custom"
+
+	CommandMaxLen         = 2000
+	CommandDefaultTimeout = 300
+	CommandMinTimeout     = 5
+	CommandMaxTimeout     = 600
+	// CommandMaxOutput é o que se guarda da saída: a cabeça e a cauda, no total.
+	CommandMaxOutput = 256 << 10
+	// CommandReauthWindow é quanto vale a senha digitada de novo.
+	CommandReauthWindow = 10 * time.Minute
+)
+
+// Command é uma execução pontual no ambiente de um projeto.
+type Command struct {
+	ID              uuid.UUID  `json:"id"`
+	ProjectID       uuid.UUID  `json:"project_id"`
+	Command         string     `json:"command"`
+	Source          string     `json:"source"`
+	PauseApp        bool       `json:"pause_app"`
+	State           string     `json:"state"`
+	CancelRequested bool       `json:"cancel_requested"`
+	TimeoutSeconds  int        `json:"timeout_seconds"`
+	ExitCode        *int       `json:"exit_code"`
+	Output          string     `json:"output"`
+	OutputTruncated bool       `json:"output_truncated"`
+	Error           string     `json:"error,omitempty"`
+	RequestedBy     *uuid.UUID `json:"-"`
+	CreatedAt       time.Time  `json:"created_at"`
+	StartedAt       *time.Time `json:"started_at"`
+	FinishedAt      *time.Time `json:"finished_at"`
+}
+
+// Active diz se o comando ainda ocupa a vaga do projeto.
+func (c Command) Active() bool { return c.State == CommandQueued || c.State == CommandRunning }

@@ -55,6 +55,14 @@ func (r *Runtime) SampleManaged(ctx context.Context, parallel int) (samples []Sa
 		s   Sample
 		err error
 	}
+	// Os passageiros (comando, posse de volume) não são aplicações: ficam fora da medição.
+	kept := list[:0]
+	for _, c := range list {
+		if c.Role == "" {
+			kept = append(kept, c)
+		}
+	}
+	list = kept
 	out := make([]result, len(list))
 	sem := make(chan struct{}, parallel)
 	done := make(chan struct{}, len(list))

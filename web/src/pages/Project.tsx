@@ -12,11 +12,12 @@ import { profileLabel } from "../lib/deploy";
 import { EnvHistory, ImportEnv, Suggestions } from "../components/Secrets";
 import { DataTab, usePersistent, withPath } from "../components/Data";
 import { DatabaseTab, useDatabase } from "../components/Database";
+import { CommandsTab } from "../components/Commands";
 import { ResourcesTab } from "../components/Resources";
 import { missingLikely, withRequired } from "../lib/secrets";
 import { TRANSITION_LABEL } from "../lib/operations";
 
-type Tab = "deploys" | "recursos" | "variaveis" | "banco" | "dados" | "limites" | "operacoes";
+type Tab = "deploys" | "recursos" | "variaveis" | "banco" | "dados" | "comandos" | "limites" | "operacoes";
 
 export function ProjectPage() {
   const { id = "" } = useParams();
@@ -258,6 +259,7 @@ export function ProjectPage() {
             ["variaveis", "Variáveis e segredos", "key"],
             ["banco", "Banco", "server"],
             ["dados", "Dados", "server"],
+            ["comandos", "Comandos", "terminal"],
             ["limites", "Limites", "sliders"],
             ["operacoes", "Operações", "activity"],
           ] as [Tab, string, IconName][]
@@ -325,6 +327,7 @@ export function ProjectPage() {
       {tab === "recursos" && <ResourcesTab projectId={id} />}
       {tab === "banco" && <DatabaseTab projectId={id} slug={p.slug} />}
       {tab === "dados" && <DataTab projectId={id} />}
+      {tab === "comandos" && <CommandsTab projectId={id} />}
       {tab === "limites" && <LimitsTab projectId={id} />}
       {tab === "operacoes" && <OperationsTab projectId={id} />}
       <DangerZone projectId={id} slug={p.slug} />
