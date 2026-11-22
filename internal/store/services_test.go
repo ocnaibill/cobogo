@@ -21,7 +21,7 @@ func TestChooseDatabaseLinksTheVariableAndNeverOverwritesTheUsers(t *testing.T) 
 	if _, err := st.GetService(ctx, p.ID, domain.ServicePostgres); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("a new project has no choice: %v", err)
 	}
-	sv, err := st.ChooseDatabase(ctx, p.ID, own.ID, domain.ServiceManaged, "DATABASE_URL", url)
+	sv, err := st.ChooseDatabase(ctx, p.ID, own.ID, domain.ServiceManaged, map[string]string{"url": "DATABASE_URL"}, map[string]string{"url": url})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func TestChooseDatabaseLinksTheVariableAndNeverOverwritesTheUsers(t *testing.T) 
 	}
 
 	// Escolher o gerenciado de novo não muda nada, e a senha não é trocada.
-	again, err := st.ChooseDatabase(ctx, p.ID, own.ID, domain.ServiceManaged, "DATABASE_URL", "postgres://app:OUTRA@host:5432/app")
+	again, err := st.ChooseDatabase(ctx, p.ID, own.ID, domain.ServiceManaged, map[string]string{"url": "DATABASE_URL"}, map[string]string{"url": "postgres://app:OUTRA@host:5432/app"})
 	if err != nil || again.ID != sv.ID {
 		t.Fatalf("choosing managed twice must be a no-op: %+v, %v", again, err)
 	}
@@ -44,7 +44,7 @@ func TestChooseDatabaseLinksTheVariableAndNeverOverwritesTheUsers(t *testing.T) 
 	}
 	// Com o gerenciado, outra escolha deixaria banco e dados órfãos.
 	for _, mode := range []string{domain.ServiceExternal, domain.ServiceNone} {
-		if _, err := st.ChooseDatabase(ctx, p.ID, own.ID, mode, "DATABASE_URL", ""); !errors.Is(err, store.ErrManagedExists) {
+		if _, err := st.ChooseDatabase(ctx, p.ID, own.ID, mode, map[string]string{"url": "DATABASE_URL"}, map[string]string{"url": ""}); !errors.Is(err, store.ErrManagedExists) {
 			t.Errorf("%s over a managed database = %v, want ErrManagedExists", mode, err)
 		}
 	}
@@ -54,7 +54,7 @@ func TestChooseDatabaseLinksTheVariableAndNeverOverwritesTheUsers(t *testing.T) 
 	if _, err := st.PutEnvVariable(ctx, q.ID, "DATABASE_URL", "postgres://meu/banco", domain.EnvSourceUser); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.ChooseDatabase(ctx, q.ID, own.ID, domain.ServiceManaged, "DATABASE_URL", url); !errors.Is(err, store.ErrVariableDefined) {
+	if _, err := st.ChooseDatabase(ctx, q.ID, own.ID, domain.ServiceManaged, map[string]string{"url": "DATABASE_URL"}, map[string]string{"url": url}); !errors.Is(err, store.ErrVariableDefined) {
 		t.Errorf("managed over a typed value = %v, want ErrVariableDefined", err)
 	}
 	if vals, _, _ := st.RevealEnvValues(ctx, q.ID); vals["DATABASE_URL"] != "postgres://meu/banco" {
@@ -64,14 +64,14 @@ func TestChooseDatabaseLinksTheVariableAndNeverOverwritesTheUsers(t *testing.T) 
 		t.Error("a refused choice must not register an intent")
 	}
 	// Mas external e none valem, e dá para trocar de um para o outro.
-	if sv, err := st.ChooseDatabase(ctx, q.ID, own.ID, domain.ServiceExternal, "DATABASE_URL", ""); err != nil || sv.Mode != domain.ServiceExternal {
+	if sv, err := st.ChooseDatabase(ctx, q.ID, own.ID, domain.ServiceExternal, map[string]string{"url": "DATABASE_URL"}, map[string]string{"url": ""}); err != nil || sv.Mode != domain.ServiceExternal {
 		t.Errorf("external = %+v, %v", sv, err)
 	}
-	if sv, err := st.ChooseDatabase(ctx, q.ID, own.ID, domain.ServiceNone, "DATABASE_URL", ""); err != nil || sv.Mode != domain.ServiceNone {
+	if sv, err := st.ChooseDatabase(ctx, q.ID, own.ID, domain.ServiceNone, map[string]string{"url": "DATABASE_URL"}, map[string]string{"url": ""}); err != nil || sv.Mode != domain.ServiceNone {
 		t.Errorf("none after external = %+v, %v", sv, err)
 	}
 	// Só o dono escolhe.
-	if _, err := st.ChooseDatabase(ctx, p.ID, uuid.New(), domain.ServiceNone, "X", ""); !errors.Is(err, store.ErrNotFound) {
+	if _, err := st.ChooseDatabase(ctx, p.ID, uuid.New(), domain.ServiceNone, map[string]string{"url": "X"}, map[string]string{"url": ""}); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("another owner = %v, want ErrNotFound", err)
 	}
 }
@@ -83,7 +83,7 @@ func TestDeleteServiceRemovesTheLinkedVariableAndTurnsTheVolumeIntoAnOrphan(t *t
 	if _, err := st.RequestDeleteService(ctx, p.ID, own.ID, p.Slug); !errors.Is(err, store.ErrNoManagedService) {
 		t.Fatalf("nothing to delete = %v", err)
 	}
-	if _, err := st.ChooseDatabase(ctx, p.ID, own.ID, domain.ServiceManaged, "DATABASE_URL", "postgres://app:x@h:5432/app"); err != nil {
+	if _, err := st.ChooseDatabase(ctx, p.ID, own.ID, domain.ServiceManaged, map[string]string{"url": "DATABASE_URL"}, map[string]string{"url": "postgres://app:x@h:5432/app"}); err != nil {
 		t.Fatal(err)
 	}
 	vol := domain.ServiceVolumeName(p.ID.String())
@@ -118,7 +118,7 @@ func TestDeleteServiceRemovesTheLinkedVariableAndTurnsTheVolumeIntoAnOrphan(t *t
 		t.Error("a deleted service is no longer current")
 	}
 	// Escolher de novo depois de apagar cria outro vínculo, com outra senha.
-	if sv2, err := st.ChooseDatabase(ctx, p.ID, own.ID, domain.ServiceManaged, "DATABASE_URL", "postgres://app:nova@h:5432/app"); err != nil || sv2.ID == sv.ID {
+	if sv2, err := st.ChooseDatabase(ctx, p.ID, own.ID, domain.ServiceManaged, map[string]string{"url": "DATABASE_URL"}, map[string]string{"url": "postgres://app:nova@h:5432/app"}); err != nil || sv2.ID == sv.ID {
 		t.Errorf("choose after delete = %+v, %v", sv2, err)
 	}
 }
@@ -158,5 +158,64 @@ func TestWaitingForDatabaseFindsOnlyDeploysAskingAboutTheDatabase(t *testing.T) 
 	}
 	if ids, _ := st.WaitingForDatabase(ctx, p.ID); len(ids) != 0 {
 		t.Errorf("after re-queuing: %v", ids)
+	}
+}
+
+// Conexão em partes (DEC-44): cada papel vira uma variável vinculada, nenhuma
+// colisão com valor do usuário grava algo, e apagar o serviço leva todas.
+func TestChooseDatabaseInPartsLinksEveryRole(t *testing.T) {
+	st := storetest.New(t)
+	own := owner(t, st)
+	p := newProject(t, st)
+	names := map[string]string{"host": "POSTGRES_HOST", "port": "POSTGRES_PORT", "user": "POSTGRES_USER", "password": "POSTGRES_PASSWORD", "database": "POSTGRES_DB", "ca": "POSTGRES_CA"}
+	values := map[string]string{"host": "cobogo-pg-x", "port": "5432", "user": "app", "password": "senha-do-canario", "database": "app"}
+
+	// Uma variável do usuário na família: recusa e nada é gravado.
+	if _, err := st.PutEnvVariable(ctx, p.ID, "POSTGRES_PORT", "6543", domain.EnvSourceUser); err != nil {
+		t.Fatal(err)
+	}
+	_, err := st.ChooseDatabase(ctx, p.ID, own.ID, domain.ServiceManaged, names, values)
+	var def *store.DefinedVariableError
+	if !errors.Is(err, store.ErrVariableDefined) || !errors.As(err, &def) || def.Name != "POSTGRES_PORT" {
+		t.Fatalf("want a defined-variable error naming POSTGRES_PORT, got %v", err)
+	}
+	if _, err := st.GetEnvVariable(ctx, p.ID, "POSTGRES_HOST"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("a refused choice must not write anything: %v", err)
+	}
+	if err := st.DeleteEnvVariable(ctx, p.ID, "POSTGRES_PORT"); err != nil {
+		t.Fatal(err)
+	}
+
+	sv, err := st.ChooseDatabase(ctx, p.ID, own.ID, domain.ServiceManaged, names, values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sv.TLS || sv.Variable != "POSTGRES_PASSWORD" || sv.Variables["host"] != "POSTGRES_HOST" || sv.Variables["ca"] != "POSTGRES_CA" {
+		t.Fatalf("service = %+v", sv)
+	}
+	got, err := st.GetService(ctx, p.ID, domain.ServicePostgres)
+	if err != nil || got.Variables["database"] != "POSTGRES_DB" || !got.TLS {
+		t.Fatalf("reloaded = %+v, %v", got, err)
+	}
+	for role, name := range names {
+		v, err := st.GetEnvVariable(ctx, p.ID, name)
+		if role == "ca" {
+			if !errors.Is(err, store.ErrNotFound) {
+				t.Errorf("the CA is delivered at run time and must not be stored: %v", err)
+			}
+			continue
+		}
+		if err != nil || v.Source != domain.EnvSourceLinked {
+			t.Errorf("%s (%s): %+v, %v", role, name, v, err)
+		}
+	}
+
+	if _, err := st.RequestDeleteService(ctx, p.ID, own.ID, p.Slug); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range names {
+		if _, err := st.GetEnvVariable(ctx, p.ID, name); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("%s must leave with the service: %v", name, err)
+		}
 	}
 }

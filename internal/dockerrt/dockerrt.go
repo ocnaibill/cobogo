@@ -381,6 +381,11 @@ func (r *Runtime) Run(ctx context.Context, imageTag, containerName string, conta
 	// precisa dele para ler o log e limpar, por exemplo quando a aplicação cai
 	// no boot e o daemon já não publica a porta.
 	partial := RunResult{ContainerID: created.ID}
+	if len(spec.files) > 0 {
+		if err := r.putFiles(ctx, created.ID, spec.files); err != nil {
+			return partial, err
+		}
+	}
 	if err := r.cli.ContainerStart(ctx, created.ID, container.StartOptions{}); err != nil {
 		return partial, fmt.Errorf("dockerrt: iniciar contêiner: %w", err)
 	}

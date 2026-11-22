@@ -543,12 +543,14 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 		return at("PROVISIONING", err)
 	}
 	services := []string{}
+	var managedDB *domain.Service
 	if svc, serr := w.store.GetService(ctx, project.ID, domain.ServicePostgres); serr == nil && svc.Mode == domain.ServiceManaged && svc.Status != domain.ServiceDeleting {
 		created, err := w.provisionPostgres(ctx, rt, project, svc)
 		if err != nil {
 			return at("PROVISIONING", err)
 		}
 		services = append(services, domain.ServicePostgres)
+		managedDB = &svc
 		if err := w.emit(ctx, o, dep.ID, "provisioning", "postgres", map[string]any{"container": svc.ContainerName, "created": created, "variable": svc.Variable}); err != nil {
 			return err
 		}
@@ -584,6 +586,19 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 		have[name] = ""
 	}
 	envValues["PORT"] = fmt.Sprint(plan.Port)
+	// TLS do banco gerenciado (DEC-44): a CA é injetada num arquivo do contêiner
+	// e apontada por variáveis da plataforma, sem tocar no código do projeto.
+	var runFiles map[string][]byte
+	if managedDB != nil && managedDB.TLS && plan.Profile != domain.ProfileStatic {
+		files, env, err := w.databaseTrust(ctx, rt, project, *managedDB, have)
+		if err != nil {
+			return at("STARTING", err)
+		}
+		runFiles = files
+		for k, v := range env {
+			envValues[k] = v
+		}
+	}
 	delivered := make([]map[string]any, 0, len(envMeta))
 	for _, v := range envMeta {
 		delivered = append(delivered, map[string]any{"name": v.Name, "version": v.Version})
@@ -630,6 +645,9 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 	succeeded := false
 	runOpts := []dockerrt.RunOption{
 		dockerrt.WithNetwork(projectNet), dockerrt.WithLabels(map[string]string{dockerrt.LabelProject: project.ID.String()}),
+	}
+	if len(runFiles) > 0 {
+		runOpts = append(runOpts, dockerrt.WithFiles(runFiles))
 	}
 	if store.HasPersistentPaths(project) && plan.Profile != domain.ProfileStatic {
 		volumes, created, err := w.prepareVolumes(ctx, rt, project, imageTag)

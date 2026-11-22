@@ -26,11 +26,20 @@ var (
 	ErrManagedExists = errors.New("store: o projeto já tem um PostgreSQL gerenciado; apague-o antes de escolher outra coisa")
 )
 
-const serviceColumns = `id, project_id, engine, mode, variable, container_name, volume_name, status, status_detail, created_at, updated_at`
+// DefinedVariableError diz qual variável de conexão já tem valor digitado.
+type DefinedVariableError struct{ Name string }
+
+func (e *DefinedVariableError) Error() string {
+	return ErrVariableDefined.Error() + ": " + e.Name
+}
+
+func (e *DefinedVariableError) Is(target error) bool { return target == ErrVariableDefined }
+
+const serviceColumns = `id, project_id, engine, mode, variable, variables, tls, container_name, volume_name, status, status_detail, created_at, updated_at`
 
 func scanService(row pgx.Row) (domain.Service, error) {
 	var sv domain.Service
-	err := row.Scan(&sv.ID, &sv.ProjectID, &sv.Engine, &sv.Mode, &sv.Variable, &sv.ContainerName, &sv.VolumeName, &sv.Status, &sv.StatusDetail, &sv.CreatedAt, &sv.UpdatedAt)
+	err := row.Scan(&sv.ID, &sv.ProjectID, &sv.Engine, &sv.Mode, &sv.Variable, &sv.Variables, &sv.TLS, &sv.ContainerName, &sv.VolumeName, &sv.Status, &sv.StatusDetail, &sv.CreatedAt, &sv.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Service{}, ErrNotFound
 	}
@@ -47,10 +56,13 @@ func (s *Store) GetService(ctx context.Context, projectID uuid.UUID, engine stri
 }
 
 // ChooseDatabase registra a escolha do dono sobre o banco do projeto (HEU-06.6).
-// No modo gerenciado, grava a variável de conexão (cifrada, origem `linked`) com
-// o valor dado; se a variável já tem um valor que não é do vínculo, recusa. Troca
-// de uma escolha anterior vale: a intenção vigente é uma só.
-func (s *Store) ChooseDatabase(ctx context.Context, projectID, ownerID uuid.UUID, mode, variable, connectionURL string) (domain.Service, error) {
+// variables são os nomes das variáveis por papel (DEC-44); values, o valor de
+// cada papel que o Cobogó entrega, só no modo gerenciado. No modo gerenciado
+// grava cada variável (cifrada, origem `linked`); se alguma já tem um valor que
+// não é do vínculo, recusa sem gravar nada. O papel `ca` é entregue na hora de
+// iniciar o app e nunca é gravado, mas o nome dele também não pode colidir.
+// Troca de uma escolha anterior vale: a intenção vigente é uma só.
+func (s *Store) ChooseDatabase(ctx context.Context, projectID, ownerID uuid.UUID, mode string, variables, values map[string]string) (domain.Service, error) {
 	if _, err := s.GetProjectFor(ctx, projectID, ownerID); err != nil {
 		return domain.Service{}, err
 	}
@@ -63,30 +75,46 @@ func (s *Store) ChooseDatabase(ctx context.Context, projectID, ownerID uuid.UUID
 	} else if err != nil && !errors.Is(err, ErrNotFound) {
 		return domain.Service{}, err
 	}
+	style := domain.StyleURL
+	if _, ok := variables[domain.RoleURL]; !ok {
+		style = domain.StyleParts
+	}
+	primary := variables[domain.PrimaryRole(style)]
 	var container, volume string
+	tls := false
 	if mode == domain.ServiceManaged {
-		existing, err := s.GetEnvVariable(ctx, projectID, variable)
-		switch {
-		case err == nil && existing.Source != domain.EnvSourceLinked:
-			return domain.Service{}, ErrVariableDefined
-		case err != nil && !errors.Is(err, ErrNotFound):
-			return domain.Service{}, err
+		for _, name := range variables {
+			existing, err := s.GetEnvVariable(ctx, projectID, name)
+			switch {
+			case err == nil && existing.Source != domain.EnvSourceLinked:
+				return domain.Service{}, &DefinedVariableError{Name: name}
+			case err != nil && !errors.Is(err, ErrNotFound):
+				return domain.Service{}, err
+			}
 		}
 		container, volume = domain.ServiceContainerName(projectID.String()), domain.ServiceVolumeName(projectID.String())
+		tls = true
 	}
 	sv, err := scanService(s.pool.QueryRow(ctx, `
-		INSERT INTO project_services (id, project_id, engine, mode, variable, container_name, volume_name, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
+		INSERT INTO project_services (id, project_id, engine, mode, variable, variables, tls, container_name, volume_name, status)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')
 		ON CONFLICT (project_id, engine) WHERE deleted_at IS NULL DO UPDATE
-		SET mode = EXCLUDED.mode, variable = EXCLUDED.variable, container_name = EXCLUDED.container_name,
-		    volume_name = EXCLUDED.volume_name, status = 'pending', status_detail = '', updated_at = now()
-		RETURNING `+serviceColumns, uuid.New(), projectID, domain.ServicePostgres, mode, variable, container, volume))
+		SET mode = EXCLUDED.mode, variable = EXCLUDED.variable, variables = EXCLUDED.variables, tls = EXCLUDED.tls,
+		    container_name = EXCLUDED.container_name, volume_name = EXCLUDED.volume_name,
+		    status = 'pending', status_detail = '', updated_at = now()
+		RETURNING `+serviceColumns, uuid.New(), projectID, domain.ServicePostgres, mode, primary, variables, tls, container, volume))
 	if err != nil {
 		return domain.Service{}, err
 	}
 	if mode == domain.ServiceManaged {
-		if _, err := s.PutEnvVariable(ctx, projectID, variable, connectionURL, domain.EnvSourceLinked); err != nil {
-			return domain.Service{}, err
+		for role, name := range variables {
+			value, ok := values[role]
+			if !ok || role == domain.RoleCA {
+				continue
+			}
+			if _, err := s.PutEnvVariable(ctx, projectID, name, value, domain.EnvSourceLinked); err != nil {
+				return domain.Service{}, err
+			}
 		}
 	}
 	return sv, nil
@@ -124,7 +152,12 @@ func (s *Store) RequestDeleteService(ctx context.Context, projectID, ownerID uui
 	if _, err := tx.Exec(ctx, `UPDATE project_services SET status = 'deleting', updated_at = now() WHERE id = $1`, sv.ID); err != nil {
 		return domain.Operation{}, fmt.Errorf("store: marcar serviço para exclusão: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM env_variables WHERE project_id = $1 AND name = $2 AND source = 'linked'`, projectID, sv.Variable); err != nil {
+	linked := make([]string, 0, len(sv.Variables)+1)
+	linked = append(linked, sv.Variable)
+	for _, name := range sv.Variables {
+		linked = append(linked, name)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM env_variables WHERE project_id = $1 AND name = ANY($2) AND source = 'linked'`, projectID, linked); err != nil {
 		return domain.Operation{}, fmt.Errorf("store: apagar a variável vinculada: %w", err)
 	}
 	op, err := insertOperationTx(ctx, tx, &projectID, domain.OpDeleteService, map[string]any{"engine": sv.Engine}, time.Now().UTC(), &ownerID)

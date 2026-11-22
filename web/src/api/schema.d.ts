@@ -1321,7 +1321,19 @@ export interface components {
              * @enum {string}
              */
             level: "required" | "possible";
+            /** @description A variável principal (a URL, ou a senha no estilo partes). */
             variable: string;
+            /**
+             * @description Como o código lê a conexão (DEC-44).
+             * @enum {string}
+             */
+            style?: "url" | "parts";
+            /** @description No estilo partes, o prefixo da família (`POSTGRES`, `PG`, `DB`...). */
+            family?: string;
+            /** @description Os nomes de variável por papel (`url`, ou `host`, `port`, `user`, `password`, `database`, e `ca`). */
+            variables?: {
+                [key: string]: string;
+            };
             reason: string;
             evidence: string[];
         };
@@ -1335,6 +1347,12 @@ export interface components {
             /** @enum {string} */
             mode: "managed" | "external" | "none";
             variable: string;
+            /** @description Os nomes de variável vinculados, por papel (DEC-44). `ca` é entregue na execução. */
+            variables: {
+                [key: string]: string;
+            };
+            /** @description O banco gerenciado aceita TLS, com certificado próprio (DEC-44). Bancos criados antes não têm. */
+            tls: boolean;
             container_name?: string;
             volume_name?: string;
             /** @enum {string} */
@@ -2312,8 +2330,20 @@ export interface operations {
                 "application/json": {
                     /** @enum {string} */
                     choice: "managed" | "external" | "none";
-                    /** @description A variável de conexão. Padrão `DATABASE_URL`. */
+                    /** @description A variável da URL de conexão (forma curta). Padrão `DATABASE_URL`. */
                     variable?: string;
+                    /**
+                     * @description Os nomes das variáveis por papel (DEC-44). Estilo URL: `url`
+                     *     (e, se o código lê a CA do banco, `ca`). Estilo partes: no
+                     *     mínimo `host` e `password`, e opcionalmente `port`, `user`,
+                     *     `database` e `ca`. Os nomes não se repetem, não podem ser da
+                     *     plataforma e nenhum pode já ter um valor digitado
+                     *     (`variable_defined`). O papel `ca` é entregue na execução e
+                     *     nunca é gravado. Vence sobre `variable`.
+                     */
+                    variables?: {
+                        [key: string]: string;
+                    };
                 };
             };
         };

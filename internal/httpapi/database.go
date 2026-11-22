@@ -3,6 +3,7 @@ package httpapi
 import (
 	"errors"
 	"net/http"
+	"sort"
 
 	"github.com/ocnaibill/cobogo/internal/analyzer"
 	"github.com/ocnaibill/cobogo/internal/domain"
@@ -82,8 +83,77 @@ func (s *Server) handleGetDatabase(w http.ResponseWriter, r *http.Request, user 
 }
 
 type chooseDatabaseRequest struct {
-	Choice   string `json:"choice"`
+	Choice string `json:"choice"`
+	// Variable é o nome da variável da URL (forma curta, DEC-42).
 	Variable string `json:"variable"`
+	// Variables liga cada papel da conexão ao nome da variável (DEC-44).
+	Variables map[string]string `json:"variables"`
+}
+
+var connectionRoles = map[string]bool{
+	domain.RoleURL: true, domain.RoleHost: true, domain.RolePort: true, domain.RoleUser: true,
+	domain.RolePassword: true, domain.RoleDatabase: true, domain.RoleCA: true,
+}
+
+// connectionVariables valida os nomes por papel e devolve o mapa final. Estilo
+// URL: o papel `url` (e opcionalmente `ca`). Estilo partes: ao menos host e
+// senha, sem `url`.
+func connectionVariables(req chooseDatabaseRequest) (map[string]string, string) {
+	vars := map[string]string{}
+	for role, name := range req.Variables {
+		if !connectionRoles[role] {
+			return nil, "papel de variável desconhecido: " + role
+		}
+		if name != "" {
+			vars[role] = name
+		}
+	}
+	if len(vars) == 0 {
+		name := req.Variable
+		if name == "" {
+			name = "DATABASE_URL"
+		}
+		vars[domain.RoleURL] = name
+	}
+	if _, isURL := vars[domain.RoleURL]; isURL {
+		for role := range vars {
+			if role != domain.RoleURL && role != domain.RoleCA {
+				return nil, "a conexão por URL não usa a variável do papel " + role
+			}
+		}
+	} else if vars[domain.RoleHost] == "" || vars[domain.RolePassword] == "" {
+		return nil, "a conexão em partes precisa, no mínimo, das variáveis do host e da senha"
+	}
+	seen := map[string]string{}
+	for role, name := range vars {
+		if !envNamePattern.MatchString(name) {
+			return nil, "nome de variável inválido: use letras, números e _, sem começar por número"
+		}
+		if analyzer.ClassifyVariable(name) == domain.ClassPlatform {
+			return nil, name + " é fornecida pela plataforma e não pode ser a conexão do banco"
+		}
+		if other, dup := seen[name]; dup {
+			return nil, name + " não pode servir a dois papéis (" + other + " e " + role + ")"
+		}
+		seen[name] = role
+	}
+	return vars, ""
+}
+
+// connectionValues são os valores que o banco gerenciado entrega por papel. O
+// papel `ca` não está aqui: o certificado é entregue na execução.
+func connectionValues(vars map[string]string, host, pass string) map[string]string {
+	values := map[string]string{}
+	if _, isURL := vars[domain.RoleURL]; isURL {
+		values[domain.RoleURL] = "postgres://" + domain.DBUser + ":" + pass + "@" + host + ":" + domain.DBPort + "/" + domain.DBName
+		return values
+	}
+	values[domain.RoleHost] = host
+	values[domain.RolePort] = domain.DBPort
+	values[domain.RoleUser] = domain.DBUser
+	values[domain.RolePassword] = pass
+	values[domain.RoleDatabase] = domain.DBName
+	return values
 }
 
 type chooseDatabaseResponse struct {
@@ -110,20 +180,13 @@ func (s *Server) handleChooseDatabase(w http.ResponseWriter, r *http.Request, us
 		writeError(w, http.StatusBadRequest, "choice deve ser managed, external ou none")
 		return
 	}
-	variable := req.Variable
-	if variable == "" {
-		variable = "DATABASE_URL"
-	}
-	if !envNamePattern.MatchString(variable) {
-		writeError(w, http.StatusBadRequest, "nome de variável inválido: use letras, números e _, sem começar por número")
-		return
-	}
-	if analyzer.ClassifyVariable(variable) == domain.ClassPlatform {
-		writeError(w, http.StatusBadRequest, variable+" é fornecida pela plataforma e não pode ser a conexão do banco")
+	vars, problem := connectionVariables(req)
+	if problem != "" {
+		writeError(w, http.StatusBadRequest, problem)
 		return
 	}
 
-	url := ""
+	var values map[string]string
 	if req.Choice == domain.ServiceManaged {
 		pass, err := secrets.Generate(databasePasswordLen)
 		if err != nil {
@@ -131,16 +194,21 @@ func (s *Server) handleChooseDatabase(w http.ResponseWriter, r *http.Request, us
 			writeError(w, http.StatusInternalServerError, "erro interno")
 			return
 		}
-		url = "postgres://app:" + pass + "@" + domain.ServiceContainerName(p.ID.String()) + ":5432/app"
+		values = connectionValues(vars, domain.ServiceContainerName(p.ID.String()), pass)
 	}
-	svc, err := s.store.ChooseDatabase(r.Context(), p.ID, user.ID, req.Choice, variable, url)
+	svc, err := s.store.ChooseDatabase(r.Context(), p.ID, user.ID, req.Choice, vars, values)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, "projeto não encontrado")
 		return
 	case errors.Is(err, store.ErrVariableDefined):
 		s.audit(r, &user, "project.database", p.ID.String(), "refused")
-		writeCode(w, http.StatusConflict, codeVariableDefined, variable+" já tem um valor digitado por você; remova-o (ou escolha usar um banco que já tem) antes de criar o banco do Cobogó, que não sobrescreve o que você definiu")
+		var def *store.DefinedVariableError
+		name := "a variável de conexão"
+		if errors.As(err, &def) {
+			name = def.Name
+		}
+		writeCode(w, http.StatusConflict, codeVariableDefined, name+" já tem um valor digitado por você; remova-o (ou escolha usar um banco que já tem) antes de criar o banco do Cobogó, que não sobrescreve o que você definiu")
 		return
 	case errors.Is(err, store.ErrManagedExists):
 		writeCode(w, http.StatusConflict, codeManagedExists, "o projeto já tem um PostgreSQL do Cobogó; apague-o (com os dados) antes de escolher outra coisa")
@@ -150,7 +218,7 @@ func (s *Server) handleChooseDatabase(w http.ResponseWriter, r *http.Request, us
 		writeError(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
-	s.auditDetail(r, &user, "project.database", p.ID.String(), "ok", map[string]any{"names": []string{req.Choice, svc.Variable}})
+	s.auditDetail(r, &user, "project.database", p.ID.String(), "ok", map[string]any{"names": append([]string{req.Choice}, sortedValues(svc.Variables)...)})
 
 	requeued := 0
 	if waiting, err := s.store.WaitingForDatabase(r.Context(), p.ID); err != nil {
@@ -202,4 +270,14 @@ func (s *Server) handleDeleteDatabase(w http.ResponseWriter, r *http.Request, us
 		s.audit(r, &user, "project.database.delete", p.ID.String(), "ok")
 		writeJSON(w, http.StatusAccepted, op)
 	}
+}
+
+// sortedValues lista os nomes de variável de um mapa de papéis, em ordem estável.
+func sortedValues(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for _, v := range m {
+		out = append(out, v)
+	}
+	sort.Strings(out)
+	return out
 }

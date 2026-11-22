@@ -295,9 +295,16 @@ const (
 // ServiceNeed é uma pista de que o projeto precisa de um banco. Variable é a
 // variável de conexão provável, que a pessoa pode trocar.
 type ServiceNeed struct {
-	Engine   string   `json:"engine"`
-	Level    string   `json:"level"`
-	Variable string   `json:"variable"`
-	Reason   string   `json:"reason"`
-	Evidence []string `json:"evidence"`
+	Engine string `json:"engine"`
+	Level  string `json:"level"`
+	// Variable é a variável principal: a URL, ou a da senha no estilo de partes.
+	Variable string `json:"variable"`
+	// Style é `url` ou `parts` (DEC-44). Family é o prefixo das partes (POSTGRES,
+	// PG, DB, DATABASE); vazio no estilo URL.
+	Style  string `json:"style"`
+	Family string `json:"family,omitempty"`
+	// Variables é papel -> nome da variável que o código lê.
+	Variables map[string]string `json:"variables"`
+	Reason    string            `json:"reason"`
+	Evidence  []string          `json:"evidence"`
 }

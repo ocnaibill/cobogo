@@ -170,3 +170,44 @@ func TestChooseDatabaseRespectsTheUsersVariableAndRequeuesTheWaitingDeploy(t *te
 		t.Errorf("the waiting deploy state = %s, want QUEUED", d.State)
 	}
 }
+
+// Conexão em partes (DEC-44): validação dos papéis e valores entregues por papel.
+func TestChooseDatabaseInPartsThroughTheAPI(t *testing.T) {
+	h := newHarness(t)
+	h.login()
+	p := h.createProject("em-partes")
+	base := "/api/v1/projects/" + p.ID.String() + "/database"
+
+	for name, body := range map[string]string{
+		"unknown role":       `{"choice":"managed","variables":{"senha":"X"}}`,
+		"parts without host": `{"choice":"managed","variables":{"password":"POSTGRES_PASSWORD"}}`,
+		"parts without pass": `{"choice":"managed","variables":{"host":"POSTGRES_HOST"}}`,
+		"url mixed":          `{"choice":"managed","variables":{"url":"DATABASE_URL","host":"POSTGRES_HOST"}}`,
+		"duplicate name":     `{"choice":"managed","variables":{"host":"X","password":"X"}}`,
+		"platform name":      `{"choice":"managed","variables":{"host":"PORT","password":"POSTGRES_PASSWORD"}}`,
+		"bad name":           `{"choice":"managed","variables":{"host":"A-B","password":"POSTGRES_PASSWORD"}}`,
+	} {
+		if rec := h.do("POST", base, body); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: %d, want 400 (%s)", name, rec.Code, rec.Body)
+		}
+	}
+
+	rec := h.do("POST", base, `{"choice":"managed","variables":{"host":"POSTGRES_HOST","port":"POSTGRES_PORT","user":"POSTGRES_USER","password":"POSTGRES_PASSWORD","database":"POSTGRES_DB","ca":"POSTGRES_CA"}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("managed in parts: %d %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"tls":true`) || strings.Contains(rec.Body.String(), `"url"`) {
+		t.Errorf("body: %s", rec.Body)
+	}
+	vals, _, _ := h.st.RevealEnvValues(t.Context(), p.ID)
+	if vals["POSTGRES_HOST"] != domain.ServiceContainerName(p.ID.String()) || vals["POSTGRES_PORT"] != "5432" ||
+		vals["POSTGRES_USER"] != "app" || vals["POSTGRES_DB"] != "app" || len(vals["POSTGRES_PASSWORD"]) < 20 {
+		t.Errorf("values = %v", vals)
+	}
+	if _, has := vals["POSTGRES_CA"]; has {
+		t.Error("the CA is delivered at run time and must not be stored")
+	}
+	if strings.Contains(h.logs.b.String(), vals["POSTGRES_PASSWORD"]) || strings.Contains(rec.Body.String(), vals["POSTGRES_PASSWORD"]) {
+		t.Error("the password leaked")
+	}
+}

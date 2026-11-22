@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -76,14 +77,14 @@ func TestDatabaseFindingOnlyAsksWhenItShould(t *testing.T) {
 
 	// "Não preciso de banco" não pergunta de novo; "externo" sem valor lembra a URL.
 	r := newProject("sem-banco")
-	if _, err := st.ChooseDatabase(ctx, r.ID, admin.ID, domain.ServiceNone, "DATABASE_URL", ""); err != nil {
+	if _, err := st.ChooseDatabase(ctx, r.ID, admin.ID, domain.ServiceNone, map[string]string{"url": "DATABASE_URL"}, map[string]string{"url": ""}); err != nil {
 		t.Fatal(err)
 	}
 	if f, _ := w.databaseFinding(ctx, r, pgNeed(domain.NeedRequired)); f != nil {
 		t.Errorf("'none' must not be asked again: %+v", f)
 	}
 	e := newProject("externo")
-	if _, err := st.ChooseDatabase(ctx, e.ID, admin.ID, domain.ServiceExternal, "DATABASE_URL", ""); err != nil {
+	if _, err := st.ChooseDatabase(ctx, e.ID, admin.ID, domain.ServiceExternal, map[string]string{"url": "DATABASE_URL"}, map[string]string{"url": ""}); err != nil {
 		t.Fatal(err)
 	}
 	if f, _ := w.databaseFinding(ctx, e, pgNeed(domain.NeedRequired)); f == nil || !strings.Contains(f.Message, "Variáveis") {
@@ -91,7 +92,7 @@ func TestDatabaseFindingOnlyAsksWhenItShould(t *testing.T) {
 	}
 	// Gerenciado: a variável vinculada já tem valor, então não há pergunta.
 	m := newProject("gerenciado")
-	if _, err := st.ChooseDatabase(ctx, m.ID, admin.ID, domain.ServiceManaged, "DATABASE_URL", "postgres://app:x@h:5432/app"); err != nil {
+	if _, err := st.ChooseDatabase(ctx, m.ID, admin.ID, domain.ServiceManaged, map[string]string{"url": "DATABASE_URL"}, map[string]string{"url": "postgres://app:x@h:5432/app"}); err != nil {
 		t.Fatal(err)
 	}
 	if f, _ := w.databaseFinding(ctx, m, pgNeed(domain.NeedRequired)); f != nil {
@@ -122,7 +123,7 @@ func TestManagedPostgresLifecycle(t *testing.T) {
 	}
 	const pass = "senha-do-canario-pg-4471"
 	url := "postgres://app:" + pass + "@" + domain.ServiceContainerName(p.ID.String()) + ":5432/app"
-	svc, err := st.ChooseDatabase(ctx, p.ID, admin.ID, domain.ServiceManaged, "DATABASE_URL", url)
+	svc, err := st.ChooseDatabase(ctx, p.ID, admin.ID, domain.ServiceManaged, map[string]string{"url": "DATABASE_URL"}, map[string]string{"url": url})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,5 +212,87 @@ func TestManagedPostgresLifecycle(t *testing.T) {
 	}
 	if again, err := w.deleteService(ctx, &op); err != nil || again["already_gone"] != true {
 		t.Errorf("deleting twice is a no-op: %v, %v", again, err)
+	}
+}
+
+// TLS do banco gerenciado e a CA entregue ao app (DEC-44): o banco aceita TLS
+// verificado pelo nome do contêiner, a conexão em partes é entregue por papel e
+// a CA sai do banco para o arquivo e para a variável de CA do código.
+func TestManagedPostgresServesTLSAndTheAppTrustsIt(t *testing.T) {
+	if os.Getenv("COBOGO_TEST_DOCKER") != "1" {
+		t.Skip("defina COBOGO_TEST_DOCKER=1 para rodar testes com Docker")
+	}
+	rt, err := dockerrt.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	defer cancel()
+	st := storetest.New(t)
+	admin, err := st.CreateAdmin(ctx, "dono-tls", "hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := st.CreateProject(ctx, admin.ID, "banco-tls", "https://github.com/x/banco-tls", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const pass = "senha-tls-do-canario-9921"
+	host := domain.ServiceContainerName(p.ID.String())
+	names := map[string]string{"host": "POSTGRES_HOST", "port": "POSTGRES_PORT", "user": "POSTGRES_USER", "password": "POSTGRES_PASSWORD", "database": "POSTGRES_DB", "ca": "POSTGRES_CA"}
+	values := map[string]string{"host": host, "port": "5432", "user": "app", "password": pass, "database": "app"}
+	svc, err := st.ChooseDatabase(ctx, p.ID, admin.ID, domain.ServiceManaged, names, values)
+	if err != nil || !svc.TLS {
+		t.Fatalf("choose = %+v, %v", svc, err)
+	}
+	w := &Worker{store: st, runtime: rt, log: quiet}
+	net := dockerrt.ProjectNetwork(p.ID.String())
+	t.Cleanup(func() {
+		_ = rt.RemovePostgres(context.Background(), p.ID.String(), svc.ContainerName, svc.VolumeName)
+		_ = rt.RemoveProjectNetwork(context.Background(), p.ID.String())
+	})
+	if _, err := w.provisionPostgres(ctx, rt, p, svc); err != nil {
+		t.Fatal(err)
+	}
+
+	files, env, err := w.databaseTrust(ctx, rt, p, svc, map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca := files[domain.DBCAPath]
+	if !strings.Contains(string(ca), "BEGIN CERTIFICATE") || strings.Contains(string(ca), "PRIVATE KEY") {
+		t.Fatalf("the CA must be the public certificate only: %q", ca)
+	}
+	if env["NODE_EXTRA_CA_CERTS"] != domain.DBCAPath || env["PGSSLROOTCERT"] != domain.DBCAPath || env["POSTGRES_CA"] != string(ca) {
+		t.Errorf("env = %v", env)
+	}
+	// O que o usuário definiu não é trocado.
+	if _, env2, _ := w.databaseTrust(ctx, rt, p, svc, map[string]string{"NODE_EXTRA_CA_CERTS": ""}); env2["NODE_EXTRA_CA_CERTS"] != "" {
+		t.Error("a user-defined NODE_EXTRA_CA_CERTS must be kept")
+	}
+
+	dir := t.TempDir()
+	caFile := filepath.Join(dir, "ca.pem")
+	if err := os.WriteFile(caFile, ca, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	psql := func(conn string, extra ...string) (string, error) {
+		args := append([]string{"run", "--rm", "--network", net, "-v", dir + ":/c:ro"}, extra...)
+		args = append(args, "postgres:16-alpine", "psql", conn, "-tAc", "select ssl from pg_stat_ssl where pid = pg_backend_pid()")
+		out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+		return strings.TrimSpace(string(out)), err
+	}
+	// Com a CA, verify-full pelo nome do contêiner conecta e a sessão usa TLS.
+	good := "host=" + host + " user=app dbname=app password=" + pass + " sslmode=verify-full sslrootcert=/c/ca.pem"
+	if out, err := psql(good); err != nil || out != "t" {
+		t.Errorf("verify-full with the CA: %q, %v", out, err)
+	}
+	// Sem a CA, verify-full recusa: o certificado não é de uma autoridade pública.
+	if _, err := psql("host=" + host + " user=app dbname=app password=" + pass + " sslmode=verify-full sslrootcert=system"); err == nil {
+		t.Error("verify-full without our CA must fail")
+	}
+	// Sem TLS (como um código que não pede ssl) continua conectando.
+	if out, err := psql("host=" + host + " user=app dbname=app password=" + pass + " sslmode=disable"); err != nil || out != "" && out != "f" {
+		t.Errorf("plain connection: %q, %v", out, err)
 	}
 }

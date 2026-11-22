@@ -34,6 +34,7 @@ type runSpec struct {
 	network string
 	labels  map[string]string
 	volumes map[string]string
+	files   map[string][]byte
 }
 
 // WithNetwork roda o contêiner na rede indicada, em vez da bridge padrão.

@@ -313,11 +313,16 @@ const (
 // Service é a intenção de um projeto sobre um banco e, no modo gerenciado, a
 // identidade do serviço. A senha nunca está aqui: vive na variável cifrada.
 type Service struct {
-	ID            uuid.UUID `json:"id"`
-	ProjectID     uuid.UUID `json:"project_id"`
-	Engine        string    `json:"engine"`
-	Mode          string    `json:"mode"`
-	Variable      string    `json:"variable"`
+	ID        uuid.UUID `json:"id"`
+	ProjectID uuid.UUID `json:"project_id"`
+	Engine    string    `json:"engine"`
+	Mode      string    `json:"mode"`
+	Variable  string    `json:"variable"`
+	// Variables liga cada papel da conexão ao nome da variável de ambiente (DEC-44):
+	// `url`, ou `host`, `port`, `user`, `password`, `database` e `ca`.
+	Variables map[string]string `json:"variables"`
+	// TLS: o banco gerenciado aceita TLS, com certificado próprio (DEC-44 item 4).
+	TLS           bool      `json:"tls"`
 	ContainerName string    `json:"container_name,omitempty"`
 	VolumeName    string    `json:"volume_name,omitempty"`
 	Status        string    `json:"status"`
@@ -325,3 +330,40 @@ type Service struct {
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
+
+// Papéis das variáveis de conexão do banco (DEC-44).
+const (
+	RoleURL      = "url"
+	RoleHost     = "host"
+	RolePort     = "port"
+	RoleUser     = "user"
+	RolePassword = "password"
+	RoleDatabase = "database"
+	// RoleCA é a variável em que o código lê a CA do banco; o valor é entregue na
+	// execução, não é gravado.
+	RoleCA = "ca"
+)
+
+// Estilos de conexão (DEC-44 item 1).
+const (
+	StyleURL   = "url"
+	StyleParts = "parts"
+)
+
+// PrimaryRole é o papel da variável principal de um estilo: a URL, ou a senha.
+func PrimaryRole(style string) string {
+	if style == StyleParts {
+		return RolePassword
+	}
+	return RoleURL
+}
+
+// DBUser, DBName e DBPort são o que o banco gerenciado entrega em qualquer estilo.
+const (
+	DBUser = "app"
+	DBName = "app"
+	DBPort = "5432"
+)
+
+// DBCAPath é onde o certificado do banco é injetado na aplicação (DEC-44 item 5).
+const DBCAPath = "/etc/cobogo/db-ca.pem"

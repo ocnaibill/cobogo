@@ -740,7 +740,19 @@ paths:
                   enum: [managed, external, none]
                 variable:
                   type: string
-                  description: A variável de conexão. Padrão `DATABASE_URL`.
+                  description: A variável da URL de conexão (forma curta). Padrão `DATABASE_URL`.
+                variables:
+                  type: object
+                  description: |
+                    Os nomes das variáveis por papel (DEC-44). Estilo URL: `url`
+                    (e, se o código lê a CA do banco, `ca`). Estilo partes: no
+                    mínimo `host` e `password`, e opcionalmente `port`, `user`,
+                    `database` e `ca`. Os nomes não se repetem, não podem ser da
+                    plataforma e nenhum pode já ter um valor digitado
+                    (`variable_defined`). O papel `ca` é entregue na execução e
+                    nunca é gravado. Vence sobre `variable`.
+                  additionalProperties:
+                    type: string
       responses:
         '200':
           description: A escolha foi registrada.
@@ -2465,6 +2477,19 @@ components:
             deploy antes do build). `possible`: só a dependência (vira sugestão).
         variable:
           type: string
+          description: A variável principal (a URL, ou a senha no estilo partes).
+        style:
+          type: string
+          enum: [url, parts]
+          description: Como o código lê a conexão (DEC-44).
+        family:
+          type: string
+          description: No estilo partes, o prefixo da família (`POSTGRES`, `PG`, `DB`...).
+        variables:
+          type: object
+          description: Os nomes de variável por papel (`url`, ou `host`, `port`, `user`, `password`, `database`, e `ca`).
+          additionalProperties:
+            type: string
         reason:
           type: string
         evidence:
@@ -2473,7 +2498,7 @@ components:
             type: string
     Service:
       type: object
-      required: [id, project_id, engine, mode, variable, status, created_at, updated_at]
+      required: [id, project_id, engine, mode, variable, variables, tls, status, created_at, updated_at]
       properties:
         id:
           type: string
@@ -2489,6 +2514,14 @@ components:
           enum: [managed, external, none]
         variable:
           type: string
+        variables:
+          type: object
+          description: Os nomes de variável vinculados, por papel (DEC-44). `ca` é entregue na execução.
+          additionalProperties:
+            type: string
+        tls:
+          type: boolean
+          description: O banco gerenciado aceita TLS, com certificado próprio (DEC-44). Bancos criados antes não têm.
         container_name:
           type: string
         volume_name:

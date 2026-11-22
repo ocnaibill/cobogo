@@ -37,6 +37,8 @@ type PostgresSpec struct {
 	Network   string
 	Volume    string
 	Password  string
+	// TLS: o banco aceita TLS, com certificado próprio (DEC-44).
+	TLS bool
 }
 
 // EnsurePostgres garante o contêiner do banco: cria o que falta (volume e
@@ -67,13 +69,23 @@ func (r *Runtime) EnsurePostgres(ctx context.Context, spec PostgresSpec) (create
 	if _, err := r.EnsureVolume(ctx, spec.Volume, spec.ProjectID, domain.PostgresDataPath); err != nil {
 		return false, err
 	}
+	env := []string{"POSTGRES_USER=app", "POSTGRES_DB=app", "POSTGRES_PASSWORD=" + spec.Password}
+	var args []string
+	if spec.TLS {
+		if err := r.putPostgresTLS(ctx, spec); err != nil {
+			return false, err
+		}
+		env = append(env, "PGDATA="+PostgresPGData)
+		args = []string{"-c", "ssl=on", "-c", "ssl_cert_file=" + PostgresTLSDir + "/" + serverCertName, "-c", "ssl_key_file=" + PostgresTLSDir + "/" + serverKeyName}
+	}
 	memory := int64(postgresMemoryMB) * mib
 	pids := int64(postgresPids)
 	useInit := true
 	created2, err := r.cli.ContainerCreate(ctx,
 		&container.Config{
 			Image: PostgresImage,
-			Env:   []string{"POSTGRES_USER=app", "POSTGRES_DB=app", "POSTGRES_PASSWORD=" + spec.Password},
+			Env:   env,
+			Cmd:   args,
 			Labels: map[string]string{
 				LabelManaged: "true", LabelProject: spec.ProjectID, LabelService: domain.ServicePostgres,
 			},

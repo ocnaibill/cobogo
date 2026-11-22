@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/ocnaibill/cobogo/internal/dockerrt"
@@ -50,15 +51,19 @@ func (w *Worker) databaseFinding(ctx context.Context, project domain.Project, re
 		return nil, nil
 	}
 
-	message := fmt.Sprintf("O código usa PostgreSQL (%s) e %s não tem valor. Onde está o banco?", firstEvidence(need.Evidence), need.Variable)
+	target, how := need.Variable, "a URL de conexão"
+	if need.Style == domain.StyleParts {
+		target, how = connectionNames(need), "os dados de conexão"
+	}
+	message := fmt.Sprintf("O código usa PostgreSQL (%s) e a conexão não está definida (%s). Onde está o banco?", firstEvidence(need.Evidence), target)
 	if err == nil && svc.Mode == domain.ServiceExternal {
-		message = fmt.Sprintf("Você escolheu usar um banco que já tem, mas %s ainda não tem valor. Informe a URL de conexão na aba Variáveis, ou escolha outra opção.", need.Variable)
+		message = fmt.Sprintf("Você escolheu usar um banco que já tem, mas a conexão não está definida (%s). Informe %s na aba Variáveis, ou escolha outra opção.", target, how)
 	}
 	return &domain.Finding{
 		Rule: "HEU-06.6", Field: domain.FieldDatabase, Message: message,
 		Options: []domain.Option{
-			{Value: domain.ServiceManaged, Note: "O Cobogó cria um PostgreSQL só deste projeto, com os dados em volume, e liga " + need.Variable + " a ele."},
-			{Value: domain.ServiceExternal, Note: "Você informa a URL de um banco que já tem, como segredo, em " + need.Variable + "."},
+			{Value: domain.ServiceManaged, Note: "O Cobogó cria um PostgreSQL só deste projeto, com os dados em volume, e liga " + target + " a ele."},
+			{Value: domain.ServiceExternal, Note: "Você informa " + how + " de um banco que já tem, como segredo, em " + target + "."},
 			{Value: domain.ServiceNone, Note: "O projeto não precisa de banco; o deploy segue sem perguntar de novo."},
 		},
 	}, nil
@@ -79,21 +84,9 @@ func (w *Worker) provisionPostgres(ctx context.Context, rt *dockerrt.Runtime, pr
 		_ = w.store.SetServiceStatus(context.WithoutCancel(ctx), svc.ID, domain.ServiceFailed, err.Error())
 		return false, err
 	}
-	values, _, err := w.store.RevealEnvValues(ctx, project.ID)
+	pass, err := w.databasePassword(ctx, project, svc)
 	if err != nil {
-		return fail(fmt.Errorf("carregar a conexão do banco: %w", err))
-	}
-	raw, ok := values[svc.Variable]
-	if !ok {
-		return fail(fmt.Errorf("a variável %s do vínculo com o banco não existe; escolha o banco de novo na aba Banco", svc.Variable))
-	}
-	u, perr := url.Parse(raw)
-	pass, hasPass := "", false
-	if perr == nil && u.User != nil {
-		pass, hasPass = u.User.Password()
-	}
-	if !hasPass || pass == "" {
-		return fail(fmt.Errorf("a variável %s não tem a senha do banco; escolha o banco de novo na aba Banco", svc.Variable))
+		return fail(err)
 	}
 
 	net := dockerrt.ProjectNetwork(project.ID.String())
@@ -101,7 +94,7 @@ func (w *Worker) provisionPostgres(ctx context.Context, rt *dockerrt.Runtime, pr
 		return fail(err)
 	}
 	created, err = rt.EnsurePostgres(ctx, dockerrt.PostgresSpec{
-		ProjectID: project.ID.String(), Container: svc.ContainerName, Network: net, Volume: svc.VolumeName, Password: pass,
+		ProjectID: project.ID.String(), Container: svc.ContainerName, Network: net, Volume: svc.VolumeName, Password: pass, TLS: svc.TLS,
 	})
 	if err != nil {
 		return fail(err)
@@ -145,4 +138,69 @@ func (w *Worker) deleteService(ctx context.Context, op *domain.Operation) (map[s
 		return nil, err
 	}
 	return map[string]any{"container": svc.ContainerName, "volume": svc.VolumeName}, nil
+}
+
+// databasePassword lê a senha do banco da variável vinculada: a da senha (estilo
+// partes) ou a URL de conexão (estilo URL, e os bancos criados antes da DEC-44).
+func (w *Worker) databasePassword(ctx context.Context, project domain.Project, svc domain.Service) (string, error) {
+	values, _, err := w.store.RevealEnvValues(ctx, project.ID)
+	if err != nil {
+		return "", fmt.Errorf("carregar a conexão do banco: %w", err)
+	}
+	if name := svc.Variables[domain.RolePassword]; name != "" {
+		pass := values[name]
+		if pass == "" {
+			return "", fmt.Errorf("a variável %s do vínculo com o banco não existe ou está vazia; escolha o banco de novo na aba Banco", name)
+		}
+		return pass, nil
+	}
+	name := svc.Variables[domain.RoleURL]
+	if name == "" {
+		name = svc.Variable
+	}
+	raw, ok := values[name]
+	if !ok {
+		return "", fmt.Errorf("a variável %s do vínculo com o banco não existe; escolha o banco de novo na aba Banco", name)
+	}
+	u, perr := url.Parse(raw)
+	pass := ""
+	if perr == nil && u.User != nil {
+		pass, _ = u.User.Password()
+	}
+	if pass == "" {
+		return "", fmt.Errorf("a variável %s não tem a senha do banco; escolha o banco de novo na aba Banco", name)
+	}
+	return pass, nil
+}
+
+// databaseTrust devolve o arquivo da CA do banco e as variáveis que apontam
+// para ele (DEC-44 item 5): NODE_EXTRA_CA_CERTS e PGSSLROOTCERT, e a variável de
+// CA que o código lê, se há. Uma variável que o usuário definiu não é trocada.
+func (w *Worker) databaseTrust(ctx context.Context, rt *dockerrt.Runtime, project domain.Project, svc domain.Service, defined map[string]string) (map[string][]byte, map[string]string, error) {
+	ca, err := rt.ReadFile(ctx, project.ID.String(), svc.ContainerName, dockerrt.PostgresTLSDir+"/server.crt")
+	if err != nil {
+		return nil, nil, fmt.Errorf("ler o certificado do banco: %w", err)
+	}
+	env := map[string]string{}
+	for _, name := range []string{"NODE_EXTRA_CA_CERTS", "PGSSLROOTCERT"} {
+		if _, own := defined[name]; !own {
+			env[name] = domain.DBCAPath
+		}
+	}
+	if name := svc.Variables[domain.RoleCA]; name != "" {
+		env[name] = string(ca)
+	}
+	return map[string][]byte{domain.DBCAPath: ca}, env, nil
+}
+
+// connectionNames lista os nomes de variável de uma necessidade em partes, na
+// ordem em que a conexão é lida.
+func connectionNames(need *domain.ServiceNeed) string {
+	var names []string
+	for _, role := range []string{domain.RoleHost, domain.RolePort, domain.RoleUser, domain.RolePassword, domain.RoleDatabase} {
+		if n := need.Variables[role]; n != "" {
+			names = append(names, n)
+		}
+	}
+	return strings.Join(names, ", ")
 }

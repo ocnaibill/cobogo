@@ -113,25 +113,84 @@ func detectServiceNeeds(fsys fs.FS, vars []domain.ConfigVariable) []domain.Servi
 		return []domain.ServiceNeed{}
 	}
 
-	return []domain.ServiceNeed{{
-		Engine: domain.ServicePostgres, Level: level, Variable: connectionVariable(prismaVar, vars), Reason: reason, Evidence: evidence,
-	}}
+	need := domain.ServiceNeed{Engine: domain.ServicePostgres, Level: level, Reason: reason, Evidence: evidence}
+	need.Style, need.Family, need.Variables = connectionStyle(prismaVar, vars)
+	need.Variable = need.Variables[domain.PrimaryRole(need.Style)]
+	return []domain.ServiceNeed{need}
 }
 
-// connectionVariable escolhe a variável da URL: a do schema do Prisma; senão a
-// primeira da lista que o código referencia; senão DATABASE_URL.
-func connectionVariable(prismaVar string, vars []domain.ConfigVariable) string {
-	if prismaVar != "" {
-		return prismaVar
+// Famílias de variáveis de conexão em partes (DEC-44): o prefixo e os sufixos que
+// dizem o papel. Fechadas de propósito; nome fora delas se escreve na pergunta.
+var (
+	partName = regexp.MustCompile(`^(POSTGRES|POSTGRESQL|PG|DB|DATABASE)_?(HOST|HOSTNAME|PORT|USER|USERNAME|PASSWORD|PASS|PWD|DB|DATABASE|NAME)$`)
+	partRole = map[string]string{
+		"HOST": domain.RoleHost, "HOSTNAME": domain.RoleHost, "PORT": domain.RolePort,
+		"USER": domain.RoleUser, "USERNAME": domain.RoleUser,
+		"PASSWORD": domain.RolePassword, "PASS": domain.RolePassword, "PWD": domain.RolePassword,
+		"DB": domain.RoleDatabase, "DATABASE": domain.RoleDatabase, "NAME": domain.RoleDatabase,
 	}
+	// Ordem de preferência quando duas famílias empatam.
+	familyOrder = []string{"POSTGRES", "PG", "DB", "DATABASE", "POSTGRESQL"}
+	// Variáveis em que o código lê a CA do banco.
+	caNames = []string{"POSTGRES_CA", "DB_CA", "DATABASE_CA", "DATABASE_SSL_CA", "PG_CA", "POSTGRESQL_CA"}
+)
+
+// connectionStyle decide como o código lê a conexão: a variável da URL do schema
+// do Prisma ou a primeira URL conhecida (estilo `url`), ou uma família de partes
+// que ele referencia (estilo `parts`), com a CA se ele a lê. A URL vence quando o
+// código referencia as duas coisas: é uma variável só.
+func connectionStyle(prismaVar string, vars []domain.ConfigVariable) (style, family string, variables map[string]string) {
 	known := map[string]bool{}
 	for _, v := range vars {
 		known[v.Name] = true
 	}
-	for _, n := range pgVariables {
-		if known[n] {
-			return n
+	urlVar := prismaVar
+	if urlVar == "" {
+		for _, n := range pgVariables {
+			if known[n] {
+				urlVar = n
+				break
+			}
 		}
 	}
-	return pgVariables[0]
+	if urlVar != "" {
+		return domain.StyleURL, "", map[string]string{domain.RoleURL: urlVar}
+	}
+
+	byFamily := map[string]map[string]string{}
+	for _, v := range vars {
+		m := partName.FindStringSubmatch(v.Name)
+		if m == nil {
+			continue
+		}
+		if byFamily[m[1]] == nil {
+			byFamily[m[1]] = map[string]string{}
+		}
+		role := partRole[m[2]]
+		if _, taken := byFamily[m[1]][role]; !taken {
+			byFamily[m[1]][role] = v.Name
+		}
+	}
+	best, bestScore := "", 0
+	for _, fam := range familyOrder {
+		roles := byFamily[fam]
+		// Precisa do host e da senha: sem eles o banco gerenciado não tem como se ligar.
+		if roles[domain.RoleHost] == "" || roles[domain.RolePassword] == "" {
+			continue
+		}
+		if len(roles) > bestScore {
+			best, bestScore = fam, len(roles)
+		}
+	}
+	if best == "" {
+		return domain.StyleURL, "", map[string]string{domain.RoleURL: pgVariables[0]}
+	}
+	out := byFamily[best]
+	for _, n := range caNames {
+		if known[n] {
+			out[domain.RoleCA] = n
+			break
+		}
+	}
+	return domain.StyleParts, best, out
 }

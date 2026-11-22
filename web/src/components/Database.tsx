@@ -19,28 +19,84 @@ export function useDatabase(projectId: string) {
 type Choice = "managed" | "external" | "none";
 
 const CHOICE_TEXT: Record<Choice, { title: string; text: string }> = {
-  managed: { title: "Criar um PostgreSQL do Cobogó e conectar", text: "Um banco só deste projeto, com os dados em volume, ligado à variável de conexão. Começa vazio." },
-  external: { title: "Usar um banco que já tenho", text: "Você informa a URL do seu banco, como segredo, na aba Variáveis." },
+  managed: { title: "Criar um PostgreSQL do Cobogó e conectar", text: "Um banco só deste projeto, com TLS e os dados em volume, ligado às variáveis acima. Começa vazio." },
+  external: { title: "Usar um banco que já tenho", text: "Você informa os dados do seu banco, como segredo, na aba Variáveis." },
   none: { title: "Não preciso de banco", text: "O deploy segue sem perguntar de novo." },
 };
 
-/** As três escolhas do destino do banco (HEU-06.6). Responder reenfileira o deploy que esperava. */
+type Style = "url" | "parts";
+
+/** Os papéis de cada estilo, na ordem em que aparecem; `required` precisam de um nome. */
+const ROLES: Record<Style, { role: string; label: string; required: boolean; hint?: string }[]> = {
+  url: [
+    { role: "url", label: "URL de conexão", required: true },
+    { role: "ca", label: "Certificado (CA)", required: false, hint: "Só se o código lê a CA do banco numa variável própria." },
+  ],
+  parts: [
+    { role: "host", label: "Host", required: true },
+    { role: "port", label: "Porta", required: false },
+    { role: "user", label: "Usuário", required: false },
+    { role: "password", label: "Senha", required: true },
+    { role: "database", label: "Banco", required: false },
+    { role: "ca", label: "Certificado (CA)", required: false, hint: "Só se o código lê a CA do banco numa variável própria." },
+  ],
+};
+
+const PARTS_DEFAULT: Record<string, string> = { host: "POSTGRES_HOST", port: "POSTGRES_PORT", user: "POSTGRES_USER", password: "POSTGRES_PASSWORD", database: "POSTGRES_DB", ca: "" };
+
+/** Os nomes de variável por papel de um estado inicial: o que a análise leu, o vínculo atual ou o padrão. */
+function initialNames(view: DatabaseView): { style: Style; names: Record<string, string> } {
+  const vars = view.service?.variables ?? view.need?.variables ?? {};
+  const style: Style = view.need?.style === "parts" || ("host" in vars && "password" in vars) ? "parts" : "url";
+  if (Object.keys(vars).length > 0) return { style, names: { ...vars } };
+  return { style, names: style === "parts" ? { ...PARTS_DEFAULT } : { url: view.variable || "DATABASE_URL" } };
+}
+
+/** Os nomes de variável de uma conexão, em ordem de leitura (sem o certificado). */
+export function connectionVariableNames(vars: Record<string, string> | undefined): string[] {
+  return ["url", "host", "port", "user", "password", "database"].map((r) => vars?.[r]).filter((n): n is string => !!n);
+}
+
+/** As escolhas do destino do banco (HEU-06.6) e os nomes das variáveis que o código lê (DEC-44). Responder reenfileira o deploy que esperava. */
 export function DatabaseChoice({ projectId, view, onChosen }: { projectId: string; view: DatabaseView; onChosen?: () => void }) {
   const qc = useQueryClient();
-  const [variable, setVariable] = useState(view.variable);
+  const initial = initialNames(view);
+  const [style, setStyle] = useState<Style>(initial.style);
+  const [names, setNames] = useState<Record<string, string>>(initial.names);
   const [busy, setBusy] = useState<Choice | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [external, setExternal] = useState(false);
+  const [external, setExternal] = useState<string[] | null>(null);
+
+  const roles = ROLES[style];
+  const clean = (): Record<string, string> => {
+    const out: Record<string, string> = {};
+    for (const { role } of roles) {
+      const n = (names[role] ?? "").trim();
+      if (n) out[role] = n;
+    }
+    return out;
+  };
+  const complete = roles.every(({ role, required }) => !required || (names[role] ?? "").trim() !== "");
+
+  function changeStyle(next: Style) {
+    setStyle(next);
+    setNames((cur): Record<string, string> => {
+      const ca = cur.ca ?? "";
+      if (next === "parts") return Object.assign({}, PARTS_DEFAULT, { ca });
+      return { url: view.need?.variables?.url ?? "DATABASE_URL", ca };
+    });
+  }
 
   async function choose(choice: Choice) {
     setBusy(choice);
     setError(null);
     try {
-      await unwrap(api.POST("/projects/{id}/database", { params: { path: { id: projectId } }, body: { choice, variable: variable.trim() || undefined } }));
+      const variables = clean();
+      await unwrap(api.POST("/projects/{id}/database", { params: { path: { id: projectId } }, body: { choice, variables } }));
       qc.invalidateQueries({ queryKey: ["database", projectId] });
       qc.invalidateQueries({ queryKey: ["env", projectId] });
       qc.invalidateQueries({ queryKey: ["persistent", projectId] });
-      setExternal(choice === "external");
+      setExternal(choice === "external" ? connectionVariableNames(variables) : null);
       onChosen?.();
     } catch (e) {
       setError(errText(e));
@@ -52,9 +108,28 @@ export function DatabaseChoice({ projectId, view, onChosen }: { projectId: strin
   return (
     <div className="stack">
       {error && <Notice tone="danger">{error}</Notice>}
-      <Field label="Variável de conexão" htmlFor="db-variable" hint="É por ela que a aplicação recebe a URL do banco.">
-        <input id="db-variable" className="mono" value={variable} onChange={(e) => setVariable(e.target.value)} spellCheck={false} autoComplete="off" />
-      </Field>
+      <div className="stack-sm">
+        <span className="label">Como o código lê a conexão</span>
+        <div className="options" role="radiogroup" aria-label="Estilo da conexão">
+          {(["url", "parts"] as Style[]).map((st) => (
+            <label key={st} className={`option row-between${style === st ? " selected" : ""}`}>
+              <span className="stack-sm">
+                <span className="strong">{st === "url" ? "Uma URL só" : "Em partes"}</span>
+                <span className="muted small">{st === "url" ? "Uma variável com a URL completa, como DATABASE_URL." : "Host, porta, usuário, senha e banco em variáveis separadas, como POSTGRES_HOST."}</span>
+              </span>
+              <input type="radio" name="db-style" checked={style === st} onChange={() => changeStyle(st)} style={{ width: "auto" }} />
+            </label>
+          ))}
+        </div>
+        {view.need?.style === style && view.need.evidence.length > 0 && <span className="small faint">Lido do código: {view.need.evidence[0]}.</span>}
+      </div>
+      <div className="grid-2">
+        {roles.map(({ role, label, required, hint }) => (
+          <Field key={role} label={label + (required ? "" : " (opcional)")} htmlFor={`db-${role}`} hint={hint ?? "O nome da variável de ambiente que o código lê."}>
+            <input id={`db-${role}`} className="mono" value={names[role] ?? ""} onChange={(e) => setNames({ ...names, [role]: e.target.value })} spellCheck={false} autoComplete="off" placeholder={required ? "" : "não usar"} />
+          </Field>
+        ))}
+      </div>
       <div className="options" role="group" aria-label="Destino do banco">
         {(Object.keys(CHOICE_TEXT) as Choice[]).map((c) => (
           <div key={c} className="option row-between">
@@ -62,7 +137,7 @@ export function DatabaseChoice({ projectId, view, onChosen }: { projectId: strin
               <span className="strong">{CHOICE_TEXT[c].title}</span>
               <span className="muted small">{CHOICE_TEXT[c].text}</span>
             </div>
-            <Button variant={c === "managed" ? "primary" : "secondary"} busy={busy === c} disabled={busy !== null || !variable.trim()} onClick={() => choose(c)}>
+            <Button variant={c === "managed" ? "primary" : "secondary"} busy={busy === c} disabled={busy !== null || !complete} onClick={() => choose(c)}>
               Escolher
             </Button>
           </div>
@@ -71,7 +146,13 @@ export function DatabaseChoice({ projectId, view, onChosen }: { projectId: strin
       {external && (
         <Notice tone="info">
           <span>
-            Agora defina <span className="mono">{variable}</span> com a URL do seu banco na <Link to={`/projetos/${projectId}?aba=variaveis`}>aba Variáveis</Link>.
+            Agora defina {external.map((n, i) => (
+              <span key={n}>
+                {i > 0 && ", "}
+                <span className="mono">{n}</span>
+              </span>
+            ))}{" "}
+            com os dados do seu banco na <Link to={`/projetos/${projectId}?aba=variaveis`}>aba Variáveis</Link>.
           </span>
         </Notice>
       )}
@@ -126,7 +207,7 @@ export function DatabaseTab({ projectId, slug }: { projectId: string; slug: stri
             <span>
               {svc.mode === "external" ? (
                 <>
-                  Você usa um banco que já tem, em <span className="mono">{svc.variable}</span>. Defina a URL na <Link to={`/projetos/${projectId}?aba=variaveis`}>aba Variáveis</Link>.
+                  Você usa um banco que já tem, em <span className="mono">{connectionVariableNames(svc.variables).join(", ") || svc.variable}</span>. Defina os valores na <Link to={`/projetos/${projectId}?aba=variaveis`}>aba Variáveis</Link>.
                 </>
               ) : (
                 "O projeto não precisa de banco."
@@ -181,10 +262,25 @@ function ManagedDatabase({ projectId, slug, view }: { projectId: string; slug: s
         <div className="grid-2">
           <div className="inset stack-sm">
             <span className="label">Conexão</span>
-            <span className="mono small wrap">{svc.variable}</span>
+            <span className="mono small wrap">{connectionVariableNames(svc.variables).join(", ") || svc.variable}</span>
             <span className="small muted">
-              Ligada à aplicação como <Badge tone="info">vinculada</Badge>. A URL e a senha nunca aparecem no painel.
+              Ligada à aplicação como <Badge tone="info">vinculada</Badge>. A senha e a URL nunca aparecem no painel.
             </span>
+            {svc.tls ? (
+              <span className="small muted">
+                <Badge tone="success">TLS</Badge> O banco tem certificado próprio. A aplicação recebe a CA em <span className="mono">/etc/cobogo/db-ca.pem</span>, apontada por <span className="mono">NODE_EXTRA_CA_CERTS</span> e <span className="mono">PGSSLROOTCERT</span>
+                {svc.variables?.ca ? (
+                  <>
+                    , e em <span className="mono">{svc.variables.ca}</span>, entregue na execução
+                  </>
+                ) : null}
+                .
+              </span>
+            ) : (
+              <span className="small muted">
+                <Badge tone="neutral">sem TLS</Badge> Este banco foi criado antes do TLS e não é migrado. Para ter TLS, apague-o e crie de novo.
+              </span>
+            )}
           </div>
           <div className="inset stack-sm">
             <span className="label">Dados</span>

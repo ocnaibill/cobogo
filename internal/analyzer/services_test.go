@@ -102,3 +102,47 @@ func TestDetectServiceNeeds(t *testing.T) {
 		}
 	})
 }
+
+// Estilo da conexão (DEC-44): URL única ou partes em família de variáveis.
+func TestConnectionStyle(t *testing.T) {
+	code := map[string]string{"package.json": `{"dependencies":{"pg":"8"}}`, "src/db.js": "const { Pool } = require('pg');\n"}
+	t.Run("a POSTGRES_ family read in parts is detected, with the CA", func(t *testing.T) {
+		got := needs(code, "POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_USER", "POSTGRES_DB", "POSTGRES_PASSWORD", "POSTGRES_CA", "NODE_ENV")
+		if len(got) != 1 || got[0].Style != domain.StyleParts || got[0].Family != "POSTGRES" {
+			t.Fatalf("got %+v", got)
+		}
+		want := map[string]string{"host": "POSTGRES_HOST", "port": "POSTGRES_PORT", "user": "POSTGRES_USER", "database": "POSTGRES_DB", "password": "POSTGRES_PASSWORD", "ca": "POSTGRES_CA"}
+		for k, v := range want {
+			if got[0].Variables[k] != v {
+				t.Errorf("role %s: %q, want %q", k, got[0].Variables[k], v)
+			}
+		}
+	})
+	t.Run("PG and DB_ families work, with their suffix variants", func(t *testing.T) {
+		got := needs(code, "PGHOST", "PGUSER", "PGPASSWORD", "PGDATABASE")
+		if got[0].Style != domain.StyleParts || got[0].Family != "PG" || got[0].Variables["database"] != "PGDATABASE" {
+			t.Fatalf("PG: %+v", got)
+		}
+		got = needs(code, "DB_HOSTNAME", "DB_USERNAME", "DB_PASS", "DB_NAME")
+		if got[0].Style != domain.StyleParts || got[0].Family != "DB" || got[0].Variables["host"] != "DB_HOSTNAME" || got[0].Variables["password"] != "DB_PASS" {
+			t.Fatalf("DB: %+v", got)
+		}
+	})
+	t.Run("a URL variable wins over parts", func(t *testing.T) {
+		got := needs(code, "DATABASE_URL", "POSTGRES_HOST", "POSTGRES_PASSWORD")
+		if got[0].Style != domain.StyleURL || got[0].Variables["url"] != "DATABASE_URL" || got[0].Variable != "DATABASE_URL" {
+			t.Fatalf("got %+v", got)
+		}
+	})
+	t.Run("parts without host and password fall back to the default URL", func(t *testing.T) {
+		got := needs(code, "POSTGRES_USER", "POSTGRES_DB")
+		if got[0].Style != domain.StyleURL || got[0].Variable != "DATABASE_URL" {
+			t.Fatalf("got %+v", got)
+		}
+	})
+	t.Run("no variables referenced defaults to DATABASE_URL", func(t *testing.T) {
+		if got := needs(code); got[0].Style != domain.StyleURL || got[0].Variables["url"] != "DATABASE_URL" {
+			t.Fatalf("got %+v", got)
+		}
+	})
+}
