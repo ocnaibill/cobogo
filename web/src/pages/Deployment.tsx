@@ -1,6 +1,7 @@
 // TEL-06 — Deploy em andamento e falha explicada, com TEL-04/05 — pendências,
 // plano e evidências. O progresso vem dos eventos incrementais (DEC-28); a
 // análise e o plano mostram o que o Cobogó decidiu e por quê.
+import { ProfileMark } from "../components/ProfileMark";
 import { DatabaseChoice, useDatabase } from "../components/Database";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router";
@@ -826,9 +827,7 @@ export function AnalysisDetail({ analysis }: { analysis: Analysis }) {
       <Card>
         <div className="stack">
           <div className="profile-head">
-            <span className="profile-mark" aria-hidden="true">
-              {profile === "Node.js" ? "JS" : profile === "Bun" ? "BUN" : profile === "Site estático" ? "WWW" : (profile ?? "?").slice(0, 2).toUpperCase()}
-            </span>
+            <ProfileMark profile={profile} />
             <div className="stack-sm">
               <h2>{profile ?? "Perfil não decidido"}</h2>
               <span className="row">
