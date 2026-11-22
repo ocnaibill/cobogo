@@ -241,11 +241,6 @@ func fixtures() []fixture {
 			},
 		},
 		{
-			name:  "python app is unsupported",
-			files: map[string]string{"requirements.txt": "flask", "app.py": "print('x')"},
-			want:  unsupportedByHEU01,
-		},
-		{
 			name:  "go app is unsupported",
 			files: map[string]string{"go.mod": "module x", "main.go": "package main"},
 			want:  unsupportedByHEU01,

@@ -2462,7 +2462,11 @@ components:
         `package_manager` (`npm` ou `bun`, quando o repositório tem os dois
         lockfiles), `bun_version` (`1`, `1.Y` ou `1.Y.Z`; DEC-36), `profile`
         (`P-NODE`, `P-BUN` ou `P-STATIC`), `output_dir` e `spa_fallback`
-        (`true` ou `false`; DEC-37).
+        (`true` ou `false`; DEC-37). Do Python (DEC-48): `ecosystem`
+        (`python` ou `javascript`, quando a pasta tem os dois), `package_manager`
+        (`pip` ou `uv`), `python_version` (`3.10` a `3.15`), `app_target`
+        (`modulo:atributo` ou `modulo:fabrica()`), `python_interface` (`wsgi` ou
+        `asgi`), `python_framework` e `django_settings`.
         Valores de variáveis de ambiente nunca passam por aqui.
       additionalProperties:
         type: string
@@ -3468,7 +3472,7 @@ components:
       properties:
         profile:
           type: string
-          enum: [P-NODE, P-BUN, P-STATIC]
+          enum: [P-NODE, P-BUN, P-STATIC, P-PY]
         runtime:
           type: string
         build_image:
@@ -3479,6 +3483,21 @@ components:
         bun_version:
           type: string
           description: Tag da imagem oven/bun; só no perfil P-BUN (DEC-36).
+        python_version:
+          type: string
+          description: Versão do Python (3.10 a 3.15); só no perfil P-PY (DEC-48).
+        app_target:
+          type: string
+          description: Alvo que o servidor de produção carrega (`modulo:atributo`); só no perfil P-PY.
+        interface:
+          type: string
+          enum: [wsgi, asgi]
+          description: Interface do alvo; só no perfil P-PY (gunicorn para wsgi, uvicorn para asgi).
+        system_packages:
+          type: array
+          items:
+            type: string
+          description: Pacotes de sistema do catálogo fechado instalados na execução; só no perfil P-PY.
         output_dir:
           type: string
           description: Diretório servido; só no perfil P-STATIC (DEC-37).
@@ -3494,8 +3513,8 @@ components:
             estático. Vão para o JavaScript do navegador; nunca segredos.
         package_manager:
           type: string
-          enum: [npm, bun, none]
-          description: '`none` é site estático sem build, nada a instalar (DEC-37).'
+          enum: [npm, bun, none, pip, uv]
+          description: '`none` é site estático sem build, nada a instalar (DEC-37). `pip` e `uv` são do perfil P-PY (DEC-48).'
         install_command:
           type: string
         build_command:

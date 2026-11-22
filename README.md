@@ -8,7 +8,7 @@ Uma plataforma open-source de **_Platform as a Service_ (PaaS)** guiada por heur
 
 ## Documentação do projeto
 
-O protótipo original em Node.js/TypeScript foi preservado na tag [`prototype-node`](https://github.com/ocnaibill/cobogo/tree/prototype-node) e removido do `main` após a primeira fatia vertical em Go entrar em funcionamento (DEC-22). O código atual implementa o recorte M1 do documento mestre: um perfil (Node.js/npm), análise explicável, geração de Dockerfile, build e contêiner reais.
+O protótipo original em Node.js/TypeScript foi preservado na tag [`prototype-node`](https://github.com/ocnaibill/cobogo/tree/prototype-node) e removido do `main` após a primeira fatia vertical em Go entrar em funcionamento (DEC-22). O código atual implementa o recorte M1 do documento mestre e o que veio depois: análise explicável, geração de Dockerfile, build e contêiner reais para os perfis Node.js/npm (P-NODE), Bun (P-BUN), site estático (P-STATIC) e Python (P-PY: pip ou uv, Flask, FastAPI, Django e outros alvos WSGI/ASGI; DEC-48).
 
 - [Documento mestre: escopo, requisitos, arquitetura, telas e roadmap](docs/PROJETO-MESTRE.md)
 - [Motor de heurísticas e apoio por modelos de decisão](docs/MOTOR-DE-HEURISTICAS.md)

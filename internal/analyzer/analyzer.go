@@ -20,13 +20,58 @@ type Input struct {
 	Overrides map[string]string
 }
 
-// Analyze aplica o catálogo do perfil P-NODE sobre o diretório do projeto.
+// Analyze decide o ecossistema da pasta (DEC-48 item 1) e aplica o catálogo dele:
+// o JavaScript (P-NODE, P-BUN, P-STATIC) ou o Python (P-PY). Marcadores dos dois na
+// mesma pasta viram pergunta, a menos que a pessoa já tenha respondido.
 func Analyze(fsys fs.FS, in Input) (domain.AnalysisResult, error) {
+	eco, markers := detectEcosystem(fsys)
+	switch choice := strings.TrimSpace(in.Overrides[domain.FieldEcosystem]); {
+	case choice == domain.EcosystemPython:
+		return analyzeWith(PythonCatalog(), fsys, in)
+	case choice == domain.EcosystemJavaScript:
+		return analyzeWith(NodeCatalog(), fsys, in)
+	case eco == ecosystemBoth:
+		return ecosystemQuestion(markers), nil
+	case eco == domain.EcosystemPython:
+		return analyzeWith(PythonCatalog(), fsys, in)
+	case len(markers) == 0 && !exists(fsys, "index.html"):
+		// Nada na raiz: um monorepo com as aplicações em subpastas (F-5)?
+		if found := subprojects(fsys); len(found) > 0 {
+			return monorepoResult(found), nil
+		}
+	}
 	return analyzeWith(NodeCatalog(), fsys, in)
 }
 
+// allCatalogs são os catálogos que existem: um override de campo de outro catálogo
+// (de uma escolha de ecossistema anterior) é ignorado, não é erro.
+func allCatalogs() []Catalog { return []Catalog{NodeCatalog(), PythonCatalog()} }
+
+// forCatalog separa os overrides que valem para este catálogo. Um campo que só
+// outro catálogo conhece é deixado de lado; um campo que nenhum conhece fica (e o
+// checkOverrides o recusa).
+func forCatalog(cat Catalog, in map[string]string) map[string]string {
+	mine := map[string]bool{}
+	for _, f := range cat.Fields {
+		mine[f.Name] = true
+	}
+	known := map[string]bool{}
+	for _, c := range allCatalogs() {
+		for _, f := range c.Fields {
+			known[f.Name] = true
+		}
+	}
+	out := map[string]string{}
+	for k, v := range in {
+		if mine[k] || !known[k] {
+			out[k] = v
+		}
+	}
+	return out
+}
+
 func analyzeWith(cat Catalog, fsys fs.FS, in Input) (domain.AnalysisResult, error) {
-	overrides, invalid, err := checkOverrides(cat, in.Overrides)
+	overrides, invalid, err := checkOverrides(cat, forCatalog(cat, in.Overrides))
 	if err != nil {
 		return domain.AnalysisResult{}, err
 	}
@@ -88,8 +133,14 @@ func analyzeWith(cat Catalog, fsys fs.FS, in Input) (domain.AnalysisResult, erro
 		}
 	}
 	slices.SortFunc(res.ConfigVariables, func(a, b domain.ConfigVariable) int { return strings.Compare(a.Name, b.Name) })
-	res.PersistentSuggestions = suggestPersistence(fsys)
-	res.ServiceNeeds = detectServiceNeeds(fsys, res.ConfigVariables)
+	res.PersistentSuggestions = []domain.PersistentSuggestion{}
+	res.ServiceNeeds = []domain.ServiceNeed{}
+	if cat.Persistence != nil {
+		res.PersistentSuggestions = cat.Persistence(fsys, evidence)
+	}
+	if cat.Services != nil {
+		res.ServiceNeeds = cat.Services(fsys, evidence, res.ConfigVariables)
+	}
 
 	supported := len(res.Unsupported) == 0
 	res.Fields, res.Pending, res.Conflicts = resolve(cat, proposals, res.Pending, res.Conflicts, overrides, invalid, supported)
@@ -152,13 +203,31 @@ func checkOverrides(cat Catalog, in map[string]string) (valid map[string]string,
 // CheckOverrides valida overrides contra o catálogo atual antes de a API
 // aceitá-los: campo desconhecido, que não aceita override, ou valor inválido.
 // É validação estrutural; se o valor funciona só o build e a execução dizem.
+//
+// Vale para os campos de qualquer catálogo: a escolha do ecossistema pode vir
+// junto das respostas do outro (DEC-48).
 func CheckOverrides(in map[string]string) error {
-	_, invalid, err := checkOverrides(NodeCatalog(), in)
-	if err != nil {
-		return err
+	pending := maps.Clone(in)
+	for _, cat := range allCatalogs() {
+		mine := map[string]string{}
+		for _, f := range cat.Fields {
+			if v, ok := pending[f.Name]; ok {
+				mine[f.Name] = v
+			}
+		}
+		_, invalid, err := checkOverrides(cat, mine)
+		if err != nil {
+			return err
+		}
+		for _, field := range slices.Sorted(maps.Keys(invalid)) {
+			return fmt.Errorf("valor inválido para %q: %w", field, invalid[field])
+		}
+		for k := range mine {
+			delete(pending, k)
+		}
 	}
-	for _, field := range slices.Sorted(maps.Keys(invalid)) {
-		return fmt.Errorf("valor inválido para %q: %w", field, invalid[field])
+	for _, field := range slices.Sorted(maps.Keys(pending)) {
+		return fmt.Errorf("analyzer: o campo %q não aceita override", field)
 	}
 	return nil
 }

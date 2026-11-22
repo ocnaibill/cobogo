@@ -368,6 +368,7 @@ details summary { cursor: pointer; font-weight: 600; }
 .profile-mark { width: 46px; height: 46px; border-radius: var(--radius); background: var(--warning-bg); color: var(--warning); display: grid; place-items: center; font: 700 15px var(--font-mono); }
 .profile-mark svg { width: 28px; height: 28px; fill: currentColor; }
 .profile-mark[data-profile="node"] { background: var(--success-bg); color: var(--success); }
+.profile-mark[data-profile="python"] { background: var(--info-bg); color: var(--info); }
 
 /* ── Acesso (TEL-01) ───────────────────────────────────────────────────── */
 .auth { min-height: 100vh; display: flex; flex-direction: column; background: var(--bg); position: relative; overflow: hidden; }

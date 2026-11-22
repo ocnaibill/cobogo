@@ -131,7 +131,7 @@ export function eventToLines(e: DeploymentEvent): LogLine[] {
         e.stage === "generating" && p.profile === "P-STATIC"
           ? ` (site estático: ${p.build_command ? `\`${str(p.build_command)}\` → ` : ""}${str(p.output_dir)}/ servido pelo nginx na porta ${str(p.port)})`
           : e.stage === "generating" && p.start_command
-          ? ` (${p.bun_version ? `Bun ${str(p.bun_version)}` : `Node ${str(p.node_version)}`}, porta ${str(p.port)}, \`${str(p.start_command)}\`)`
+          ? ` (${runtimeVersion(p)}, porta ${str(p.port)}, \`${str(p.start_command)}\`)`
           :
         e.stage === "starting" && Array.isArray(p.env) ? ` (${p.env.length} variável(is) entregue(s))` : "";
       return [{ ...base, kind: "step", text: `✓ ${stage}: concluído${extra}` }];
@@ -189,6 +189,12 @@ export const FIELD_LABEL: Record<string, string> = {
   execution_mode: "Modo de execução",
   node_version: "Versão do Node",
   bun_version: "Versão do Bun",
+  ecosystem: "Ecossistema",
+  python_version: "Versão do Python",
+  app_target: "Alvo da aplicação",
+  python_interface: "Interface (WSGI/ASGI)",
+  python_framework: "Framework",
+  django_settings: "Settings do Django",
   output_dir: "Diretório servido",
   spa_fallback: "Fallback de SPA",
   health_path: "Caminho da verificação",
@@ -198,7 +204,7 @@ export const FIELD_LABEL: Record<string, string> = {
 /** Nome legível de um perfil do analisador (`p-node` → `Node.js`). */
 export function profileLabel(id?: string): string | undefined {
   if (!id) return undefined;
-  const known: Record<string, string> = { "p-node": "Node.js", "p-bun": "Bun", "p-static": "Site estático" };
+  const known: Record<string, string> = { "p-node": "Node.js", "p-bun": "Bun", "p-static": "Site estático", "p-py": "Python" };
   return known[id.toLowerCase()] ?? id.replace(/^p-/i, "");
 }
 
@@ -209,3 +215,10 @@ export const ORIGIN_LABEL: Record<string, string> = {
   inference: "inferido",
   default: "padrão",
 };
+
+/** A versão do runtime de um plano ou evento: `Python 3.13`, `Bun 1.3`, `Node 26`. */
+export function runtimeVersion(p: { python_version?: unknown; bun_version?: unknown; node_version?: unknown }): string {
+  if (p.python_version) return `Python ${String(p.python_version)}`;
+  if (p.bun_version) return `Bun ${String(p.bun_version)}`;
+  return `Node ${p.node_version ? String(p.node_version) : "—"}`;
+}

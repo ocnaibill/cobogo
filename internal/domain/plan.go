@@ -24,6 +24,12 @@ type Plan struct {
 	OutputDir   string   `json:"output_dir,omitempty"`
 	SPAFallback bool     `json:"spa_fallback,omitempty"`
 	BuildArgs   []string `json:"build_args,omitempty"`
+	// Perfil Python (DEC-48): a versão, o alvo que o servidor de produção carrega,
+	// a interface (wsgi/asgi) e os pacotes de sistema do catálogo.
+	PythonVersion  string   `json:"python_version,omitempty"`
+	AppTarget      string   `json:"app_target,omitempty"`
+	Interface      string   `json:"interface,omitempty"`
+	SystemPackages []string `json:"system_packages,omitempty"`
 }
 
 // gitHookTools são ferramentas que só instalam ganchos do Git; num contêiner

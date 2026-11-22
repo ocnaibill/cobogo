@@ -485,6 +485,8 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 		"build_image":     plan.BuildImage,
 		"node_version":    plan.NodeVersion,
 		"bun_version":     plan.BunVersion,
+		"python_version":  plan.PythonVersion,
+		"app_target":      plan.AppTarget,
 		"output_dir":      plan.OutputDir,
 		"spa_fallback":    plan.SPAFallback,
 		"build_args":      plan.BuildArgs,
@@ -597,6 +599,11 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 		have[name] = ""
 	}
 	envValues["PORT"] = fmt.Sprint(plan.Port)
+	// Workers do gunicorn pelo limite de memória (DEC-48 item 6), se o projeto não
+	// definiu o seu.
+	if _, own := have["WEB_CONCURRENCY"]; !own && plan.Profile == domain.ProfilePython {
+		envValues["WEB_CONCURRENCY"] = fmt.Sprint(WebConcurrency(limits.AppMemoryMB))
+	}
 	// TLS do banco gerenciado (DEC-44): a CA é injetada num arquivo do contêiner
 	// e apontada por variáveis da plataforma, sem tocar no código do projeto.
 	var runFiles map[string][]byte
@@ -744,7 +751,9 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 			// O app seguiu rodando, o log não aponta outra causa e a porta veio
 			// do contrato de PORT: a suspeita é a porta (DEC-35 item 5).
 			if detail.ExitCode == nil && !detail.OOMKilled && detail.Diagnosis.Confidence == diagnosis.Unknown &&
-				plan.PortOrigin == string(domain.OriginPlatform) {
+				plan.PortOrigin == string(domain.OriginPlatform) &&
+				// No Python sem Procfile quem abre a porta é o servidor da plataforma.
+				!(plan.Profile == domain.ProfilePython && result.Fields[domain.FieldStartCommand].Value == "") {
 				detail.Diagnosis = diagnosis.PlatformPortIgnored(plan.Port, portSource(result))
 			}
 			err = &detailedError{err: err, detail: detail}
@@ -856,4 +865,10 @@ func (w *Worker) checkRequiredEnv(ctx context.Context, projectID uuid.UUID) erro
 			Message:    "defina o valor de " + list + " na aba de variáveis e faça um novo deploy; o build nem começou",
 		}},
 	}
+}
+
+// WebConcurrency é o número de workers do gunicorn para um limite de memória: um
+// a cada 256 MB, de 1 a 4.
+func WebConcurrency(memoryMB int) int {
+	return max(1, min(4, memoryMB/256))
 }

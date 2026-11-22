@@ -65,13 +65,21 @@ func New() (*Runtime, error) {
 
 // excludedFromContext nunca entra no contexto de build (RN-11, §11.3).
 var excludedFromContext = map[string]bool{
-	".git": true,
+	".git":  true,
+	".venv": true,
 }
 
 func isExcluded(relPath string) bool {
 	first := strings.SplitN(relPath, string(filepath.Separator), 2)[0]
 	if excludedFromContext[first] {
 		return true
+	}
+	// Ambiente virtual local e bytecode do Python (DEC-48 item 7): são da máquina
+	// de quem os criou e o build monta os seus.
+	for _, seg := range strings.Split(relPath, string(filepath.Separator)) {
+		if seg == "__pycache__" {
+			return true
+		}
 	}
 	base := filepath.Base(relPath)
 	return base == ".env" || strings.HasPrefix(base, ".env.") && base != ".env.example"

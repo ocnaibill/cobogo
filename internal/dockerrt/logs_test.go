@@ -38,6 +38,11 @@ func TestFollowLogsReadsBothStreamsResumesAndRefusesOthers(t *testing.T) {
 	if err := rt.FollowLogs(cctx, id, time.Time{}, 100, true, collect); err != nil {
 		t.Fatal(err)
 	}
+	// stdout e stderr são pipes separados: o Docker carimba cada linha ao lê-la, e
+	// duas escritas no mesmo instante podem chegar em qualquer ordem.
+	if len(got) == 4 && got[0].Stream == "stderr" {
+		got[0], got[1] = got[1], got[0]
+	}
 	if len(got) != 4 || got[0].Line != "um" || got[0].Stream != "stdout" || got[1].Line != "dois" || got[1].Stream != "stderr" || got[3].Line != "quatro com  espaços" {
 		t.Fatalf("followed = %+v", got)
 	}
@@ -45,9 +50,13 @@ func TestFollowLogsReadsBothStreamsResumesAndRefusesOthers(t *testing.T) {
 		t.Errorf("the Docker timestamps must be kept (UTC, 2 s apart): %v %v", got[0].At, got[2].At)
 	}
 
-	// Retomar a partir da hora da segunda linha traz só as seguintes.
+	// Retomar a partir da hora das duas primeiras linhas traz só as seguintes.
+	from := got[1].At
+	if got[0].At.After(from) {
+		from = got[0].At
+	}
 	var resumed []LogEntry
-	if err := rt.FollowLogs(ctx, id, got[1].At, 0, false, func(e LogEntry) { resumed = append(resumed, e) }); err != nil {
+	if err := rt.FollowLogs(ctx, id, from, 0, false, func(e LogEntry) { resumed = append(resumed, e) }); err != nil {
 		t.Fatal(err)
 	}
 	if len(resumed) != 2 || resumed[0].Line != "tres" {

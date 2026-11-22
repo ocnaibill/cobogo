@@ -98,7 +98,8 @@ describe("profileLabel", () => {
     const { profileLabel } = await import("./deploy");
     expect(profileLabel("P-NODE")).toBe("Node.js");
     expect(profileLabel("P-BUN")).toBe("Bun");
-    expect(profileLabel("P-PY")).toBe("PY");
+    expect(profileLabel("P-PY")).toBe("Python");
+    expect(profileLabel("P-GO")).toBe("GO");
     expect(profileLabel(undefined)).toBeUndefined();
   });
 });

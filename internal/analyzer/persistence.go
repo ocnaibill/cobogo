@@ -50,6 +50,36 @@ type suggestionDraft struct {
 // suggestPersistence lê o código de runtime e o package.json e devolve as
 // sugestões, em ordem estável: as fortes primeiro.
 func suggestPersistence(fsys fs.FS) []domain.PersistentSuggestion {
+	lib := ""
+	for _, n := range dependencies(fsys) {
+		if sqliteDeps[n] {
+			lib = n
+			break
+		}
+	}
+	return suggestPersistenceWith(fsys, persistenceLang{
+		extensions: sourceExtensions, skip: skippedDirs, sqliteImport: sqliteImport, writeCall: writeCall,
+		dirPatterns: []*regexp.Regexp{dirWithPath, dirInJoin},
+		sqliteLib:   lib, libSource: "package.json",
+	})
+}
+
+// persistenceLang é o que muda de uma linguagem para outra na heurística de
+// persistência: que arquivos ler, que pastas pular e como se reconhece o SQLite e
+// uma escrita em disco.
+type persistenceLang struct {
+	extensions   map[string]bool
+	skip         map[string]bool
+	sqliteImport *regexp.Regexp
+	writeCall    *regexp.Regexp
+	sqliteLib    string // uma dependência que guarda dados num arquivo local
+	dirPatterns  []*regexp.Regexp
+	skipFile     func(name string) bool
+	libSource    string // o arquivo que a declara
+	extra        []domain.PersistentSuggestion
+}
+
+func suggestPersistenceWith(fsys fs.FS, lang persistenceLang) []domain.PersistentSuggestion {
 	byPath := map[string]*suggestionDraft{}
 	// unknownSQLite: usa SQLite, mas o caminho do arquivo não se sabe (Path vazio).
 	var unknownSQLite *suggestionDraft
@@ -82,14 +112,9 @@ func suggestPersistence(fsys fs.FS) []domain.PersistentSuggestion {
 		}
 	}
 
-	usesSQLiteLib := ""
-	if deps := dependencies(fsys); len(deps) > 0 {
-		for _, n := range deps {
-			if sqliteDeps[n] {
-				usesSQLiteLib = n
-				break
-			}
-		}
+	usesSQLiteLib := lang.sqliteLib
+	for _, e := range lang.extra {
+		add(e.Path, e.Kind, e.Confidence, e.Reason, strings.Join(e.Evidence, ""))
 	}
 
 	hasDir := func(dir string) bool {
@@ -105,15 +130,15 @@ func suggestPersistence(fsys fs.FS) []domain.PersistentSuggestion {
 			return nil
 		}
 		if d.IsDir() {
-			if skippedDirs[d.Name()] {
+			if lang.skip[d.Name()] {
 				return fs.SkipDir
 			}
 			return nil
 		}
-		if !sourceExtensions[strings.ToLower(path.Ext(name))] || d.Type()&fs.ModeSymlink != 0 || !d.Type().IsRegular() {
+		if !lang.extensions[strings.ToLower(path.Ext(name))] || d.Type()&fs.ModeSymlink != 0 || !d.Type().IsRegular() {
 			return nil
 		}
-		if classifyScope(name) != domain.ScopeRuntime || isToolingPath(name) {
+		if classifyScope(name) != domain.ScopeRuntime || isToolingPath(name) || (lang.skipFile != nil && lang.skipFile(name)) {
 			return nil
 		}
 		data, state, rerr := readSmallFile(fsys, name)
@@ -124,6 +149,10 @@ func suggestPersistence(fsys fs.FS) []domain.PersistentSuggestion {
 		// SQLite: um arquivo citado como literal.
 		for _, m := range dbFileLiteral.FindAllSubmatchIndex(data, -1) {
 			lit := string(data[m[2]:m[3]])
+			// URL do SQLAlchemy: sqlite:///relativo e sqlite:////absoluto.
+			if rest, ok := strings.CutPrefix(lit, "sqlite:///"); ok {
+				lit = rest
+			}
 			if lit == ":memory:" || strings.Contains(lit, "${") || strings.ContainsAny(lit, "+*") {
 				continue
 			}
@@ -140,13 +169,13 @@ func suggestPersistence(fsys fs.FS) []domain.PersistentSuggestion {
 			}
 			add(dir, domain.SuggestSQLite, confidence, "o código abre o arquivo de banco local "+lit+"; sem volume, ele some a cada deploy", ev)
 		}
-		if loc := sqliteImport.FindIndex(data); loc != nil {
+		if loc := lang.sqliteImport.FindIndex(data); loc != nil {
 			add("", domain.SuggestSQLite, domain.SuggestWeak, "o código usa SQLite, mas não achei o caminho do arquivo; informe a pasta onde ele fica", fmt.Sprintf("%s:%d", name, lineAt(data, loc[0])))
 		}
 
 		// Pasta em que o código escreve arquivos.
-		if writeCall.Match(data) {
-			for _, re := range []*regexp.Regexp{dirWithPath, dirInJoin} {
+		if lang.writeCall.Match(data) {
+			for _, re := range lang.dirPatterns {
 				for _, m := range re.FindAllSubmatchIndex(data, -1) {
 					// Uma importação (`from "../db/client.ts"`) é código, não dados.
 					if start := m[0]; importContext.Match(data[max(0, start-24):start]) {
@@ -176,7 +205,7 @@ func suggestPersistence(fsys fs.FS) []domain.PersistentSuggestion {
 	// Sem um caminho de SQLite achado, a dependência ou a importação ainda avisam.
 	if !hasSQLitePath {
 		if usesSQLiteLib != "" {
-			add("", domain.SuggestSQLite, domain.SuggestWeak, "a dependência "+usesSQLiteLib+" guarda dados num arquivo local, mas não achei o caminho; informe a pasta onde ele fica", "package.json")
+			add("", domain.SuggestSQLite, domain.SuggestWeak, "a dependência "+usesSQLiteLib+" guarda dados num arquivo local, mas não achei o caminho; informe a pasta onde ele fica", lang.libSource)
 		}
 		if unknownSQLite != nil {
 			out = append(out, unknownSQLite.PersistentSuggestion)

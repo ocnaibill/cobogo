@@ -52,6 +52,9 @@ func scriptsFrom(res domain.AnalysisResult) []scriptOption {
 	}
 	out := []scriptOption{}
 	seen := map[string]bool{}
+	if res.Fields[domain.FieldProfile].Value == domain.ProfilePython {
+		return pythonCommandsFrom(res)
+	}
 	for _, ev := range res.Evidences {
 		if ev.Kind != "npm.script" || seen[ev.Name] || !scriptName.MatchString(ev.Name) || excludedScripts.MatchString(ev.Name) {
 			continue
@@ -69,6 +72,47 @@ func scriptsFrom(res domain.AnalysisResult) []scriptOption {
 	}
 	return out
 }
+
+// pythonCommandsFrom lista os comandos de gerenciamento reconhecidos de um
+// projeto Python (DEC-48 item 10): os do Django (migrate e os do próprio projeto),
+// o Alembic, o Flask-Migrate e a fase release do Procfile. Nada interativo: o
+// comando não tem teclado.
+func pythonCommandsFrom(res domain.AnalysisResult) []scriptOption {
+	out := []scriptOption{}
+	seen := map[string]bool{}
+	add := func(name, command, runs string) {
+		if seen[command] || len(out) >= commandListLimit {
+			return
+		}
+		seen[command] = true
+		out = append(out, scriptOption{Name: name, Command: command, Runs: runs})
+	}
+	flaskMigrate := false
+	for _, ev := range res.Evidences {
+		switch {
+		case ev.Kind == "py.manage" && ev.Value != "" && scriptName.MatchString(strings.ReplaceAll(ev.Name, " ", "-")):
+			add(ev.Name, ev.Value, ev.Value)
+		case ev.Kind == "py.procfile" && ev.Name == "release":
+			runs := ev.Value
+			if len(runs) > 200 {
+				runs = runs[:200] + "…"
+			}
+			add("release", ev.Value, runs)
+		case ev.Kind == "py.dependency" && ev.Name == "flask-migrate":
+			flaskMigrate = true
+		}
+	}
+	if target := res.Fields[domain.FieldAppTarget].Value; flaskMigrate && target != "" && pyTarget.MatchString(target) {
+		if strings.HasSuffix(target, "()") {
+			target = "'" + target + "'"
+		}
+		add("db upgrade", "flask --app "+target+" db upgrade", "aplica as migrações do Flask-Migrate")
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+var pyTarget = regexp.MustCompile(`^[A-Za-z_][\w.]*:[A-Za-z_]\w*(\(\))?$`)
 
 // sessionOf devolve a sessão atual e o usuário.
 func (s *Server) sessionOf(r *http.Request) (domain.Session, domain.User, bool) {

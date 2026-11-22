@@ -95,6 +95,10 @@ type Catalog struct {
 	Extractors []Extractor
 	Rules      []Rule
 	Fields     []FieldSpec
+	// Services e Persistence são as heurísticas de banco (HEU-06) e de volumes
+	// (DEC-41) da linguagem do catálogo.
+	Services    func(fsys fs.FS, ev []domain.Evidence, vars []domain.ConfigVariable) []domain.ServiceNeed
+	Persistence func(fsys fs.FS, ev []domain.Evidence) []domain.PersistentSuggestion
 }
 
 // O catálogo JavaScript cobre os perfis P-NODE (npm) e P-BUN (DEC-36).
@@ -110,6 +114,10 @@ func NodeCatalog() Catalog {
 			{ID: extractorStatic, Extract: extractStatic},
 		},
 		Rules: []Rule{ruleHEU01(), ruleHEU02(), ruleHEU03(), ruleHEU05(), ruleHEU08(), ruleHEU09(), ruleHEU10(), ruleHEU11()},
+		Services: func(fsys fs.FS, _ []domain.Evidence, vars []domain.ConfigVariable) []domain.ServiceNeed {
+			return detectServiceNeeds(fsys, vars)
+		},
+		Persistence: func(fsys fs.FS, _ []domain.Evidence) []domain.PersistentSuggestion { return suggestPersistence(fsys) },
 		Fields: []FieldSpec{
 			{Name: domain.FieldProfile, Required: true, Overridable: true, Validate: validateProfile},
 			{Name: domain.FieldPackageManager, Required: true, Overridable: true, Validate: validatePackageManager},
@@ -122,6 +130,7 @@ func NodeCatalog() Catalog {
 			{Name: domain.FieldSPAFallback, Overridable: true, Validate: validateBool},
 			{Name: domain.FieldPort, Required: true, Overridable: true, Validate: validatePort},
 			{Name: domain.FieldHealthPath, Overridable: true, Validate: validateHealthPath},
+			{Name: domain.FieldEcosystem, Overridable: true, Validate: validateEcosystem},
 		},
 	}
 }

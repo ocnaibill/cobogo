@@ -1316,7 +1316,11 @@ export interface components {
          *     `package_manager` (`npm` ou `bun`, quando o repositório tem os dois
          *     lockfiles), `bun_version` (`1`, `1.Y` ou `1.Y.Z`; DEC-36), `profile`
          *     (`P-NODE`, `P-BUN` ou `P-STATIC`), `output_dir` e `spa_fallback`
-         *     (`true` ou `false`; DEC-37).
+         *     (`true` ou `false`; DEC-37). Do Python (DEC-48): `ecosystem`
+         *     (`python` ou `javascript`, quando a pasta tem os dois), `package_manager`
+         *     (`pip` ou `uv`), `python_version` (`3.10` a `3.15`), `app_target`
+         *     (`modulo:atributo` ou `modulo:fabrica()`), `python_interface` (`wsgi` ou
+         *     `asgi`), `python_framework` e `django_settings`.
          *     Valores de variáveis de ambiente nunca passam por aqui.
          */
         Overrides: {
@@ -1873,13 +1877,24 @@ export interface components {
         };
         Plan: {
             /** @enum {string} */
-            profile: "P-NODE" | "P-BUN" | "P-STATIC";
+            profile: "P-NODE" | "P-BUN" | "P-STATIC" | "P-PY";
             runtime: string;
             build_image: string;
             /** @description Só no perfil P-NODE. */
             node_version?: string;
             /** @description Tag da imagem oven/bun; só no perfil P-BUN (DEC-36). */
             bun_version?: string;
+            /** @description Versão do Python (3.10 a 3.15); só no perfil P-PY (DEC-48). */
+            python_version?: string;
+            /** @description Alvo que o servidor de produção carrega (`modulo:atributo`); só no perfil P-PY. */
+            app_target?: string;
+            /**
+             * @description Interface do alvo; só no perfil P-PY (gunicorn para wsgi, uvicorn para asgi).
+             * @enum {string}
+             */
+            interface?: "wsgi" | "asgi";
+            /** @description Pacotes de sistema do catálogo fechado instalados na execução; só no perfil P-PY. */
+            system_packages?: string[];
             /** @description Diretório servido; só no perfil P-STATIC (DEC-37). */
             output_dir?: string;
             /** @description Rota desconhecida devolve index.html; só no perfil P-STATIC. */
@@ -1890,10 +1905,10 @@ export interface components {
              */
             build_args?: string[];
             /**
-             * @description `none` é site estático sem build, nada a instalar (DEC-37).
+             * @description `none` é site estático sem build, nada a instalar (DEC-37). `pip` e `uv` são do perfil P-PY (DEC-48).
              * @enum {string}
              */
-            package_manager: "npm" | "bun" | "none";
+            package_manager: "npm" | "bun" | "none" | "pip" | "uv";
             install_command: string;
             build_command?: string;
             start_command: string;

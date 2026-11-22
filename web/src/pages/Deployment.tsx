@@ -16,6 +16,7 @@ import {
   isTerminal,
   ORIGIN_LABEL,
   profileLabel,
+  runtimeVersion,
   STAGES,
   stageStatuses,
   STATE_LABEL,
@@ -763,7 +764,7 @@ function PlanView({ deploymentId, hasAnalysis }: { deploymentId: string; hasAnal
         ...(p.package_manager === "none"
           ? []
           : ([
-              ["Versão", p.bun_version ? `Bun ${p.bun_version}` : `Node ${p.node_version ?? "—"}`],
+              ["Versão", runtimeVersion(p)],
               ["Imagem de build", p.build_image],
               ["Instalação", p.install_command],
               ["Build", p.build_command || "—"],
@@ -778,7 +779,13 @@ function PlanView({ deploymentId, hasAnalysis }: { deploymentId: string; hasAnal
     : [
     ["Perfil", `${profileLabel(p.profile) ?? p.profile} (${p.profile})`],
     ["Gerenciador", p.package_manager],
-    ["Versão", p.bun_version ? `Bun ${p.bun_version}` : `Node ${p.node_version ?? "—"}`],
+    ["Versão", runtimeVersion(p)],
+    ...(p.profile === "P-PY"
+      ? ([
+          ["Alvo", p.app_target ? `${p.app_target} (${p.interface === "asgi" ? "ASGI, uvicorn" : "WSGI, gunicorn"})` : "—"],
+          ["Pacotes de sistema", p.system_packages?.length ? p.system_packages.join(", ") : "nenhum"],
+        ] as [string, string][])
+      : []),
     ["Imagem de build", p.build_image],
     ["Imagem de execução", p.runtime],
     ["Instalação", p.install_command],

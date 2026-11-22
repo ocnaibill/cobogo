@@ -130,8 +130,7 @@ JavaScript é a linguagem; Node.js é um ambiente de execução. Uma API Node.js
 | Perfil | Sinais e contrato mínimo | Build e execução esperados | Fase |
 | --- | --- | --- | --- |
 | P-NODE | `package.json`, lockfile npm coerente, `scripts.start`, porta informada ou declarada pelo perfil | Instalação pelo lockfile; build declarado quando necessário; processo HTTP com bind acessível no contêiner | D0 |
-| P-PY-ASGI | `requirements.txt`, dependências compatíveis, alvo ASGI único ou informado | Instalação pip; servidor ASGI de produção previsto pelo perfil | MVP |
-| P-PY-WSGI | `requirements.txt`, aplicação Flask identificável e alvo WSGI único ou informado | Instalação pip; servidor WSGI de produção previsto pelo perfil | MVP |
+| P-PY | `requirements.txt` (pip) ou `uv.lock` (uv), alvo WSGI ou ASGI único ou informado (Flask, FastAPI, Starlette, Quart, Litestar, Falcon, Django), ou `Procfile` com `web:`; os antigos P-PY-ASGI e P-PY-WSGI viraram um perfil com o campo `python_interface` (DEC-48) | Ambiente virtual no build (`python:X`), execução na `python:X-slim` sem root; gunicorn (WSGI) ou uvicorn (ASGI) da plataforma quando o projeto não os traz; `collectstatic` no build do Django; pacotes de sistema só de um catálogo fechado | MVP (fase 1 da DEC-48) |
 | P-STATIC | Entrada estática explícita ou build declarado, diretório de saída conhecido | Build com dependências de desenvolvimento quando necessário; artefatos servidos por servidor HTTP | MVP |
 | P-GO | `go.mod`, alvo `main` único ou informado e contrato HTTP | Compilação em estágio separado; binário de execução | Extensão |
 
@@ -246,7 +245,7 @@ Não apresentar “90% de confiança” sem calibração. Usar evidência explí
 | HEU-01 | `package.json` e lockfile npm coerentes permitem candidato P-NODE ou P-STATIC | Workspaces/múltiplos locks ou runtime alternativo exigem perfil específico |
 | HEU-02 | `scripts.start` declara comando de execução em P-NODE | Ausência não autoriza escolher `index.js` arbitrariamente; script de desenvolvimento não é aceito como produção |
 | HEU-03 | Build e diretório de saída declarados permitem P-STATIC | Presença de React não determina saída estática; SSR não é tratado como SPA |
-| HEU-04 | `requirements.txt` com framework e alvo ASGI/WSGI inequívoco permite perfil Python correspondente | Múltiplos alvos ou dependências de sistema não previstas bloqueiam |
+| HEU-04 | `requirements.txt` ou `uv.lock` com alvo WSGI/ASGI inequívoco (ou Django pelo `manage.py`, ou `Procfile` `web:`) permite o perfil P-PY (DEC-48) | Múltiplos alvos viram pergunta; Poetry, Pipenv, PDM, conda, workers, bots e dependências de sistema fora do catálogo ficam fora da fase 1 |
 | HEU-05 | Contrato explícito de `PORT` e bind, ou configuração suportada, determina porta interna | Constante encontrada em código é apenas pista; default deve ser mostrado e validado |
 | HEU-06 | Declaração de PostgreSQL e vínculo explícito criam plano de serviço auxiliar | Driver ou `DATABASE_URL` isolados não autorizam provisionamento |
 | HEU-07 | `go.mod` e alvo principal único permitem candidato P-GO | Não executar até o perfil opcional ser implementado; CGO exige tratamento próprio |

@@ -1,5 +1,6 @@
 // Package planner resolve o plano final e gera o Dockerfile por perfil
-// (§11.3 do mestre): P-NODE (DEC-25) e P-BUN (DEC-36).
+// (§11.3 do mestre): P-NODE (DEC-25), P-BUN (DEC-36), P-STATIC (DEC-37) e P-PY
+// (DEC-48).
 package planner
 
 import (
@@ -62,7 +63,7 @@ func FromAnalysis(res domain.AnalysisResult) (domain.Plan, error) {
 	if profile == domain.ProfileStatic {
 		return staticFromAnalysis(res)
 	}
-	if profile != domain.ProfileNode && profile != domain.ProfileBun {
+	if profile != domain.ProfileNode && profile != domain.ProfileBun && profile != domain.ProfilePython {
 		return domain.Plan{}, fmt.Errorf("planner: perfil %q sem template", profile)
 	}
 	portField := res.Fields[domain.FieldPort]
@@ -76,6 +77,9 @@ func FromAnalysis(res domain.AnalysisResult) (domain.Plan, error) {
 	}
 	if mode != domain.ModeProduction && mode != domain.ModeDevelopment {
 		return domain.Plan{}, fmt.Errorf("planner: modo de execução %q desconhecido", mode)
+	}
+	if profile == domain.ProfilePython {
+		return pythonFromAnalysis(res, port, string(portField.Origin), mode)
 	}
 	if profile == domain.ProfileBun {
 		bunVersion := res.Fields[domain.FieldBunVersion].Value
@@ -207,5 +211,7 @@ func CatalogImages() []string {
 	for _, v := range domain.SupportedNodeVersions {
 		images = append(images, nodeBuildImage(v), nodeRuntimeImage(v))
 	}
+	// Do Python, só a versão padrão: as outras são baixadas no primeiro build que as pede.
+	images = append(images, pythonBuildImage(domain.DefaultPythonVersion), pythonRuntimeImage(domain.DefaultPythonVersion))
 	return append(images, bunBuildImage(domain.DefaultBunVersion), bunRuntimeImage(domain.DefaultBunVersion), staticServerImage)
 }
