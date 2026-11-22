@@ -156,6 +156,7 @@ func (s *Server) routes() []route {
 		{"POST /api/v1/projects/{id}/commands", s.authed(s.handleCreateCommand)},
 		{"GET /api/v1/projects/{id}/commands/{cid}", s.authed(s.handleGetCommand)},
 		{"POST /api/v1/projects/{id}/commands/{cid}/cancel", s.authed(s.handleCancelCommand)},
+		{"GET /api/v1/projects/{id}/logs", s.authed(s.handleRuntimeLogs)},
 		{"GET /api/v1/projects/{id}/deployments", s.authed(s.handleListDeployments)},
 		{"POST /api/v1/projects/{id}/deployments", s.authed(s.handleCreateDeployment)},
 		{"GET /api/v1/deployments/{id}", s.authed(s.handleGetDeployment)},

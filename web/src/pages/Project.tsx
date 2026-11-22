@@ -13,11 +13,12 @@ import { EnvHistory, ImportEnv, Suggestions } from "../components/Secrets";
 import { DataTab, usePersistent, withPath } from "../components/Data";
 import { DatabaseTab, useDatabase } from "../components/Database";
 import { CommandsTab } from "../components/Commands";
+import { LogsTab } from "../components/Logs";
 import { ResourcesTab } from "../components/Resources";
 import { missingLikely, withRequired } from "../lib/secrets";
 import { TRANSITION_LABEL } from "../lib/operations";
 
-type Tab = "deploys" | "recursos" | "variaveis" | "banco" | "dados" | "comandos" | "limites" | "operacoes";
+type Tab = "deploys" | "recursos" | "logs" | "variaveis" | "banco" | "dados" | "comandos" | "limites" | "operacoes";
 
 export function ProjectPage() {
   const { id = "" } = useParams();
@@ -256,6 +257,7 @@ export function ProjectPage() {
           [
             ["deploys", "Histórico de deploys", "history"],
             ["recursos", "Recursos", "activity"],
+            ["logs", "Logs", "terminal"],
             ["variaveis", "Variáveis e segredos", "key"],
             ["banco", "Banco", "server"],
             ["dados", "Dados", "server"],
@@ -325,6 +327,7 @@ export function ProjectPage() {
       )}
       {tab === "variaveis" && <VariablesTab projectId={id} discovered={(analysis.data?.result.config_variables ?? []).filter((v) => v.class !== "platform")} />}
       {tab === "recursos" && <ResourcesTab projectId={id} />}
+      {tab === "logs" && <LogsTab projectId={id} />}
       {tab === "banco" && <DatabaseTab projectId={id} slug={p.slug} />}
       {tab === "dados" && <DataTab projectId={id} />}
       {tab === "comandos" && <CommandsTab projectId={id} />}

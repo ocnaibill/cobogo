@@ -77,6 +77,8 @@ var accessMatrix = map[string]TableAccess{
 		API:    Privileges{Table: []string{"SELECT", "INSERT"}, Columns: map[string][]string{"UPDATE": {"cancel_requested"}}},
 		Worker: tbl("SELECT", "UPDATE"),
 	},
+	// DEC-46: o worker captura e apaga o que passa da retenção; a API só lê.
+	"runtime_logs": {API: tbl("SELECT"), Worker: tbl("SELECT", "INSERT", "DELETE")},
 	// A API pede (inserção) e acompanha (leitura); o worker executa e conclui.
 	"operations": {API: tbl("SELECT", "INSERT"), Worker: tbl("SELECT", "INSERT", "UPDATE")},
 	"env_variables": {
@@ -90,6 +92,13 @@ var accessMatrix = map[string]TableAccess{
 		},
 		Worker: tbl("SELECT"),
 	},
+}
+
+// sequenceAccess é o que cada role pode fazer nas sequências (`BIGSERIAL`): inserir
+// numa tabela cuja chave é uma sequência exige USAGE nela. Só as listadas valem.
+var sequenceAccess = map[string]struct{ API, Worker, Collector bool }{
+	// DEC-46: o worker insere os logs de execução.
+	"runtime_logs_id_seq": {Worker: true},
 }
 
 // AccessMatrix devolve uma cópia da matriz, para os testes e para a conferência.
@@ -185,6 +194,19 @@ func ApplyGrants(ctx context.Context, pool *pgxpool.Pool, roles Roles) (applied 
 		}
 		if err := exec(fmt.Sprintf("REVOKE ALL ON ALL TABLES IN SCHEMA %s FROM %s", id(schema), id(role))); err != nil {
 			return false, err
+		}
+		if err := exec(fmt.Sprintf("REVOKE ALL ON ALL SEQUENCES IN SCHEMA %s FROM %s", id(schema), id(role))); err != nil {
+			return false, err
+		}
+	}
+	for seq, who := range sequenceAccess {
+		for role := range granted {
+			allowed := (role == roles.API && who.API) || (role == roles.Worker && who.Worker) || (roles.Collector != "" && role == roles.Collector && who.Collector)
+			if allowed {
+				if err := exec(fmt.Sprintf("GRANT USAGE ON SEQUENCE %s TO %s", id(seq), id(role))); err != nil {
+					return false, err
+				}
+			}
 		}
 	}
 	for _, table := range tables {

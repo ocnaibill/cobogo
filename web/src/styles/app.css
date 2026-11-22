@@ -449,3 +449,24 @@ details summary { cursor: pointer; font-weight: 600; }
 .cmd-item:first-child { border-top: 0; }
 .linklike { background: none; border: 0; padding: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; min-width: 0; }
 .linklike:hover .strong { text-decoration: underline; }
+
+/* Logs de execução (DEC-46) */
+.segmented { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.seg { background: transparent; border: 0; padding: 6px 12px; font: inherit; font-size: 13px; color: var(--text-muted); cursor: pointer; }
+.seg + .seg { border-left: 1px solid var(--border); }
+.seg:hover { background: var(--surface-low); }
+.seg.active { background: var(--brand-soft); color: var(--text); font-weight: 600; }
+.log-tools { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; padding: 10px 18px; border-top: 1px solid var(--border); }
+.log-tools input { flex: 1 1 220px; max-width: 360px; }
+.log-box { background: var(--terminal-bg); color: var(--terminal-text); font: 12.5px/1.5 var(--font-mono); max-height: 560px; overflow: auto; padding: 8px 0; border-top: 1px solid var(--border); }
+.log-line { display: flex; gap: 10px; padding: 0 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.log-line:hover { background: color-mix(in srgb, var(--terminal-text) 7%, transparent); }
+.log-time { color: var(--terminal-faint); flex: none; }
+.log-origin { flex: none; font-size: 11px; padding: 0 6px; border-radius: 3px; align-self: flex-start; margin-top: 2px; background: color-mix(in srgb, var(--terminal-text) 12%, transparent); }
+.log-origin-postgres { background: color-mix(in srgb, var(--info) 30%, transparent); }
+.log-text { min-width: 0; }
+.log-stderr .log-text { color: var(--danger); }
+.log-system .log-text { color: var(--terminal-faint); font-style: italic; }
+.log-divider { margin: 8px 14px; padding-top: 6px; border-top: 1px dashed var(--terminal-faint); color: var(--terminal-faint); font-size: 12px; }
+.log-older { display: flex; justify-content: center; padding: 6px 0 10px; }
+.log-empty { padding: 14px 18px; }

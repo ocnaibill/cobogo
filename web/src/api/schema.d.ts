@@ -586,6 +586,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/projects/{id}/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Logs de execução do projeto
+         * @description O que a aplicação e o PostgreSQL gerenciado do projeto imprimiram (stdout e
+         *     stderr), capturados pelo worker com os valores das variáveis do projeto
+         *     trocados por `[REDIGIDO]` (DEC-46). A redação só cobre valores que o Cobogó
+         *     conhece: um segredo montado ou codificado pela aplicação passa. Guarda as
+         *     últimas 24 horas e até 20 000 linhas por projeto.
+         *
+         *     Consulta incremental por cursor (o `id` da linha, crescente): sem cursor, as
+         *     últimas `limit` linhas; `after` traz as seguintes (o que o painel usa para
+         *     acompanhar, a cada 2 s); `before` traz as imediatamente anteriores. As linhas
+         *     vêm em ordem crescente de `id`. Os logs de build e de deploy são os eventos do
+         *     deploy, não estes.
+         */
+        get: operations["getRuntimeLogs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/projects/{id}/deployments": {
         parameters: {
             query?: never;
@@ -1443,6 +1473,35 @@ export interface components {
             command: string;
             /** @description O que o script executa, para a pessoa ver antes de rodar. */
             runs: string;
+        };
+        LogLine: {
+            /** Format: int64 */
+            id: number;
+            container_id: string;
+            /** @description O nome do contêiner; muda quando a aplicação é reiniciada por um deploy. */
+            container: string;
+            /** Format: uuid */
+            deployment_id: string | null;
+            /** @enum {string} */
+            origin: "app" | "postgres";
+            /**
+             * @description `system` são avisos do Cobogó no meio do log (linhas descartadas pelo limite de taxa).
+             * @enum {string}
+             */
+            stream: "stdout" | "stderr" | "system";
+            /**
+             * Format: date-time
+             * @description A hora que o Docker registrou a linha.
+             */
+            at: string;
+            line: string;
+        };
+        RuntimeLogs: {
+            lines: components["schemas"]["LogLine"][];
+            has_older: boolean;
+            has_more: boolean;
+            retention_hours: number;
+            retention_lines: number;
         };
         CommandsView: {
             commands: components["schemas"]["Command"][];
@@ -2770,6 +2829,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Command"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    getRuntimeLogs: {
+        parameters: {
+            query?: {
+                /** @description Só uma origem. Sem o parâmetro, todas. */
+                origin?: "app" | "postgres";
+                /** @description Devolve as linhas com `id` maior que este. */
+                after?: number;
+                /** @description Devolve as linhas imediatamente anteriores a este `id`. Não se combina com `after`. */
+                before?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Uma página de linhas. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimeLogs"];
                 };
             };
             400: components["responses"]["BadRequest"];

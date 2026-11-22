@@ -540,3 +540,54 @@ func TestEachRoleCanCheckTheSchemaButNotMigrate(t *testing.T) {
 		}
 	}
 }
+
+// DEC-46: os logs de execução com os roles de verdade. O worker grava (isso usa a
+// sequência da chave, que exige USAGE) e apaga o que passou da retenção; a API só
+// lê. Pegou uma falta de privilégio que o teste com um usuário só não via.
+func TestRuntimeLogsWorkWithOnlyTheGrantedPrivileges(t *testing.T) {
+	r := storetest.NewWithRoles(t)
+	api, worker := r.APIStore, r.WorkerStore
+	admin, err := api.CreateAdmin(ctx, "admin", "hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := api.CreateProject(ctx, admin.ID, "logs-roles", "https://github.com/exemplo/repo", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := []domain.LogLine{
+		{ProjectID: p.ID, ContainerID: "c1", ContainerName: "n1", Origin: domain.LogOriginApp, Stream: domain.LogStdout, At: time.Now().UTC(), Line: "um"},
+		{ProjectID: p.ID, ContainerID: "c1", ContainerName: "n1", Origin: domain.LogOriginApp, Stream: domain.LogStderr, At: time.Now().UTC(), Line: "dois"},
+	}
+	if err := worker.AppendRuntimeLogs(ctx, lines); err != nil {
+		t.Fatalf("the worker must be able to insert logs: %v", err)
+	}
+	if _, ok, err := worker.LastRuntimeLogAt(ctx, "c1"); err != nil || !ok {
+		t.Fatalf("worker read = %v, %v", ok, err)
+	}
+	page, err := api.ListRuntimeLogsFor(ctx, p.ID, admin.ID, "", 0, 0, 10)
+	if err != nil || len(page.Lines) != 2 {
+		t.Fatalf("the API must read the logs: %+v, %v", page, err)
+	}
+	if err := api.AppendRuntimeLogs(ctx, lines); err == nil {
+		t.Error("the API must not write logs")
+	}
+	if _, err := api.PruneRuntimeLogs(ctx, time.Hour, 10); err == nil {
+		t.Error("the API must not delete logs")
+	}
+	if n, err := worker.PruneRuntimeLogs(ctx, time.Hour, 1); err != nil || n != 1 {
+		t.Errorf("the worker prune = %d, %v", n, err)
+	}
+
+	// A janela de reautenticação (DEC-45) é da API, na própria sessão.
+	sess, err := api.CreateSession(ctx, admin.ID, []byte("token-reauth-roles"), time.Hour, "1.2.3.4", "teste")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := api.MarkReauth(ctx, sess.ID, domain.CommandReauthWindow); err != nil {
+		t.Errorf("the API must mark the reauth window: %v", err)
+	}
+	if _, err := worker.MarkReauth(ctx, sess.ID, time.Minute); err == nil {
+		t.Error("the worker must not touch sessions")
+	}
+}

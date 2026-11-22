@@ -32,7 +32,9 @@ type ManagedContainer struct {
 	ProjectID    string
 	// Role é o papel de um contêiner auxiliar e passageiro (comando pontual, posse de
 	// volume, certificado); vazio nas aplicações e nos bancos.
-	Role      string
+	Role string
+	// Service é a engine de um banco gerenciado (label cobogo.service); vazio nas aplicações.
+	Service   string
 	Created   time.Time
 	Running   bool
 	InIngress bool
@@ -48,7 +50,7 @@ func toManaged(c types.Container) ManagedContainer {
 	}
 	_, inIngress := c.NetworkSettings.Networks[IngressNetwork]
 	return ManagedContainer{
-		ID: c.ID, Name: name, DeploymentID: c.Labels[LabelDeployment], ProjectID: c.Labels[LabelProject], Role: c.Labels[LabelRole],
+		ID: c.ID, Name: name, DeploymentID: c.Labels[LabelDeployment], ProjectID: c.Labels[LabelProject], Role: c.Labels[LabelRole], Service: c.Labels[LabelService],
 		Created: time.Unix(c.Created, 0).UTC(), Running: c.State == "running", InIngress: inIngress,
 	}
 }

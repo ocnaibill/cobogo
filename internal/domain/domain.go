@@ -416,3 +416,36 @@ type Command struct {
 
 // Active diz se o comando ainda ocupa a vaga do projeto.
 func (c Command) Active() bool { return c.State == CommandQueued || c.State == CommandRunning }
+
+// Logs de execução (DEC-46).
+const (
+	LogOriginApp      = "app"
+	LogOriginPostgres = "postgres"
+
+	LogStdout = "stdout"
+	LogStderr = "stderr"
+	// LogSystem são avisos do Cobogó no meio do log (linhas descartadas).
+	LogSystem = "system"
+
+	// Retenção por projeto: o que vier primeiro.
+	LogRetention    = 24 * time.Hour
+	LogRetentionMax = 20000
+	// LogLineMax é o tamanho máximo de uma linha guardada.
+	LogLineMax = 8 << 10
+	// LogPageDefault e LogPageMax são o tamanho da página da API.
+	LogPageDefault = 300
+	LogPageMax     = 500
+)
+
+// LogLine é uma linha do log de execução de um projeto.
+type LogLine struct {
+	ID            int64      `json:"id"`
+	ProjectID     uuid.UUID  `json:"-"`
+	ContainerID   string     `json:"container_id"`
+	ContainerName string     `json:"container"`
+	DeploymentID  *uuid.UUID `json:"deployment_id"`
+	Origin        string     `json:"origin"`
+	Stream        string     `json:"stream"`
+	At            time.Time  `json:"at"`
+	Line          string     `json:"line"`
+}

@@ -75,6 +75,7 @@ func New(st *store.Store, rt *dockerrt.Runtime, log *slog.Logger, cfg *settings.
 func (w *Worker) Run(ctx context.Context) error {
 	go w.warmUp(ctx)
 	go w.runCommands(ctx)
+	go w.runLogCapture(ctx)
 	nextSweep := time.Now().Add(firstSweepAfter)
 
 	for {

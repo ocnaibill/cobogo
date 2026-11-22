@@ -1046,6 +1046,69 @@ paths:
           $ref: '#/components/responses/Unauthenticated'
         '404':
           $ref: '#/components/responses/NotFound'
+  /projects/{id}/logs:
+    get:
+      tags: [projects]
+      summary: Logs de execução do projeto
+      description: |
+        O que a aplicação e o PostgreSQL gerenciado do projeto imprimiram (stdout e
+        stderr), capturados pelo worker com os valores das variáveis do projeto
+        trocados por `[REDIGIDO]` (DEC-46). A redação só cobre valores que o Cobogó
+        conhece: um segredo montado ou codificado pela aplicação passa. Guarda as
+        últimas 24 horas e até 20 000 linhas por projeto.
+
+        Consulta incremental por cursor (o `id` da linha, crescente): sem cursor, as
+        últimas `limit` linhas; `after` traz as seguintes (o que o painel usa para
+        acompanhar, a cada 2 s); `before` traz as imediatamente anteriores. As linhas
+        vêm em ordem crescente de `id`. Os logs de build e de deploy são os eventos do
+        deploy, não estes.
+      operationId: getRuntimeLogs
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - name: origin
+          in: query
+          required: false
+          description: Só uma origem. Sem o parâmetro, todas.
+          schema:
+            type: string
+            enum: [app, postgres]
+        - name: after
+          in: query
+          required: false
+          description: Devolve as linhas com `id` maior que este.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+        - name: before
+          in: query
+          required: false
+          description: Devolve as linhas imediatamente anteriores a este `id`. Não se combina com `after`.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 300
+      responses:
+        '200':
+          description: Uma página de linhas.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeLogs'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /projects/{id}/deployments:
     get:
       tags: [deployments]
@@ -2701,6 +2764,51 @@ components:
         runs:
           type: string
           description: O que o script executa, para a pessoa ver antes de rodar.
+    LogLine:
+      type: object
+      required: [id, container_id, container, deployment_id, origin, stream, at, line]
+      properties:
+        id:
+          type: integer
+          format: int64
+        container_id:
+          type: string
+        container:
+          type: string
+          description: O nome do contêiner; muda quando a aplicação é reiniciada por um deploy.
+        deployment_id:
+          type: string
+          format: uuid
+          nullable: true
+        origin:
+          type: string
+          enum: [app, postgres]
+        stream:
+          type: string
+          enum: [stdout, stderr, system]
+          description: '`system` são avisos do Cobogó no meio do log (linhas descartadas pelo limite de taxa).'
+        at:
+          type: string
+          format: date-time
+          description: A hora que o Docker registrou a linha.
+        line:
+          type: string
+    RuntimeLogs:
+      type: object
+      required: [lines, has_older, has_more, retention_hours, retention_lines]
+      properties:
+        lines:
+          type: array
+          items:
+            $ref: '#/components/schemas/LogLine'
+        has_older:
+          type: boolean
+        has_more:
+          type: boolean
+        retention_hours:
+          type: integer
+        retention_lines:
+          type: integer
     CommandsView:
       type: object
       required: [commands, scripts, available, reauth_until, default_timeout, max_timeout]
