@@ -87,62 +87,16 @@ func ecosystemQuestion(markers []string) domain.AnalysisResult {
 	}
 }
 
-// subprojects procura aplicações em subpastas (até dois níveis) quando a raiz não
-// tem nenhuma: é o monorepo com backend e frontend em pastas separadas (F-5).
-func subprojects(fsys fs.FS) map[string]string {
-	found := map[string]string{}
-	var walk func(dir string, depth int)
-	walk = func(dir string, depth int) {
-		entries, err := fs.ReadDir(fsys, dir)
-		if err != nil {
-			return
-		}
-		for _, e := range entries {
-			name := e.Name()
-			if !e.IsDir() || strings.HasPrefix(name, ".") || pySkippedDirs[name] || name == "node_modules" {
-				continue
-			}
-			sub := name
-			if dir != "." {
-				sub = dir + "/" + name
-			}
-			sfs, err := fs.Sub(fsys, sub)
-			if err != nil {
-				continue
-			}
-			eco, markers := detectEcosystem(sfs)
-			switch {
-			case eco == ecosystemBoth || eco == domain.EcosystemPython:
-				found[sub] = eco
-			case len(markers) > 0:
-				found[sub] = domain.EcosystemJavaScript
-			case depth < 2:
-				walk(sub, depth+1)
-			}
-			if len(found) >= 6 {
-				return
-			}
-		}
-	}
-	walk(".", 1)
-	return found
-}
-
 // monorepoResult diz que a raiz não é uma aplicação, mas as subpastas são (F-5): cada
 // uma vira um projeto com o próprio diretório.
-func monorepoResult(found map[string]string) domain.AnalysisResult {
-	dirs := make([]string, 0, len(found))
-	for d := range found {
-		dirs = append(dirs, d)
-	}
-	slices.Sort(dirs)
+func monorepoResult(found []domain.Component) domain.AnalysisResult {
 	var parts []string
 	hasPy, hasJS := false, false
-	for _, d := range dirs {
-		label := map[string]string{domain.EcosystemPython: "Python", domain.EcosystemJavaScript: "JavaScript", ecosystemBoth: "JavaScript e Python"}[found[d]]
-		parts = append(parts, d+"/ ("+label+")")
-		hasPy = hasPy || found[d] != domain.EcosystemJavaScript
-		hasJS = hasJS || found[d] != domain.EcosystemPython
+	for _, c := range found {
+		label := map[string]string{domain.EcosystemPython: "Python", domain.EcosystemJavaScript: "JavaScript", ecosystemBoth: "JavaScript e Python"}[c.Ecosystem]
+		parts = append(parts, c.Dir+"/ ("+label+")")
+		hasPy = hasPy || c.Ecosystem != domain.EcosystemJavaScript
+		hasJS = hasJS || c.Ecosystem != domain.EcosystemPython
 	}
 	msg := "HEU-00: a raiz do repositório não tem uma aplicação, mas estas pastas têm: " + strings.Join(parts, ", ") +
 		". Crie um projeto para cada uma, com o diretório dela (root_directory)."

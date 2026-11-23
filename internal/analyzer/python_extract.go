@@ -102,6 +102,7 @@ var (
 	djangoWhitenoise    = regexp.MustCompile(`whitenoise\.middleware\.WhiteNoiseMiddleware`)
 	djangoSQLite        = regexp.MustCompile(`django\.db\.backends\.sqlite3`)
 	djangoPostgres      = regexp.MustCompile(`django\.db\.backends\.postgresql`)
+	djangoMySQL         = regexp.MustCompile(`django\.db\.backends\.mysql`)
 	djangoMediaRoot     = regexp.MustCompile(`(?m)^\s*MEDIA_ROOT\s*=`)
 	djangoMediaDir      = regexp.MustCompile(`(?m)^\s*MEDIA_ROOT\s*=.*?["']([\w./-]+)["']`)
 	djangoHostsExtended = regexp.MustCompile(`(?m)^\s*ALLOWED_HOSTS\s*(?:\+=|\.append\(|\.extend\()`)
@@ -509,7 +510,7 @@ func extractDjango(fsys fs.FS, x *Extraction, srcLayout bool) {
 		if m := djangoASGI.FindSubmatchIndex(data); m != nil {
 			x.emit(extractorPySource, domain.Evidence{Kind: kindDjangoApp, Name: domain.InterfaceASGI, Value: string(data[m[2]:m[3]]) + ":" + string(data[m[4]:m[5]]), Source: file, Line: lineAt(data, m[0]), Scope: domain.ScopeRuntime})
 		}
-		for name, re := range map[string]*regexp.Regexp{"STATIC_ROOT": djangoStaticRoot, "DEBUG_TRUE": djangoDebugTrue, "SECRET_KEY_LITERAL": djangoSecretLiteral, "WHITENOISE": djangoWhitenoise, "CSRF_TRUSTED_ORIGINS": djangoCSRF, "SQLITE": djangoSQLite, "POSTGRES": djangoPostgres, "MEDIA_ROOT": djangoMediaRoot, "ALLOWED_HOSTS_EXTENDED": djangoHostsExtended} {
+		for name, re := range map[string]*regexp.Regexp{"STATIC_ROOT": djangoStaticRoot, "DEBUG_TRUE": djangoDebugTrue, "SECRET_KEY_LITERAL": djangoSecretLiteral, "WHITENOISE": djangoWhitenoise, "CSRF_TRUSTED_ORIGINS": djangoCSRF, "SQLITE": djangoSQLite, "POSTGRES": djangoPostgres, "MYSQL": djangoMySQL, "MEDIA_ROOT": djangoMediaRoot, "ALLOWED_HOSTS_EXTENDED": djangoHostsExtended} {
 			if loc := re.FindIndex(data); loc != nil {
 				value := ""
 				if m := djangoMediaDir.FindSubmatch(data); name == "MEDIA_ROOT" && m != nil {

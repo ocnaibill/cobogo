@@ -1379,6 +1379,11 @@ export interface components {
             image_id: string;
             container_id: string;
             operational_state: string;
+            /**
+             * @description `healthy`, ou `degraded` quando a sonda do deploy teve resposta 4xx: a
+             *     aplicação está no ar, mas não serve o que se espera (por exemplo, um
+             *     Django que responde 400 por `ALLOWED_HOSTS`; DEC-49).
+             */
             health: string;
             /** @description Porta no loopback do host, para acesso direto ao contêiner. */
             host_port: number;
@@ -1948,6 +1953,12 @@ export interface components {
             unsupported: components["schemas"]["Finding"][];
             /** @description Variáveis de ambiente do projeto; nenhum valor do repositório sai daqui, exceto `default_value` de valores não secretos. */
             config_variables: components["schemas"]["ConfigVariable"][];
+            /**
+             * @description O mapa do repositório (DEC-49): a aplicação desta pasta, os serviços e
+             *     processos que o código pede e as aplicações irmãs (outras pastas do
+             *     repositório que podem virar projetos). É inferência com evidência; só informa.
+             */
+            components?: components["schemas"]["Component"][];
             /** @description Serviços auxiliares (PostgreSQL) que o código parece exigir (DEC-42). Só informam. */
             service_needs: components["schemas"]["ServiceNeed"][];
             /** @description Caminhos que o código parece usar para guardar dados em disco (DEC-41). Só sugerem. */
@@ -2011,6 +2022,22 @@ export interface components {
         };
         /** @enum {string} */
         Scope: "runtime" | "build" | "test" | "unknown";
+        Component: {
+            /** @description Pasta da peça; `.` é a aplicação desta pasta e os serviços que ela pede. */
+            dir: string;
+            /** @enum {string} */
+            role: "frontend" | "backend" | "fullstack" | "app" | "worker" | "database" | "cache" | "queue";
+            /** @description A tecnologia (por exemplo `React + Vite`, `Django REST`, `MySQL`). */
+            label: string;
+            /** @enum {string} */
+            ecosystem?: "javascript" | "python" | "both";
+            /** @description Outra aplicação do repositório; pode virar um projeto com o `root_directory` dela. */
+            sibling: boolean;
+            /** @description Se o Cobogó publica ou provê a peça hoje. */
+            supported: boolean;
+            note?: string;
+            evidence: string[];
+        };
         ConfigVariable: {
             name: string;
             /**

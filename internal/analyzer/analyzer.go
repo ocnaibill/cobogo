@@ -27,20 +27,30 @@ func Analyze(fsys fs.FS, in Input) (domain.AnalysisResult, error) {
 	eco, markers := detectEcosystem(fsys)
 	switch choice := strings.TrimSpace(in.Overrides[domain.FieldEcosystem]); {
 	case choice == domain.EcosystemPython:
-		return analyzeWith(PythonCatalog(), fsys, in)
+		return withComponents(fsys)(analyzeWith(PythonCatalog(), fsys, in))
 	case choice == domain.EcosystemJavaScript:
-		return analyzeWith(NodeCatalog(), fsys, in)
+		return withComponents(fsys)(analyzeWith(NodeCatalog(), fsys, in))
 	case eco == ecosystemBoth:
 		return ecosystemQuestion(markers), nil
 	case eco == domain.EcosystemPython:
-		return analyzeWith(PythonCatalog(), fsys, in)
+		return withComponents(fsys)(analyzeWith(PythonCatalog(), fsys, in))
 	case len(markers) == 0 && !exists(fsys, "index.html"):
 		// Nada na raiz: um monorepo com as aplicações em subpastas (F-5)?
-		if found := subprojects(fsys); len(found) > 0 {
+		if found := findSiblings(fsys); len(found) > 0 {
 			return monorepoResult(found), nil
 		}
 	}
-	return analyzeWith(NodeCatalog(), fsys, in)
+	return withComponents(fsys)(analyzeWith(NodeCatalog(), fsys, in))
+}
+
+// withComponents acrescenta o mapa do repositório (DEC-49) ao resultado de um catálogo.
+func withComponents(fsys fs.FS) func(domain.AnalysisResult, error) (domain.AnalysisResult, error) {
+	return func(res domain.AnalysisResult, err error) (domain.AnalysisResult, error) {
+		if err == nil {
+			res.Components = buildComponents(fsys, res)
+		}
+		return res, err
+	}
 }
 
 // allCatalogs são os catálogos que existem: um override de campo de outro catálogo

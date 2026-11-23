@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, idempotencyKey, unwrap, type ConfigVariable } from "../api/client";
+import { RepoMap } from "../components/RepoMap";
 import { Badge, Button, Card, CopyButton, Empty, ErrorBox, Field, LinkButton, Loading, Notice, PageHead, StateBadge, Tag, When } from "../components/ui";
 import { Icon, type IconName } from "../components/icons";
 import { duration, repoName, shortSha } from "../lib/format";
@@ -168,6 +169,10 @@ export function ProjectPage() {
         <Notice tone="warning" title="O último deploy falhou, mas a versão anterior continua no ar.">
           A falha foi só na candidata: o tráfego só troca depois que uma versão passa na verificação. <Link to={`/deploys/${latest!.id}`}>Ver a falha</Link>
         </Notice>
+      )}
+
+      {analysis.data?.result.components && analysis.data.result.components.length > 0 && (
+        <RepoMap project={p} items={analysis.data.result.components} />
       )}
 
       <div className="grid-2">

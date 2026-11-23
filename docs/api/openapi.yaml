@@ -1746,7 +1746,15 @@ paths:
       summary: Valores que o Cobogó conhece e oferece
       description: |
         Lista **fechada**: `<SLUG>_URL`, `APP_URL`, `SITE_URL`, `BASE_URL`,
-        `PUBLIC_URL` e `NEXT_PUBLIC_SITE_URL`, só para um nome que a última
+        `PUBLIC_URL` e `NEXT_PUBLIC_SITE_URL`; `ALLOWED_HOSTS` e
+        `DJANGO_ALLOWED_HOSTS` (o host, sem porta); `CSRF_TRUSTED_ORIGINS` e
+        `DJANGO_CSRF_TRUSTED_ORIGINS` (a URL); e, a partir dos **pares** (outros
+        projetos do mesmo repositório), `FRONTEND_URL`, `FRONTEND_ORIGIN`,
+        `CLIENT_URL`, `WEB_URL`, `CORS_ALLOWED_ORIGINS` e `CORS_ORIGINS` (a URL de
+        um par frontend) e `VITE_API_URL`, `REACT_APP_API_URL`,
+        `NEXT_PUBLIC_API_URL`, `VUE_APP_API_URL`, `API_URL`, `BACKEND_URL` e
+        `PUBLIC_API_URL` (a URL de um par backend, mais o caminho que o código usa
+        como padrão, quando há; DEC-49). Só para um nome que a última
         análise encontrou e o projeto ainda não definiu, e só com domínio das
         aplicações configurado. O valor é o endereço público do projeto, sem a
         barra final. Nada é aplicado sozinho: a pessoa confirma e grava com
@@ -3596,6 +3604,14 @@ components:
           description: Variáveis de ambiente do projeto; nenhum valor do repositório sai daqui, exceto `default_value` de valores não secretos.
           items:
             $ref: '#/components/schemas/ConfigVariable'
+        components:
+          type: array
+          description: |
+            O mapa do repositório (DEC-49): a aplicação desta pasta, os serviços e
+            processos que o código pede e as aplicações irmãs (outras pastas do
+            repositório que podem virar projetos). É inferência com evidência; só informa.
+          items:
+            $ref: '#/components/schemas/Component'
         service_needs:
           type: array
           description: Serviços auxiliares (PostgreSQL) que o código parece exigir (DEC-42). Só informam.
@@ -3722,6 +3738,34 @@ components:
     Scope:
       type: string
       enum: [runtime, build, test, unknown]
+    Component:
+      type: object
+      required: [dir, role, label, sibling, supported, evidence]
+      properties:
+        dir:
+          type: string
+          description: Pasta da peça; `.` é a aplicação desta pasta e os serviços que ela pede.
+        role:
+          type: string
+          enum: [frontend, backend, fullstack, app, worker, database, cache, queue]
+        label:
+          type: string
+          description: A tecnologia (por exemplo `React + Vite`, `Django REST`, `MySQL`).
+        ecosystem:
+          type: string
+          enum: [javascript, python, both]
+        sibling:
+          type: boolean
+          description: Outra aplicação do repositório; pode virar um projeto com o `root_directory` dela.
+        supported:
+          type: boolean
+          description: Se o Cobogó publica ou provê a peça hoje.
+        note:
+          type: string
+        evidence:
+          type: array
+          items:
+            type: string
     ConfigVariable:
       type: object
       required: [name, class, example, declared_in_example]

@@ -336,3 +336,86 @@ func TestEnvSuggestionsAreClosedAndNeverApplied(t *testing.T) {
 		t.Errorf("as sugestões gravaram algo: %+v", vars)
 	}
 }
+
+// DEC-49: as sugestões entre projetos do mesmo repositório (os pares de um monorepo).
+func TestPairSuggestions(t *testing.T) {
+	h := newHarness(t)
+	h.login()
+	backend := h.project() // slug app-teste, repositório exemplo/repositorio, raiz
+	if rec := h.do("PUT", "/api/v1/settings/apps_domain", `{"value":"apps.cobogo.test"}`); rec.Code != http.StatusOK {
+		t.Fatal(rec.Body)
+	}
+	rec := h.do("POST", "/api/v1/projects", `{"slug":"app-teste-frontend","repository_url":"https://github.com/exemplo/repositorio","root_directory":"frontend"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create frontend: %d %s", rec.Code, rec.Body)
+	}
+	frontend := decode[domain.Project](t, rec).ID.String()
+	// Um projeto de outro repositório nunca é par.
+	if rec := h.do("POST", "/api/v1/projects", `{"slug":"outro","repository_url":"https://github.com/exemplo/outro"}`); rec.Code != http.StatusCreated {
+		t.Fatal(rec.Body)
+	}
+
+	// O backend sabe, pelo mapa dele, que frontend/ é um frontend.
+	depB := h.deployment(backend, `{"idempotency_key":"b1"}`)
+	resB := domain.AnalysisResult{Outcome: domain.AnalysisReady,
+		Components: []domain.Component{
+			{Dir: ".", Role: domain.CompBackend, Label: "Django REST"},
+			{Dir: "frontend", Role: domain.CompFrontend, Label: "React + Vite", Sibling: true},
+		},
+		ConfigVariables: []domain.ConfigVariable{
+			{Name: "FRONTEND_URL", Class: domain.ClassUser}, {Name: "ALLOWED_HOSTS", Class: domain.ClassUser},
+			{Name: "CSRF_TRUSTED_ORIGINS", Class: domain.ClassUser}, {Name: "VITE_API_URL", Class: domain.ClassUser},
+		}}
+	if _, err := h.leased().SaveAnalysis(t.Context(), depB.ID, uuid.MustParse(backend), "abc", resB); err != nil {
+		t.Fatal(err)
+	}
+	// O frontend foi analisado como frontend, com o padrão de localhost no código.
+	depF := h.deployment(frontend, `{"idempotency_key":"f1"}`)
+	resF := domain.AnalysisResult{Outcome: domain.AnalysisReady,
+		Components:      []domain.Component{{Dir: ".", Role: domain.CompFrontend, Label: "React + Vite"}},
+		Evidences:       []domain.Evidence{{Kind: "env.localhost_default", Name: "VITE_API_URL", Value: "http://localhost:8000/api", Source: "src/api.js", Line: 3}},
+		ConfigVariables: []domain.ConfigVariable{{Name: "VITE_API_URL", Class: domain.ClassPublic}, {Name: "FRONTEND_URL", Class: domain.ClassUser}},
+	}
+	if _, err := h.leased().SaveAnalysis(t.Context(), depF.ID, uuid.MustParse(frontend), "abc", resF); err != nil {
+		t.Fatal(err)
+	}
+
+	get := func(project string) map[string]string {
+		rec := h.do("GET", "/api/v1/projects/"+project+"/env/suggestions", "")
+		var out struct {
+			Suggestions []struct{ Name, Value string } `json:"suggestions"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		m := map[string]string{}
+		for _, s := range out.Suggestions {
+			m[s.Name] = s.Value
+		}
+		return m
+	}
+	b := get(backend)
+	if b["FRONTEND_URL"] != "https://app-teste-frontend.apps.cobogo.test" {
+		t.Errorf("backend FRONTEND_URL = %q (%v)", b["FRONTEND_URL"], b)
+	}
+	if b["ALLOWED_HOSTS"] != "app-teste.apps.cobogo.test" || b["CSRF_TRUSTED_ORIGINS"] != "https://app-teste.apps.cobogo.test" {
+		t.Errorf("backend own suggestions = %v", b)
+	}
+	if _, ok := b["VITE_API_URL"]; ok {
+		t.Errorf("o par do backend é um frontend: não há API a sugerir: %v", b)
+	}
+	f := get(frontend)
+	if f["VITE_API_URL"] != "https://app-teste.apps.cobogo.test/api" {
+		t.Errorf("frontend VITE_API_URL = %q (%v)", f["VITE_API_URL"], f)
+	}
+	if _, ok := f["FRONTEND_URL"]; ok {
+		t.Errorf("o par do frontend é um backend, não há frontend a sugerir: %v", f)
+	}
+	// Variável já definida não é sugerida.
+	if rec := h.do("PUT", h.envPath(frontend, "VITE_API_URL"), `{"value":"https://x.exemplo/api"}`); rec.Code != http.StatusOK {
+		t.Fatal(rec.Body)
+	}
+	if _, ok := get(frontend)["VITE_API_URL"]; ok {
+		t.Error("sugestão de uma variável já definida")
+	}
+}

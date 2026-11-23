@@ -96,6 +96,29 @@ func (s *Store) GetProject(ctx context.Context, id uuid.UUID) (domain.Project, e
 	return p, nil
 }
 
+// ListPeerProjects devolve os outros projetos do dono que usam o mesmo repositório
+// (DEC-49 item 3): os pares de um monorepo. Exclui o próprio e os excluídos.
+func (s *Store) ListPeerProjects(ctx context.Context, ownerID uuid.UUID, repositoryURL string, excludeID uuid.UUID) ([]domain.Project, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, slug, repository_url, root_directory
+		FROM projects
+		WHERE owner_id = $1 AND repository_url = $2 AND id <> $3 AND deleted_at IS NULL
+		ORDER BY created_at, slug`, ownerID, repositoryURL, excludeID)
+	if err != nil {
+		return nil, fmt.Errorf("store: listar projetos pares: %w", err)
+	}
+	defer rows.Close()
+	out := []domain.Project{}
+	for rows.Next() {
+		var p domain.Project
+		if err := rows.Scan(&p.ID, &p.Slug, &p.RepositoryURL, &p.RootDirectory); err != nil {
+			return nil, fmt.Errorf("store: ler projeto par: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // GetProjectFor lê um projeto do dono. Um projeto de outro dono é tratado como
 // inexistente: a API não revela que ele existe (DEC-20, DEC-27).
 func (s *Store) GetProjectFor(ctx context.Context, id, ownerID uuid.UUID) (domain.Project, error) {

@@ -1,8 +1,12 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
+	"net"
 	"net/http"
+	"net/url"
+	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -12,6 +16,7 @@ import (
 	"github.com/ocnaibill/cobogo/internal/analyzer"
 	"github.com/ocnaibill/cobogo/internal/domain"
 	"github.com/ocnaibill/cobogo/internal/envfile"
+	"github.com/ocnaibill/cobogo/internal/settings"
 	"github.com/ocnaibill/cobogo/internal/store"
 )
 
@@ -316,8 +321,115 @@ func (s *Server) handleEnvSuggestions(w http.ResponseWriter, r *http.Request, us
 		}
 		list = append(list, suggestion{Name: cv.Name, Value: value, Reason: "o código usa " + cv.Name + "; este é o endereço público do projeto"})
 	}
+	list = append(list, s.pairSuggestions(r.Context(), p, user, analysis.Result, routing, defined)...)
 	out["suggestions"] = list
 	writeJSON(w, http.StatusOK, out)
+}
+
+// Nomes do catálogo fechado de sugestões entre projetos (DEC-49 item 3).
+var (
+	ownHostNames   = map[string]bool{"ALLOWED_HOSTS": true, "DJANGO_ALLOWED_HOSTS": true}
+	ownOriginNames = map[string]bool{"CSRF_TRUSTED_ORIGINS": true, "DJANGO_CSRF_TRUSTED_ORIGINS": true}
+	// Variáveis que apontam para o frontend: valem se o par é um frontend.
+	frontendURLNames = map[string]bool{"FRONTEND_URL": true, "FRONTEND_ORIGIN": true, "CLIENT_URL": true, "WEB_URL": true, "CORS_ALLOWED_ORIGINS": true, "CORS_ORIGINS": true}
+	// Variáveis que apontam para a API: valem se o par é um backend.
+	backendURLNames = map[string]bool{"VITE_API_URL": true, "REACT_APP_API_URL": true, "NEXT_PUBLIC_API_URL": true, "VUE_APP_API_URL": true, "API_URL": true, "BACKEND_URL": true, "PUBLIC_API_URL": true}
+)
+
+// componentRole diz o papel da aplicação de uma pasta no mapa de uma análise ("" se não consta).
+func componentRole(res domain.AnalysisResult, dir string) string {
+	dir = strings.Trim(path.Clean("/"+dir), "/")
+	if dir == "" {
+		dir = "."
+	}
+	for _, c := range res.Components {
+		switch c.Role {
+		case domain.CompFrontend, domain.CompBackend, domain.CompFullstack, domain.CompApp:
+		default:
+			continue
+		}
+		if c.Dir == dir && (dir != "." || !c.Sibling) {
+			return c.Role
+		}
+	}
+	return ""
+}
+
+// pairSuggestions oferece os valores que dependem do endereço do projeto ou do par dele
+// (outro projeto do mesmo repositório). Só para nomes que a análise encontrou e que ainda
+// não têm valor; nada é aplicado sozinho.
+func (s *Server) pairSuggestions(ctx context.Context, p domain.Project, user domain.User, res domain.AnalysisResult, routing settings.Routing, defined map[string]bool) []suggestion {
+	var out []suggestion
+	own := strings.TrimRight(routing.URL(p.Slug), "/")
+	// ALLOWED_HOSTS compara só o domínio, sem a porta (o Django a separa do Host).
+	host := routing.Host(p.Slug)
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	hint := map[string]string{}
+	for _, e := range res.Evidences {
+		if e.Kind == "env.localhost_default" {
+			if u, err := url.Parse(e.Value); err == nil && u.Path != "" && u.Path != "/" {
+				hint[e.Name] = strings.TrimRight(u.Path, "/")
+			}
+		}
+	}
+	peers, err := s.store.ListPeerProjects(ctx, user.ID, p.RepositoryURL, p.ID)
+	if err != nil {
+		s.log.Error("listar projetos pares", "erro", err)
+		peers = nil
+	}
+	type peerInfo struct {
+		slug, role string
+	}
+	var found []peerInfo
+	rootOf := func(d string) string { return strings.Trim(path.Clean("/"+d), "/") }
+	for _, peer := range peers {
+		role := ""
+		// O mapa desta análise é relativo à pasta deste projeto: um par dentro dela
+		// (frontend/ de um backend na raiz) aparece nele como irmã. Um par na raiz ou
+		// acima só se conhece pela análise dele.
+		if rel, ok := strings.CutPrefix(rootOf(peer.RootDirectory), rootOf(p.RootDirectory)); ok && rel != "" && (rootOf(p.RootDirectory) == "" || strings.HasPrefix(rel, "/")) {
+			role = componentRole(res, strings.TrimPrefix(rel, "/"))
+		}
+		if role == "" {
+			if a, err := s.store.LatestAnalysis(ctx, peer.ID); err == nil {
+				role = componentRole(a.Result, ".")
+			}
+		}
+		found = append(found, peerInfo{peer.Slug, role})
+	}
+	for _, cv := range res.ConfigVariables {
+		name := strings.ToUpper(cv.Name)
+		if defined[cv.Name] || cv.Class == domain.ClassPlatform {
+			continue
+		}
+		switch {
+		case ownHostNames[name]:
+			out = append(out, suggestion{Name: cv.Name, Value: host, Reason: "o código lê " + cv.Name + "; este é o endereço do projeto (sem esquema). Confira o formato: lista separada por vírgula aceita este valor"})
+		case ownOriginNames[name]:
+			out = append(out, suggestion{Name: cv.Name, Value: own, Reason: "o código lê " + cv.Name + "; esta é a URL pública do projeto. Confira o formato (lista separada por vírgula)"})
+		case frontendURLNames[name], backendURLNames[name]:
+			want := domain.CompBackend
+			if frontendURLNames[name] {
+				want = domain.CompFrontend
+			}
+			for _, pe := range found {
+				if pe.role != want && pe.role != domain.CompFullstack {
+					continue
+				}
+				value := strings.TrimRight(routing.URL(pe.slug), "/")
+				reason := "o código lê " + cv.Name + "; esta é a URL pública do projeto " + pe.slug + ", que usa o mesmo repositório"
+				if sub := hint[cv.Name]; sub != "" && backendURLNames[name] {
+					value += sub
+					reason += " (com o caminho " + sub + ", que o código usa como padrão)"
+				}
+				out = append(out, suggestion{Name: cv.Name, Value: value, Reason: reason})
+				break
+			}
+		}
+	}
+	return out
 }
 
 // requiredView é a lista de obrigatórias e o que a análise indica como provável.

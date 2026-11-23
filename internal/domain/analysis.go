@@ -257,6 +257,8 @@ type AnalysisResult struct {
 	Conflicts       []Finding        `json:"conflicts"`
 	Unsupported     []Finding        `json:"unsupported"`
 	ConfigVariables []ConfigVariable `json:"config_variables"`
+	// Components é o mapa do repositório: aplicações, serviços e processos (DEC-49).
+	Components []Component `json:"components"`
 	// Warnings são avisos de segurança e de configuração que nunca bloqueiam
 	// a análise (ex.: credencial exposta no repositório).
 	Warnings []Finding `json:"warnings"`
@@ -310,4 +312,34 @@ type ServiceNeed struct {
 	Variables map[string]string `json:"variables"`
 	Reason    string            `json:"reason"`
 	Evidence  []string          `json:"evidence"`
+}
+
+// Papéis das peças do repositório (DEC-49 item 1).
+const (
+	CompFrontend  = "frontend"
+	CompBackend   = "backend"
+	CompFullstack = "fullstack"
+	CompApp       = "app"
+	CompWorker    = "worker"
+	CompDatabase  = "database"
+	CompCache     = "cache"
+	CompQueue     = "queue"
+)
+
+// Component é uma peça do repositório: uma aplicação (desta pasta ou irmã), um
+// serviço de dados ou um processo que o código pede. É inferência com evidência.
+type Component struct {
+	// Dir é a pasta da peça ("." para a aplicação desta pasta e para os serviços
+	// que ela pede).
+	Dir   string `json:"dir"`
+	Role  string `json:"role"`
+	Label string `json:"label"`
+	// Ecosystem é javascript ou python, só para aplicações.
+	Ecosystem string `json:"ecosystem,omitempty"`
+	// Sibling marca outra aplicação do repositório, que pode virar um projeto.
+	Sibling bool `json:"sibling"`
+	// Supported diz se o Cobogó publica ou provê a peça hoje.
+	Supported bool     `json:"supported"`
+	Note      string   `json:"note,omitempty"`
+	Evidence  []string `json:"evidence"`
 }
