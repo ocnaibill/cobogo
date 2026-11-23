@@ -168,3 +168,26 @@ func TestProbeReadyAtUsesTheGivenHost(t *testing.T) {
 		t.Error("an unresolvable host must not pass the probe")
 	}
 }
+
+// A sonda pode se apresentar com o endereço público do projeto (DEC-49): um Django
+// valida o Host, e o nome do contêiner nunca estaria em ALLOWED_HOSTS.
+func TestProbeSendsThePublicHostHeader(t *testing.T) {
+	var seen atomic.Value
+	port := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		seen.Store(r.Host)
+		if r.Host != "meu-app.apps.exemplo" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	got, err := ProbeReadyAs(context.Background(), "127.0.0.1", port, "/", "meu-app.apps.exemplo", 5*time.Second, nil)
+	if err != nil || got.Status != 200 || seen.Load() != "meu-app.apps.exemplo" {
+		t.Errorf("com o Host público: %+v %v (visto %v)", got, err, seen.Load())
+	}
+	// Sem o cabeçalho, o Host é o do endereço consultado.
+	got, err = ProbeReady(context.Background(), port, "/", 5*time.Second, nil)
+	if err != nil || got.Status != 400 {
+		t.Errorf("sem o Host público: %+v %v", got, err)
+	}
+}

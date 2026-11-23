@@ -1,6 +1,9 @@
 package planner
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -118,5 +121,83 @@ func TestPythonDockerfile(t *testing.T) {
 
 	if _, err := FromAnalysis(pythonResult(map[string]string{domain.FieldPythonVersion: "3.9"})); err == nil {
 		t.Error("3.9 aceita")
+	}
+}
+
+func TestDjangoPlatformHostsDockerfile(t *testing.T) {
+	res := pythonResult(map[string]string{
+		domain.FieldPythonFramework: "django", domain.FieldAppTarget: "backend.wsgi:application",
+		domain.FieldDjangoSettings: "backend.settings", domain.FieldDjangoPlatformHosts: "true",
+		domain.FieldBuildCommand: "python manage.py collectstatic --noinput",
+	})
+	plan, err := FromAnalysis(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.DjangoPlatformHosts {
+		t.Error("o plano não registrou o ajuste")
+	}
+	df := plan.Dockerfile
+	runtime := df[strings.Index(df, "\nFROM python:3.13-slim"):]
+	build := df[:strings.Index(df, "\nFROM python:3.13-slim")]
+	if !strings.Contains(runtime, "base64 -d > /app/cobogo_platform_settings.py") || !strings.Contains(runtime, "ENV COBOGO_DJANGO_SETTINGS=backend.settings DJANGO_SETTINGS_MODULE=cobogo_platform_settings") {
+		t.Errorf("a imagem de execução não usa o módulo de ajuste:\n%s", runtime)
+	}
+	if strings.Contains(build, "cobogo_platform_settings") {
+		t.Errorf("o build (collectstatic) deve usar o settings do projeto:\n%s", build)
+	}
+
+	// Sem a resposta, ou fora do Django, nada é gerado.
+	for _, fields := range []map[string]string{
+		{domain.FieldPythonFramework: "django", domain.FieldDjangoSettings: "backend.settings", domain.FieldDjangoPlatformHosts: "false"},
+		{domain.FieldPythonFramework: "django", domain.FieldDjangoSettings: "backend.settings"},
+		{domain.FieldPythonFramework: "flask", domain.FieldDjangoPlatformHosts: "true"},
+	} {
+		plan, err := FromAnalysis(pythonResult(fields))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plan.DjangoPlatformHosts || strings.Contains(plan.Dockerfile, "cobogo_platform_settings") {
+			t.Errorf("ajuste gerado sem pedido (%v):\n%s", fields, plan.Dockerfile)
+		}
+	}
+}
+
+// O módulo gerado, executado de verdade: acrescenta e nunca remove.
+func TestDjangoPlatformSettingsModuleBehaviour(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 não instalado")
+	}
+	dir := t.TempDir()
+	write := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("projeto_settings.py", "ALLOWED_HOSTS = ['exemplo.edu.br', 'localhost']\nCSRF_TRUSTED_ORIGINS = ['https://exemplo.edu.br']\nDEBUG = False\nlower = 'ignorado'\n")
+	write("coringa_settings.py", "ALLOWED_HOSTS = ['*']\n")
+	write("cobogo_platform_settings.py", djangoPlatformSettings)
+	run := func(original string, env ...string) string {
+		cmd := exec.Command(py, "-c", "import cobogo_platform_settings as s; print(s.ALLOWED_HOSTS, getattr(s,'CSRF_TRUSTED_ORIGINS',None), getattr(s,'DEBUG',None), hasattr(s,'lower'))")
+		cmd.Dir = dir
+		cmd.Env = append([]string{"COBOGO_DJANGO_SETTINGS=" + original, "PATH=" + os.Getenv("PATH")}, env...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("python: %v\n%s", err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	got := run("projeto_settings", "COBOGO_PUBLIC_HOST=fec.cobogo.dev", "COBOGO_PUBLIC_URL=https://fec.cobogo.dev")
+	if got != "['exemplo.edu.br', 'localhost', 'fec.cobogo.dev'] ['https://exemplo.edu.br', 'https://fec.cobogo.dev'] False False" {
+		t.Errorf("com as variáveis: %s", got)
+	}
+	// Sem as variáveis da plataforma (um comando, por exemplo): o settings fica como está.
+	if got := run("projeto_settings"); got != "['exemplo.edu.br', 'localhost'] ['https://exemplo.edu.br'] False False" {
+		t.Errorf("sem variáveis: %s", got)
+	}
+	// Um curinga não é tocado.
+	if got := run("coringa_settings", "COBOGO_PUBLIC_HOST=fec.cobogo.dev"); !strings.HasPrefix(got, "['*'] ") {
+		t.Errorf("curinga: %s", got)
 	}
 }

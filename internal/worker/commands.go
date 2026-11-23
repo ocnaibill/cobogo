@@ -153,6 +153,11 @@ func (w *Worker) executeCommand(ctx context.Context, cmd *domain.Command) {
 		secrets = append(secrets, v)
 	}
 	env["PORT"] = fmt.Sprint(plan.Port)
+	if routing, err := w.settings.Apps(ctx); err == nil {
+		for k, v := range publicEnv(plan, routing, project.Slug) {
+			env[k] = v
+		}
+	}
 
 	spec := dockerrt.CommandSpec{
 		ProjectID: project.ID.String(), CommandID: cmd.ID.String(), Image: active.ImageID, Command: cmd.Command,

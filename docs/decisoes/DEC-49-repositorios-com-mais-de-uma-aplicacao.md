@@ -1,6 +1,6 @@
 # DEC-49 — O mapa do repositório: papéis, aplicações irmãs e avisos antes da falha
 
-> **Estado:** direção aprovada pelo autor em 22/11/2026 (a proposta foi dividida em três: esta, a DEC-50 e a DEC-51); **partes A e B implementadas** (avisos silenciosos, explicação do 400 e release degradada; mapa do repositório, aplicações irmãs e sugestões entre pares); parte C aberta.
+> **Estado:** direção aprovada pelo autor em 22/11/2026 (a proposta foi dividida em três: esta, a DEC-50 e a DEC-51); **partes A, B e C implementadas** (avisos silenciosos, explicação do 400 e release degradada; mapa do repositório, aplicações irmãs e sugestões entre pares; ajuste opcional do Django).
 >
 > **Escopo:** o que o Cobogó diz e faz quando o repositório tem mais de uma peça (backend e frontend na mesma árvore, banco, fila, worker): descrever cada peça com o seu papel, oferecer a criação do que falta, sugerir os valores que a plataforma já conhece e avisar cedo do que no código do projeto vai falhar em silêncio. Parte do teste real de `ocnaibill/fec` (Django, Celery, MySQL e React/Vite).
 >
@@ -68,13 +68,13 @@ Todos dizem que a correção é no código do projeto e citam o arquivo e a linh
 
 ### 5. Um 400 do Django não passa por "no ar" sem explicação
 
-Com `DEBUG` desligado o Django não escreve a causa de um `DisallowedHost` no log. Quando a sonda responde 400 e o projeto é Django, a página do deploy e a visão geral dizem a causa provável e apontam o aviso da análise. A release continua promovida (pode ser uma rota que de fato responde 400), mas fica **degradada** (`health: degraded`) quando a sonda do deploy tem resposta 4xx; a visão geral mostra o aviso e aponta o deploy. Não há sonda periódica hoje: o estado vale até o próximo deploy.
+Com `DEBUG` desligado o Django não escreve a causa de um `DisallowedHost` no log. Quando a sonda responde 400 e o projeto é Django, a página do deploy e a visão geral dizem a causa provável e apontam o aviso da análise. A release continua promovida (pode ser uma rota que de fato responde 400), mas fica **degradada** (`health: degraded`) quando a sonda do deploy tem resposta 400 (ou 421); a visão geral mostra o aviso e aponta o deploy. Não há sonda periódica hoje: o estado vale até o próximo deploy.
 
 ### 6. Ajuste do Django feito pela plataforma (opcional)
 
 Para `ALLOWED_HOSTS` e `CSRF_TRUSTED_ORIGINS` fixos, o Cobogó pode gerar **na imagem, nunca no repositório**, um módulo `cobogo_platform_settings.py` que importa o settings do projeto e **acrescenta** o host (de uma variável da plataforma, como a `PORT`) e a URL. O `DJANGO_SETTINGS_MODULE` da imagem aponta para ele. Nada do que o projeto definiu se remove, e a mudança aparece no plano e no Dockerfile.
 
-- **Nunca por padrão:** a análise pergunta, com `não` como valor inicial (override do plano, DEC-24).
+- **Nunca por padrão:** a análise pergunta (HEU-04.6, campo `django_platform_hosts`), com `não` como primeira opção; a pergunta bloqueia o deploy até a resposta, como as demais (override do plano, DEC-24).
 - Não toca em `SECURE_PROXY_SSL_HEADER`, cookies nem curingas.
 
 ## Ordem de entrega
@@ -113,7 +113,7 @@ Cada parte é um commit e uma subida na VM. O `fec` só fica completo com as DEC
 
 - **Avisos do Django (HEU-04.5):** `CSRF_TRUSTED_ORIGINS` literal (a lista é citada); `SECRET_KEY` com padrão literal (`os.environ.get('X', 'literal')`, `config('X', default='…')`), sem repetir o valor; mídia servida só por `static(MEDIA_URL…)` no módulo de `ROOT_URLCONF`, com `MEDIA_ROOT` definido e `DEBUG` não literal verdadeiro. Valem para o settings que vai rodar, como os demais.
 - **Frontend que cai para `localhost`:** o extrator JavaScript vê `import.meta.env.X || 'http://localhost…'` (e `??`, `process.env`), fora de testes; a HEU-09 põe na variável a dica `localhost_default`, que cita o arquivo e a linha.
-- **Sonda:** resposta 4xx marca a release como `degraded`; um Django que responde 400 ganha a causa provável no evento da sonda (`diagnosis.ProbeCause`); o painel mostra a etiqueta "degradada" e o aviso na visão geral.
+- **Sonda:** resposta 400 (ou 421) marca a release como `degraded` (um 404 ou 401 na raiz é comum em APIs e não conta: o aviso de `health_path` o cobre); um Django que responde 400 ganha a causa provável no evento da sonda (`diagnosis.ProbeCause`); o painel mostra a etiqueta "degradada" e o aviso na visão geral.
 - **Verificação:** testes do analisador (casos novos de Django, dica do frontend), do diagnóstico e do painel; os dez repositórios reais da DEC-48 sem aviso falso (o único disparo novo, `render-examples/django`, é verdadeiro: `SECRET_KEY` com padrão); o `fec` na pilha local completa: deploy no ar, sonda 400, release degradada com a causa, os cinco avisos na análise (`ALLOWED_HOSTS`, `CSRF_TRUSTED_ORIGINS`, `SECRET_KEY`, mídia, migrações) e o painel com o aviso.
 
 ## Implementação da parte B (22/11/2026)
@@ -123,4 +123,12 @@ Cada parte é um commit e uma subida na VM. O `fec` só fica completo com as DEC
 - **Sugestões entre pares (`/env/suggestions`):** sem tabela nova; o par é outro projeto do mesmo dono com o mesmo `repository_url`. O papel do par vem do mapa desta análise (o par dentro desta pasta é uma irmã) ou da análise dele. Catálogo fechado e nada aplicado sozinho: `ALLOWED_HOSTS` (host sem porta), `CSRF_TRUSTED_ORIGINS` (URL), URL do frontend (`FRONTEND_URL`…) e URL do backend (`VITE_API_URL`…) mais o caminho que o código usa como padrão (`/api`).
 - **Painel:** o cartão "Mapa do repositório" na visão geral do projeto, com o botão **Criar projeto para esta pasta** nas irmãs (cria o projeto com o `root_directory` e o slug `<projeto>-<pasta>`, sem deploy) e, se o par já existe, o link para ele.
 - **Verificação:** testes do analisador (papéis, irmãs, pastas que não são aplicação), da API (pares, repositório diferente, variável já definida) e do painel; o mapa nos dez repositórios reais da DEC-48 sem irmã falsa; o `fec` na pilha local completa: backend no ar, mapa com Django REST, MySQL, Redis, Celery e `frontend/` como irmã, criação do projeto da irmã, `VITE_API_URL` sugerido como `http://fec.localhost:8088/api` e `FRONTEND_URL` como `http://fec-frontend.localhost:8088`, e, depois de gravar a sugestão, o frontend publicado com a URL do backend dentro do JavaScript. Não cliquei o botão do painel (a chamada é a mesma que fiz pela API); o link para o par existente foi visto no navegador.
+
+## Implementação da parte C (22/11/2026)
+
+- **A pergunta (HEU-04.6):** o catálogo Python pergunta `django_platform_hosts` (`sim` ou `não`) quando o settings que vai rodar fixa `ALLOWED_HOSTS` (sem curinga, sem variável, sem acréscimo posterior) ou `CSRF_TRUSTED_ORIGINS` no código. Com a escolha do settings ainda aberta (desenvolvimento ou produção), ela espera. Respondida, não volta. O painel mostra as opções como "sim" e "não".
+- **O módulo (`cobogo_platform_settings.py`):** gerado só na imagem de execução (o build e o `collectstatic` usam o settings do projeto como está), importa o settings do projeto, copia os nomes em maiúsculas e **acrescenta** o host a `ALLOWED_HOSTS` e a URL a `CSRF_TRUSTED_ORIGINS`. Um curinga não é tocado, e sem as variáveis da plataforma (`COBOGO_PUBLIC_HOST`, `COBOGO_PUBLIC_URL`, que o worker entrega na aplicação e nos comandos) nada muda. O `DJANGO_SETTINGS_MODULE` da imagem aponta para ele, e `COBOGO_DJANGO_SETTINGS` guarda o original. O plano mostra "Ajuste do Django".
+- **A sonda com o Host público:** a sonda de prontidão agora se apresenta com o endereço público do projeto (`ProbeReadyAs`), como o tráfego real. Sem isso o Django com `ALLOWED_HOSTS` correto ainda responderia 400 ao nome do contêiner e a release sairia degradada à toa.
+- **Degradada só com 400 (ou 421):** um 404 ou 401 na raiz é comum em APIs e não conta; o aviso de `health_path` já o cobre.
+- **Verificação:** testes do analisador (pergunta, resposta, sem pergunta com hosts por variável), do planner (o módulo só na imagem de execução, nada gerado sem a resposta), do **módulo executado em Python de verdade** (acrescenta sem remover, curinga intacto, sem variáveis não muda), do worker e da sonda; o `fec` na pilha local: pergunta no painel, resposta por clique, deploy no ar, release `healthy`, `/api/hello/` e a tela de login do admin respondendo 200 pelo endereço público.
 

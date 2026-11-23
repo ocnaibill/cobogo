@@ -512,7 +512,7 @@ function PendingPanel({ deploymentId, projectId, onAnswered }: { deploymentId: s
                   {f.options.map((o) => (
                     <label key={o.value} className={`option ${values[f.field] === o.value ? "selected" : ""}`}>
                       <input type="radio" name={f.field} value={o.value} checked={values[f.field] === o.value} onChange={() => setValues((v) => ({ ...v, [f.field]: o.value }))} />
-                      <span className="mono">{o.value}</span>
+                      <span className="mono">{o.value === "true" ? "sim" : o.value === "false" ? "não" : o.value}</span>
                       {o.kind && <Badge tone={o.kind === "production" ? "success" : "warning"}>{o.kind === "production" ? "produção" : "desenvolvimento"}</Badge>}
                       {o.note && <span className="muted small">{o.note}</span>}
                     </label>
@@ -784,6 +784,9 @@ function PlanView({ deploymentId, hasAnalysis }: { deploymentId: string; hasAnal
       ? ([
           ["Alvo", p.app_target ? `${p.app_target} (${p.interface === "asgi" ? "ASGI, uvicorn" : "WSGI, gunicorn"})` : "—"],
           ["Pacotes de sistema", p.system_packages?.length ? p.system_packages.join(", ") : "nenhum"],
+          ...(p.django_platform_hosts
+            ? ([["Ajuste do Django", "acrescenta o endereço do projeto a ALLOWED_HOSTS e CSRF_TRUSTED_ORIGINS (módulo gerado na imagem)"]] as [string, string][])
+            : []),
         ] as [string, string][])
       : []),
     ["Imagem de build", p.build_image],

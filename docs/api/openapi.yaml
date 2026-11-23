@@ -2474,7 +2474,10 @@ components:
         (`python` ou `javascript`, quando a pasta tem os dois), `package_manager`
         (`pip` ou `uv`), `python_version` (`3.10` a `3.15`), `app_target`
         (`modulo:atributo` ou `modulo:fabrica()`), `python_interface` (`wsgi` ou
-        `asgi`), `python_framework` e `django_settings`.
+        `asgi`), `python_framework`, `django_settings` e `django_platform_hosts`
+        (`true` ou `false`: a plataforma acrescenta o endereço do projeto a
+        `ALLOWED_HOSTS` e `CSRF_TRUSTED_ORIGINS` num módulo gerado na imagem, sem
+        mudar o repositório; é a resposta à pergunta da HEU-04.6; DEC-49).
         Valores de variáveis de ambiente nunca passam por aqui.
       additionalProperties:
         type: string
@@ -2559,7 +2562,7 @@ components:
         health:
           type: string
           description: |
-            `healthy`, ou `degraded` quando a sonda do deploy teve resposta 4xx: a
+            `healthy`, ou `degraded` quando a sonda do deploy teve resposta 400 (ou 421): a
             aplicação está no ar, mas não serve o que se espera (por exemplo, um
             Django que responde 400 por `ALLOWED_HOSTS`; DEC-49).
         host_port:
@@ -3505,6 +3508,9 @@ components:
           type: string
           enum: [wsgi, asgi]
           description: Interface do alvo; só no perfil P-PY (gunicorn para wsgi, uvicorn para asgi).
+        django_platform_hosts:
+          type: boolean
+          description: A imagem usa o módulo de ajuste do Django que acrescenta o endereço do projeto às listas de hosts e de origens; só no perfil P-PY (DEC-49).
         system_packages:
           type: array
           items:

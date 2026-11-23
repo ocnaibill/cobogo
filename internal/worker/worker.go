@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"sort"
 	"strings"
@@ -599,6 +600,9 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 		have[name] = ""
 	}
 	envValues["PORT"] = fmt.Sprint(plan.Port)
+	for k, v := range publicEnv(plan, routing, project.Slug) {
+		envValues[k] = v
+	}
 	// Workers do gunicorn pelo limite de memória (DEC-48 item 6), se o projeto não
 	// definiu o seu.
 	if _, own := have["WEB_CONCURRENCY"]; !own && plan.Profile == domain.ProfilePython {
@@ -740,10 +744,15 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 		return w.runtime.State(c, runResult.ContainerID)
 	}
 	var probe dockerrt.ProbeResult
+	// A sonda se apresenta com o endereço público do projeto, como o tráfego real (DEC-49).
+	publicHost := ""
+	if routing.Enabled() {
+		publicHost = routing.Host(project.Slug)
+	}
 	if w.probeNetwork {
-		probe, err = dockerrt.ProbeReadyAt(ctx, containerName, plan.Port, plan.HealthPath, readinessTimeout, alive)
+		probe, err = dockerrt.ProbeReadyAs(ctx, containerName, plan.Port, plan.HealthPath, publicHost, readinessTimeout, alive)
 	} else {
-		probe, err = dockerrt.ProbeReady(ctx, runResult.HostPort, plan.HealthPath, readinessTimeout, alive)
+		probe, err = dockerrt.ProbeReadyAs(ctx, "127.0.0.1", runResult.HostPort, plan.HealthPath, publicHost, readinessTimeout, alive)
 	}
 	if err != nil {
 		if ctx.Err() == nil {
@@ -764,10 +773,11 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 	if !probe.Healthy() {
 		probePayload["warning"] = fmt.Sprintf("a aplicação respondeu %d em %s: está no ar, mas não respondeu 2xx; se a rota certa for outra, informe health_path", probe.Status, probe.Path)
 	}
-	// Uma resposta 4xx passa na sonda, mas a release fica marcada como degradada, e
-	// o motivo conhecido é dito aqui (DEC-49 item 5).
+	// Um 400 (ou 421) passa na sonda, mas a release fica marcada como degradada, e o
+	// motivo conhecido é dito aqui (DEC-49 item 5). Um 404 ou 401 na raiz é comum em
+	// APIs e não conta: o aviso de health_path já o cobre.
 	releaseHealth := domain.ReleaseHealthy
-	if probe.Status >= 400 {
+	if probe.Status == 400 || probe.Status == 421 {
 		releaseHealth = domain.ReleaseDegraded
 		probePayload["degraded"] = true
 		if cause := diagnosis.ProbeCause(probe.Status, result.Fields[domain.FieldPythonFramework].Value); cause != "" {
@@ -881,4 +891,17 @@ func (w *Worker) checkRequiredEnv(ctx context.Context, projectID uuid.UUID) erro
 // a cada 256 MB, de 1 a 4.
 func WebConcurrency(memoryMB int) int {
 	return max(1, min(4, memoryMB/256))
+}
+
+// publicEnv são as variáveis da plataforma com o endereço público do projeto, entregues
+// quando o plano as usa (o módulo de ajuste do Django, DEC-49 item 6). O host vai sem porta.
+func publicEnv(plan domain.Plan, routing settings.Routing, slug string) map[string]string {
+	if !plan.DjangoPlatformHosts || !routing.Enabled() {
+		return nil
+	}
+	host := routing.Host(slug)
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return map[string]string{"COBOGO_PUBLIC_HOST": host, "COBOGO_PUBLIC_URL": strings.TrimRight(routing.URL(slug), "/")}
 }

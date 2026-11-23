@@ -139,8 +139,8 @@ export function ProjectPage() {
       {error && <Notice tone="danger">{error}</Notice>}
       {appControl.notice && <Notice tone={appControl.notice.tone}>{appControl.notice.text}</Notice>}
       {release?.health === "degraded" && lastOk && (
-        <Notice tone="warning" title="A última verificação respondeu 4xx">
-          A aplicação está no ar, mas a sonda do deploy não recebeu uma resposta de sucesso. Veja o motivo provável no{" "}
+        <Notice tone="warning" title="A última verificação respondeu 400">
+          A aplicação está no ar, mas a sonda do deploy recebeu um 400 (Bad Request). Veja o motivo provável no{" "}
           <Link to={`/deploys/${lastOk.id}`}>deploy {lastOk.id.slice(0, 8)}</Link>.
         </Notice>
       )}

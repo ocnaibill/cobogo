@@ -30,6 +30,9 @@ type Plan struct {
 	AppTarget      string   `json:"app_target,omitempty"`
 	Interface      string   `json:"interface,omitempty"`
 	SystemPackages []string `json:"system_packages,omitempty"`
+	// DjangoPlatformHosts: a imagem usa o módulo de ajuste que acrescenta o endereço
+	// do projeto a ALLOWED_HOSTS e CSRF_TRUSTED_ORIGINS (DEC-49 item 6).
+	DjangoPlatformHosts bool `json:"django_platform_hosts,omitempty"`
 }
 
 // gitHookTools são ferramentas que só instalam ganchos do Git; num contêiner

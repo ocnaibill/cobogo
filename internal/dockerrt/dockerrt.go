@@ -558,6 +558,14 @@ func ProbeReady(ctx context.Context, hostPort int, path string, timeout time.Dur
 // ProbeReadyAt é ProbeReady para um endereço qualquer: o loopback do host (a
 // porta publicada) ou o nome do contêiner na rede do projeto (DEC-32 item 5).
 func ProbeReadyAt(ctx context.Context, host string, port int, path string, timeout time.Duration, alive func(context.Context) (bool, int, error)) (ProbeResult, error) {
+	return ProbeReadyAs(ctx, host, port, path, "", timeout, alive)
+}
+
+// ProbeReadyAs é ProbeReadyAt com o cabeçalho Host do pedido: o endereço público do
+// projeto, para que a sonda veja o que o tráfego real veria (um Django valida o Host
+// contra ALLOWED_HOSTS, e o nome do contêiner nunca estaria na lista). Vazio mantém o
+// Host do endereço consultado.
+func ProbeReadyAs(ctx context.Context, host string, port int, path, hostHeader string, timeout time.Duration, alive func(context.Context) (bool, int, error)) (ProbeResult, error) {
 	if path == "" {
 		path = "/"
 	}
@@ -580,7 +588,14 @@ func ProbeReadyAt(ctx context.Context, host string, port int, path string, timeo
 			}
 		}
 
-		resp, err := client.Get(url)
+		req, rerr := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if rerr != nil {
+			return last, rerr
+		}
+		if hostHeader != "" {
+			req.Host = hostHeader
+		}
+		resp, err := client.Do(req)
 		switch {
 		case err != nil:
 			consecutive = 0

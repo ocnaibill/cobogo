@@ -979,7 +979,15 @@ export interface paths {
         /**
          * Valores que o Cobogó conhece e oferece
          * @description Lista **fechada**: `<SLUG>_URL`, `APP_URL`, `SITE_URL`, `BASE_URL`,
-         *     `PUBLIC_URL` e `NEXT_PUBLIC_SITE_URL`, só para um nome que a última
+         *     `PUBLIC_URL` e `NEXT_PUBLIC_SITE_URL`; `ALLOWED_HOSTS` e
+         *     `DJANGO_ALLOWED_HOSTS` (o host, sem porta); `CSRF_TRUSTED_ORIGINS` e
+         *     `DJANGO_CSRF_TRUSTED_ORIGINS` (a URL); e, a partir dos **pares** (outros
+         *     projetos do mesmo repositório), `FRONTEND_URL`, `FRONTEND_ORIGIN`,
+         *     `CLIENT_URL`, `WEB_URL`, `CORS_ALLOWED_ORIGINS` e `CORS_ORIGINS` (a URL de
+         *     um par frontend) e `VITE_API_URL`, `REACT_APP_API_URL`,
+         *     `NEXT_PUBLIC_API_URL`, `VUE_APP_API_URL`, `API_URL`, `BACKEND_URL` e
+         *     `PUBLIC_API_URL` (a URL de um par backend, mais o caminho que o código usa
+         *     como padrão, quando há; DEC-49). Só para um nome que a última
          *     análise encontrou e o projeto ainda não definiu, e só com domínio das
          *     aplicações configurado. O valor é o endereço público do projeto, sem a
          *     barra final. Nada é aplicado sozinho: a pessoa confirma e grava com
@@ -1320,7 +1328,10 @@ export interface components {
          *     (`python` ou `javascript`, quando a pasta tem os dois), `package_manager`
          *     (`pip` ou `uv`), `python_version` (`3.10` a `3.15`), `app_target`
          *     (`modulo:atributo` ou `modulo:fabrica()`), `python_interface` (`wsgi` ou
-         *     `asgi`), `python_framework` e `django_settings`.
+         *     `asgi`), `python_framework`, `django_settings` e `django_platform_hosts`
+         *     (`true` ou `false`: a plataforma acrescenta o endereço do projeto a
+         *     `ALLOWED_HOSTS` e `CSRF_TRUSTED_ORIGINS` num módulo gerado na imagem, sem
+         *     mudar o repositório; é a resposta à pergunta da HEU-04.6; DEC-49).
          *     Valores de variáveis de ambiente nunca passam por aqui.
          */
         Overrides: {
@@ -1898,6 +1909,8 @@ export interface components {
              * @enum {string}
              */
             interface?: "wsgi" | "asgi";
+            /** @description A imagem usa o módulo de ajuste do Django que acrescenta o endereço do projeto às listas de hosts e de origens; só no perfil P-PY (DEC-49). */
+            django_platform_hosts?: boolean;
             /** @description Pacotes de sistema do catálogo fechado instalados na execução; só no perfil P-PY. */
             system_packages?: string[];
             /** @description Diretório servido; só no perfil P-STATIC (DEC-37). */

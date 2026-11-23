@@ -195,6 +195,7 @@ export const FIELD_LABEL: Record<string, string> = {
   python_interface: "Interface (WSGI/ASGI)",
   python_framework: "Framework",
   django_settings: "Settings do Django",
+  django_platform_hosts: "Ajuste de hosts do Django",
   output_dir: "Diretório servido",
   spa_fallback: "Fallback de SPA",
   health_path: "Caminho da verificação",

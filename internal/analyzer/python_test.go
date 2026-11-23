@@ -109,7 +109,26 @@ func TestPythonAnalysis(t *testing.T) {
 			noWarnings: []string{"DEBUG = True", "SECRET_KEY está escrita", "whitenoise", "STATIC_ROOT", "valor padrão no código", "respondem 404", "CSRF_TRUSTED_ORIGINS está fixo"},
 		},
 		{
+			name: "django com hosts fixos: a plataforma pergunta", outcome: domain.AnalysisNeedsInput,
+			files: djangoRepo(map[string]string{
+				"mysite/settings.py": strings.Replace(djangoSettings, `ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "").split(",")`, `ALLOWED_HOSTS = ["exemplo.edu.br", "localhost"]`, 1),
+			}),
+			pending: []string{domain.FieldDjangoPlatformHosts},
+		},
+		{
+			name: "django com hosts fixos: a resposta sim", outcome: domain.AnalysisReady,
+			overrides: map[string]string{domain.FieldDjangoPlatformHosts: "true"},
+			files: djangoRepo(map[string]string{
+				"mysite/settings.py": strings.Replace(djangoSettings, `ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "").split(",")`, `ALLOWED_HOSTS = ["exemplo.edu.br", "localhost"]`, 1),
+			}),
+			fields: map[string]string{domain.FieldDjangoPlatformHosts: "true"},
+		},
+		{
+			name: "django com hosts por variável não pergunta", outcome: domain.AnalysisReady, files: djangoRepo(nil),
+		},
+		{
 			name: "django com valores fixos de outro ambiente", outcome: domain.AnalysisReady,
+			overrides: map[string]string{domain.FieldDjangoPlatformHosts: "false"},
 			files: djangoRepo(map[string]string{
 				"mysite/settings.py": strings.NewReplacer(
 					`SECRET_KEY = os.environ["DJANGO_SECRET_KEY"]`, `SECRET_KEY = os.environ.get('SECRET_KEY', 'chave-padrao-segura')`,
@@ -122,6 +141,7 @@ func TestPythonAnalysis(t *testing.T) {
 		},
 		{
 			name: "django de tutorial", outcome: domain.AnalysisReady,
+			overrides: map[string]string{domain.FieldDjangoPlatformHosts: "false"},
 			files: djangoRepo(map[string]string{
 				"requirements.txt":   "django\n",
 				"mysite/settings.py": "SECRET_KEY = 'django-insecure-abc'\nDEBUG = True\nALLOWED_HOSTS = []\nWSGI_APPLICATION = 'mysite.wsgi.application'\nDATABASES = {'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': BASE_DIR / 'db.sqlite3'}}\n",

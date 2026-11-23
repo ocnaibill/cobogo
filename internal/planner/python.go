@@ -1,6 +1,7 @@
 package planner
 
 import (
+	"encoding/base64"
 	"fmt"
 	"regexp"
 	"slices"
@@ -45,6 +46,9 @@ type PythonPlanInput struct {
 	HealthPath     string
 	Port           int
 	PortOrigin     string
+	// PlatformHosts gera, na imagem, o módulo que acrescenta o endereço do projeto às
+	// listas de hosts e de origens do Django (DEC-49 item 6).
+	PlatformHosts bool
 	// SrcLayout põe /app/src no PYTHONPATH.
 	SrcLayout bool
 	// SystemPackages são os pacotes de execução do catálogo que as dependências pedem.
@@ -74,8 +78,10 @@ func pythonFromAnalysis(res domain.AnalysisResult, port int, portOrigin, mode st
 	if target == "" && f(domain.FieldStartCommand) == "" {
 		return domain.Plan{}, fmt.Errorf("planner: P-PY sem alvo nem comando de início")
 	}
+	platformHosts := f(domain.FieldDjangoPlatformHosts) == "true" && f(domain.FieldPythonFramework) == domain.FrameworkDjango && f(domain.FieldDjangoSettings) != ""
 	in := PythonPlanInput{
-		Version: version, Manager: manager, AppTarget: target,
+		PlatformHosts: platformHosts,
+		Version:       version, Manager: manager, AppTarget: target,
 		Interface: f(domain.FieldPythonInterface), Framework: f(domain.FieldPythonFramework),
 		DjangoSettings: f(domain.FieldDjangoSettings), StartCommand: f(domain.FieldStartCommand),
 		BuildCommand: f(domain.FieldBuildCommand), Mode: mode, HealthPath: f(domain.FieldHealthPath),
@@ -199,6 +205,8 @@ func BuildPythonPlan(in PythonPlanInput) domain.Plan {
 		Interface:      in.Interface,
 		SystemPackages: in.SystemPackages,
 		Dockerfile:     renderPythonDockerfile(in, install, start),
+
+		DjangoPlatformHosts: in.PlatformHosts && in.DjangoSettings != "",
 	}
 }
 
@@ -272,6 +280,13 @@ func renderPythonDockerfile(in PythonPlanInput, install, start string) string {
 	fmt.Fprintf(&b, "RUN useradd --uid %d --no-create-home --home-dir /app --shell /usr/sbin/nologin %s && chown %s:%s /app\n", pythonUID, pythonUser, pythonUser, pythonUser)
 	b.WriteString("COPY --from=build /opt/venv /opt/venv\n")
 	fmt.Fprintf(&b, "COPY --from=build --chown=%s:%s /app /app\n", pythonUser, pythonUser)
+	if in.PlatformHosts && in.DjangoSettings != "" {
+		// O módulo de ajuste só existe na imagem de execução: o build (collectstatic) usa o
+		// settings do projeto como está. O DJANGO_SETTINGS_MODULE passa a apontar para ele.
+		encoded := base64.StdEncoding.EncodeToString([]byte(djangoPlatformSettings))
+		fmt.Fprintf(&b, "RUN echo %s | base64 -d > /app/%s.py && chown %s:%s /app/%s.py\n", encoded, platformSettingsModule, pythonUser, pythonUser, platformSettingsModule)
+		fmt.Fprintf(&b, "ENV COBOGO_DJANGO_SETTINGS=%s DJANGO_SETTINGS_MODULE=%s\n", in.DjangoSettings, platformSettingsModule)
+	}
 	fmt.Fprintf(&b, "USER %s\n", pythonUser)
 	fmt.Fprintf(&b, "EXPOSE %d\n", in.Port)
 	cmd := start
@@ -281,3 +296,31 @@ func renderPythonDockerfile(in PythonPlanInput, install, start string) string {
 	fmt.Fprintf(&b, "CMD [\"sh\", \"-c\", %s]\n", jsonString(cmd))
 	return b.String()
 }
+
+// platformSettingsModule é o módulo gerado na imagem (DEC-49 item 6).
+const platformSettingsModule = "cobogo_platform_settings"
+
+// djangoPlatformSettings importa o settings do projeto e ACRESCENTA o endereço público
+// do projeto às listas de hosts e de origens de CSRF. Nada que o projeto definiu é
+// removido; sem as variáveis da plataforma (um comando, por exemplo), não muda nada.
+const djangoPlatformSettings = `# Gerado pelo Cobogó (DEC-49): importa o settings do projeto e acrescenta o endereço
+# público do projeto a ALLOWED_HOSTS e CSRF_TRUSTED_ORIGINS. Nada é removido.
+import importlib
+import os
+
+_original = importlib.import_module(os.environ["COBOGO_DJANGO_SETTINGS"])
+globals().update({_k: _v for _k, _v in vars(_original).items() if _k.isupper()})
+
+_host = os.environ.get("COBOGO_PUBLIC_HOST", "")
+_url = os.environ.get("COBOGO_PUBLIC_URL", "")
+if _host:
+    _hosts = list(globals().get("ALLOWED_HOSTS", []))
+    if "*" not in _hosts and _host not in _hosts:
+        _hosts.append(_host)
+    ALLOWED_HOSTS = _hosts
+if _url:
+    _origins = list(globals().get("CSRF_TRUSTED_ORIGINS", []))
+    if _url not in _origins:
+        _origins.append(_url)
+    CSRF_TRUSTED_ORIGINS = _origins
+`

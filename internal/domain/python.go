@@ -18,6 +18,9 @@ const (
 	FieldAppTarget       = "app_target"
 	FieldPythonFramework = "python_framework"
 	FieldDjangoSettings  = "django_settings"
+	// FieldDjangoPlatformHosts: a plataforma acrescenta o endereço do projeto a
+	// ALLOWED_HOSTS e CSRF_TRUSTED_ORIGINS, num módulo gerado na imagem (DEC-49 item 6).
+	FieldDjangoPlatformHosts = "django_platform_hosts"
 )
 
 // Ecossistemas.

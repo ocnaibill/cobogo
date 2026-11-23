@@ -17,6 +17,7 @@ import (
 	"github.com/ocnaibill/cobogo/internal/diagnosis"
 	"github.com/ocnaibill/cobogo/internal/dockerrt"
 	"github.com/ocnaibill/cobogo/internal/domain"
+	"github.com/ocnaibill/cobogo/internal/settings"
 	"github.com/ocnaibill/cobogo/internal/store"
 )
 
@@ -276,5 +277,19 @@ func TestPortSourceNamesWhereTheCodeReadsPORT(t *testing.T) {
 	}
 	if got := portSource(domain.AnalysisResult{}); got != "" {
 		t.Errorf("portSource without a port field = %q, want empty", got)
+	}
+}
+
+func TestPublicEnvOnlyWhenThePlanUsesIt(t *testing.T) {
+	routing := settings.Routing{Domain: "localhost:8088", Scheme: "http"}
+	if got := publicEnv(domain.Plan{}, routing, "fec"); got != nil {
+		t.Errorf("sem o ajuste: %v", got)
+	}
+	got := publicEnv(domain.Plan{DjangoPlatformHosts: true}, routing, "fec")
+	if got["COBOGO_PUBLIC_HOST"] != "fec.localhost" || got["COBOGO_PUBLIC_URL"] != "http://fec.localhost:8088" {
+		t.Errorf("com o ajuste: %v", got)
+	}
+	if got := publicEnv(domain.Plan{DjangoPlatformHosts: true}, settings.Routing{}, "fec"); got != nil {
+		t.Errorf("sem domínio configurado: %v", got)
 	}
 }

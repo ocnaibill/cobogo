@@ -24,7 +24,7 @@ func PythonCatalog() Catalog {
 			{ID: extractorEnvFiles, Extract: extractEnvFiles},
 			{ID: extractorPySource, Extract: extractPythonSource},
 		},
-		Rules: []Rule{ruleHEU041(), ruleHEU042(), ruleHEU043(), ruleHEU044(), ruleHEU045(), ruleHEU09For("HEU-04.1"), ruleHEU08()},
+		Rules: []Rule{ruleHEU041(), ruleHEU042(), ruleHEU043(), ruleHEU044(), ruleHEU045(), ruleHEU046(), ruleHEU09For("HEU-04.1"), ruleHEU08()},
 		Fields: []FieldSpec{
 			{Name: domain.FieldProfile, Required: true, Overridable: false, Validate: func(v string) error { return nil }},
 			{Name: domain.FieldPackageManager, Required: true, Overridable: true, Validate: validatePyManager},
@@ -35,6 +35,7 @@ func PythonCatalog() Catalog {
 			{Name: domain.FieldAppTarget, Overridable: true, Validate: validateAppTarget},
 			{Name: domain.FieldPythonFramework, Overridable: true, Validate: validateFramework},
 			{Name: domain.FieldDjangoSettings, Overridable: true, Validate: validateDottedModule},
+			{Name: domain.FieldDjangoPlatformHosts, Overridable: true, Validate: validateBool},
 			{Name: domain.FieldStartCommand, Overridable: true, Validate: validateCommand},
 			{Name: domain.FieldBuildCommand, Overridable: true, Validate: validateCommand},
 			{Name: domain.FieldExecutionMode, Overridable: true, Validate: validateExecutionMode},
@@ -643,18 +644,7 @@ func ruleHEU045() Rule {
 			}
 			// Os avisos valem para o settings que vai rodar: o de desenvolvimento só conta
 			// quando é ele o escolhido.
-			effective := effectiveSettings(in)
-			setting := func(name string) []domain.Evidence {
-				var out []domain.Evidence
-				for _, e := range in.Named(kindDjangoSet, name) {
-					mod := settingsModuleOf(e.Source)
-					if (isDevSettings(mod) || isTestSettings(mod)) && mod != effective {
-						continue
-					}
-					out = append(out, e)
-				}
-				return out
-			}
+			setting := djangoSetting(in)
 			if e := setting("ALLOWED_HOSTS_LITERAL"); len(e) > 0 {
 				hosts := e[0].Value
 				if ext := setting("ALLOWED_HOSTS_EXTENDED"); len(ext) > 0 && len(setting("ALLOWED_HOSTS_ENV")) == 0 {
@@ -695,6 +685,72 @@ func ruleHEU045() Rule {
 				warn("o settings usa SQLite: o arquivo some a cada deploy se não estiver num volume (aba Dados), e o padrão (db.sqlite3 na raiz) fica na pasta da aplicação, que não pode ser volume. Mova o arquivo para uma pasta (por exemplo data/) ou use o PostgreSQL do Cobogó (aba Banco)")
 			}
 			warn("o Cobogó não roda migrações: depois do primeiro deploy (e de cada um que traga migrações), rode `python manage.py migrate` na aba Comandos")
+			return out
+		},
+	}
+}
+
+// djangoSetting devolve a leitura de uma configuração do Django só nos settings que
+// vão rodar: um de desenvolvimento ou de teste só conta quando é o escolhido.
+func djangoSetting(in RuleInput) func(string) []domain.Evidence {
+	effective := effectiveSettings(in)
+	return func(name string) []domain.Evidence {
+		var out []domain.Evidence
+		for _, e := range in.Named(kindDjangoSet, name) {
+			mod := settingsModuleOf(e.Source)
+			if (isDevSettings(mod) || isTestSettings(mod)) && mod != effective {
+				continue
+			}
+			out = append(out, e)
+		}
+		return out
+	}
+}
+
+// HEU-04.6: o ajuste do Django feito pela plataforma (DEC-49 item 6). Quando o settings
+// fixa ALLOWED_HOSTS ou CSRF_TRUSTED_ORIGINS no código, sem o endereço do projeto, a
+// análise pergunta se a plataforma deve acrescentá-lo, na imagem e sem mudar o repositório.
+// Nunca por padrão: a resposta é da pessoa.
+func ruleHEU046() Rule {
+	return Rule{
+		Meta: RuleMeta{ID: "HEU-04.6", Version: "0.1", State: RuleProposed, Requires: []string{"HEU-04.1"}, Fields: []string{domain.FieldDjangoPlatformHosts}},
+		Apply: func(in RuleInput) RuleOutput {
+			var out RuleOutput
+			if len(in.Of(kindDjangoModule)) == 0 || !hasDep(in, "django") {
+				return out
+			}
+			// Com a escolha do settings ainda aberta (desenvolvimento ou produção), a pergunta
+			// espera: ela depende de qual settings vai rodar.
+			if effectiveSettings(in) == "" {
+				return out
+			}
+			setting := djangoSetting(in)
+			var ev []domain.Evidence
+			fixedHosts := len(setting("ALLOWED_HOSTS_LITERAL")) > 0 && len(setting("ALLOWED_HOSTS_ENV")) == 0 && len(setting("ALLOWED_HOSTS_EXTENDED")) == 0
+			if fixedHosts {
+				e := setting("ALLOWED_HOSTS_LITERAL")[0]
+				if strings.Contains(e.Value, "*") {
+					fixedHosts = false
+				} else {
+					ev = append(ev, e)
+				}
+			}
+			fixedOrigins := len(setting("CSRF_TRUSTED_ORIGINS_LITERAL")) > 0
+			if fixedOrigins {
+				ev = append(ev, setting("CSRF_TRUSTED_ORIGINS_LITERAL")[0])
+			}
+			if !fixedHosts && !fixedOrigins {
+				return out
+			}
+			if _, answered := in.Overrides[domain.FieldDjangoPlatformHosts]; answered {
+				return out
+			}
+			f := finding(domain.FieldDjangoPlatformHosts, "HEU-04.6: o settings fixa ALLOWED_HOSTS ou CSRF_TRUSTED_ORIGINS no código, sem o endereço deste projeto: o Django responderá 400 e recusará formulários. Quer que a plataforma acrescente o endereço do projeto a essas listas, num módulo gerado na imagem e sem mudar o repositório? Nada que o projeto definiu é removido.", ev...)
+			f.Options = []domain.Option{
+				{Value: "false", Note: "não: o projeto fica como está (conserte o settings para ler os valores de variáveis de ambiente)"},
+				{Value: "true", Note: "sim: a imagem usa um módulo de ajuste que importa o settings do projeto e acrescenta o endereço público"},
+			}
+			out.Pending = append(out.Pending, f)
 			return out
 		},
 	}
