@@ -225,7 +225,7 @@ func (w *Worker) executeProjectBackup(ctx context.Context, b *domain.ProjectBack
 			fail("ler a senha do banco: " + err.Error())
 			return
 		}
-		if err := rt.DumpPostgres(ctx, pid, bid, svc.ContainerName, pass, dockerrt.ProjectNetwork(pid), w.backupVolume, sub, backup.DatabaseFile, copyTimeout); err != nil {
+		if err := rt.DumpService(ctx, svc.Engine, pid, bid, svc.ContainerName, pass, dockerrt.ProjectNetwork(pid), w.backupVolume, sub, backup.DatabaseFile, copyTimeout); err != nil {
 			fail("copiar o banco: " + err.Error())
 			return
 		}

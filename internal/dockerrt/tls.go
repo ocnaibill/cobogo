@@ -119,7 +119,7 @@ func generateServerCert(host string) (certPEM, keyPEM []byte, err error) {
 // putPostgresTLS grava o certificado e a chave no volume do banco, sem iniciar
 // nada: cria um contêiner descartável com o volume montado, copia o arquivo e o
 // remove. A chave é do postgres, modo 0600.
-func (r *Runtime) putPostgresTLS(ctx context.Context, spec PostgresSpec) error {
+func (r *Runtime) putPostgresTLS(ctx context.Context, spec ServiceSpec) error {
 	certPEM, keyPEM, err := generateServerCert(spec.Container)
 	if err != nil {
 		return fmt.Errorf("dockerrt: gerar o certificado do banco: %w", err)

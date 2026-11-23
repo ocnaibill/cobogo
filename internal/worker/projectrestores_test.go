@@ -75,7 +75,7 @@ func TestProjectRestoreEndToEnd(t *testing.T) {
 	w.SetBackup(root, backupVol)
 	net := dockerrt.ProjectNetwork(pid)
 	t.Cleanup(func() {
-		_ = rt.RemovePostgres(context.Background(), pid, svc.ContainerName, svc.VolumeName)
+		_ = rt.RemoveService(context.Background(), pid, svc.ContainerName, svc.VolumeName)
 		_ = rt.RemoveProjectNetwork(context.Background(), pid)
 	})
 	if _, err := w.provisionPostgres(ctx, rt, p, svc); err != nil {

@@ -93,13 +93,17 @@ func (w *Worker) provisionPostgres(ctx context.Context, rt *dockerrt.Runtime, pr
 	if err := rt.EnsureNetwork(ctx, net, map[string]string{dockerrt.LabelProject: project.ID.String()}); err != nil {
 		return fail(err)
 	}
-	created, err = rt.EnsurePostgres(ctx, dockerrt.PostgresSpec{
-		ProjectID: project.ID.String(), Container: svc.ContainerName, Network: net, Volume: svc.VolumeName, Password: pass, TLS: svc.TLS,
+	created, err = rt.EnsureService(ctx, dockerrt.ServiceSpec{
+		Engine: svc.Engine, ProjectID: project.ID.String(), Container: svc.ContainerName, Network: net, Volume: svc.VolumeName, Password: pass, TLS: svc.TLS,
 	})
 	if err != nil {
 		return fail(err)
 	}
-	if err := w.store.UpsertServiceVolume(ctx, svc.VolumeName, project.ID, domain.PostgresDataPath, domain.ServicePostgres); err != nil {
+	eng, err := dockerrt.EngineFor(svc.Engine)
+	if err != nil {
+		return fail(err)
+	}
+	if err := w.store.UpsertServiceVolume(ctx, svc.VolumeName, project.ID, eng.DataPath, svc.Engine); err != nil {
 		return fail(err)
 	}
 	if err := rt.WaitHealthy(ctx, svc.ContainerName, databaseReadyTimeout); err != nil {
@@ -128,7 +132,7 @@ func (w *Worker) deleteService(ctx context.Context, op *domain.Operation) (map[s
 	if svc.Mode != domain.ServiceManaged || svc.Status != domain.ServiceDeleting {
 		return nil, errors.New("o serviço não está marcado para exclusão")
 	}
-	if err := w.runtime.RemovePostgres(ctx, projectID.String(), svc.ContainerName, svc.VolumeName); err != nil {
+	if err := w.runtime.RemoveService(ctx, projectID.String(), svc.ContainerName, svc.VolumeName); err != nil {
 		return nil, err
 	}
 	if err := w.store.MarkVolumeDeleted(ctx, svc.VolumeName); err != nil {

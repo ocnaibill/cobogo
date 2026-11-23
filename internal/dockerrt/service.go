@@ -8,13 +8,11 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/errdefs"
-
-	"github.com/ocnaibill/cobogo/internal/domain"
 )
 
-// PostgreSQL auxiliar por projeto (DEC-42). O contêiner fica só na rede do
-// projeto, sem porta publicada, com os labels do Cobogó e do projeto, e os dados
-// num volume nomeado (DEC-41).
+// Serviço de dados auxiliar por projeto (DEC-42, DEC-50). O contêiner fica só na rede
+// do projeto, sem porta publicada, com os labels do Cobogó e do projeto, e os dados num
+// volume nomeado (DEC-41). O que muda de uma engine para outra está em Engine.
 
 // PostgresImage é a imagem do PostgreSQL gerenciado, fixada por digest (a mesma
 // do banco interno do Cobogó).
@@ -23,34 +21,33 @@ const PostgresImage = "postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc9
 // LabelService marca o contêiner de um serviço auxiliar (valor: a engine).
 const LabelService = "cobogo.service"
 
-// Limites fixos do banco gerenciado (DEC-42 item 3).
-const (
-	postgresMemoryMB = 256
-	postgresCPUs     = 0.5
-	postgresPids     = 128
-)
-
-// PostgresSpec descreve o PostgreSQL de um projeto.
-type PostgresSpec struct {
+// ServiceSpec descreve o serviço de dados gerenciado de um projeto.
+type ServiceSpec struct {
+	// Engine é uma das engines providas (domain.Service*).
+	Engine    string
 	ProjectID string
 	Container string
 	Network   string
 	Volume    string
 	Password  string
-	// TLS: o banco aceita TLS, com certificado próprio (DEC-44).
+	// TLS: o serviço aceita TLS, com certificado próprio (DEC-44); só para engines que o suportam.
 	TLS bool
 }
 
-// EnsurePostgres garante o contêiner do banco: cria o que falta (volume e
+// EnsureService garante o contêiner do serviço: cria o que falta (volume e
 // contêiner), inicia o que está parado e **não** cria um segundo. Devolve se
-// criou o contêiner agora. Um contêiner com o nome, mas sem os labels do Cobogó
-// e do projeto, é recusado.
-func (r *Runtime) EnsurePostgres(ctx context.Context, spec PostgresSpec) (created bool, err error) {
+// criou o contêiner agora. Um contêiner com o nome, mas sem os labels do Cobogó,
+// do projeto e da engine, é recusado.
+func (r *Runtime) EnsureService(ctx context.Context, spec ServiceSpec) (created bool, err error) {
+	eng, err := EngineFor(spec.Engine)
+	if err != nil {
+		return false, err
+	}
 	inspect, err := r.cli.ContainerInspect(ctx, spec.Container)
 	switch {
 	case err == nil:
 		if inspect.Config == nil || inspect.Config.Labels[LabelManaged] != "true" ||
-			inspect.Config.Labels[LabelProject] != spec.ProjectID || inspect.Config.Labels[LabelService] != domain.ServicePostgres {
+			inspect.Config.Labels[LabelProject] != spec.ProjectID || inspect.Config.Labels[LabelService] != eng.Name {
 			return false, fmt.Errorf("dockerrt: o contêiner %s existe mas não é o banco deste projeto no Cobogó", spec.Container)
 		}
 		if inspect.State != nil && !inspect.State.Running {
@@ -63,35 +60,38 @@ func (r *Runtime) EnsurePostgres(ctx context.Context, spec PostgresSpec) (create
 		return false, fmt.Errorf("dockerrt: inspecionar o banco: %w", err)
 	}
 
-	if err := r.EnsureImage(ctx, PostgresImage); err != nil {
+	if err := r.EnsureImage(ctx, eng.Image); err != nil {
 		return false, err
 	}
-	if _, err := r.EnsureVolume(ctx, spec.Volume, spec.ProjectID, domain.PostgresDataPath); err != nil {
+	if _, err := r.EnsureVolume(ctx, spec.Volume, spec.ProjectID, eng.DataPath); err != nil {
 		return false, err
 	}
-	env := []string{"POSTGRES_USER=app", "POSTGRES_DB=app", "POSTGRES_PASSWORD=" + spec.Password}
+	env := eng.InitEnv(spec.Password)
 	var args []string
 	if spec.TLS {
-		if err := r.putPostgresTLS(ctx, spec); err != nil {
+		if eng.TLS == nil {
+			return false, fmt.Errorf("dockerrt: %s ainda não suporta TLS gerenciado", eng.Label)
+		}
+		tlsEnv, tlsArgs, err := eng.TLS(ctx, r, spec)
+		if err != nil {
 			return false, err
 		}
-		env = append(env, "PGDATA="+PostgresPGData)
-		args = []string{"-c", "ssl=on", "-c", "ssl_cert_file=" + PostgresTLSDir + "/" + serverCertName, "-c", "ssl_key_file=" + PostgresTLSDir + "/" + serverKeyName}
+		env, args = append(env, tlsEnv...), tlsArgs
 	}
-	memory := int64(postgresMemoryMB) * mib
-	pids := int64(postgresPids)
+	memory := int64(eng.MemoryMB) * mib
+	pids := eng.Pids
 	useInit := true
 	created2, err := r.cli.ContainerCreate(ctx,
 		&container.Config{
-			Image: PostgresImage,
+			Image: eng.Image,
 			Env:   env,
 			Cmd:   args,
 			Labels: map[string]string{
-				LabelManaged: "true", LabelProject: spec.ProjectID, LabelService: domain.ServicePostgres,
+				LabelManaged: "true", LabelProject: spec.ProjectID, LabelService: eng.Name,
 			},
 			Healthcheck: &container.HealthConfig{
 				// O próprio daemon roda a verificação; o worker não usa exec (DEC-32).
-				Test:        []string{"CMD-SHELL", "pg_isready -U app -d app -h 127.0.0.1"},
+				Test:        eng.Health,
 				Interval:    2 * time.Second,
 				Timeout:     3 * time.Second,
 				Retries:     60,
@@ -100,7 +100,7 @@ func (r *Runtime) EnsurePostgres(ctx context.Context, spec PostgresSpec) (create
 		},
 		&container.HostConfig{
 			NetworkMode: container.NetworkMode(spec.Network),
-			Mounts:      volumeMounts(map[string]string{domain.PostgresDataPath: spec.Volume}),
+			Mounts:      volumeMounts(map[string]string{eng.DataPath: spec.Volume}),
 			Init:        &useInit,
 			// O banco precisa voltar sozinho depois de um reinício da máquina; as
 			// aplicações, de propósito, não (DEC-29).
@@ -108,11 +108,11 @@ func (r *Runtime) EnsurePostgres(ctx context.Context, spec PostgresSpec) (create
 			// As capacidades que a imagem usa para ajustar a posse do diretório de
 			// dados e largar o root; nada além.
 			CapDrop:     []string{"ALL"},
-			CapAdd:      []string{"CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"},
+			CapAdd:      eng.CapAdd,
 			SecurityOpt: []string{"no-new-privileges"},
 			LogConfig:   container.LogConfig{Type: "json-file", Config: map[string]string{"max-size": "10m", "max-file": "3"}},
 			Resources: container.Resources{
-				Memory: memory, MemorySwap: memory, NanoCPUs: int64(postgresCPUs * 1e9), PidsLimit: &pids,
+				Memory: memory, MemorySwap: memory, NanoCPUs: int64(eng.CPUs * 1e9), PidsLimit: &pids,
 			},
 		},
 		&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{spec.Network: {}}},
@@ -157,9 +157,9 @@ func (r *Runtime) WaitHealthy(ctx context.Context, name string, timeout time.Dur
 	}
 }
 
-// RemovePostgres remove o contêiner do banco, se for do Cobogó e do projeto, e o
+// RemoveService remove o contêiner do serviço, se for do Cobogó e do projeto, e o
 // volume dos dados. Irreversível.
-func (r *Runtime) RemovePostgres(ctx context.Context, projectID, containerName, volumeName string) error {
+func (r *Runtime) RemoveService(ctx context.Context, projectID, containerName, volumeName string) error {
 	inspect, err := r.cli.ContainerInspect(ctx, containerName)
 	switch {
 	case err == nil:

@@ -1,6 +1,6 @@
 # DEC-50 — Serviços de dados por engine: MySQL e Redis dentro do Cobogó
 
-> **Estado:** direção aprovada pelo autor em 22/11/2026 (MySQL oficial na versão LTS, primeira versão sem TLS); **o texto abaixo aguarda a leitura do autor antes de implementar**.
+> **Estado:** direção aprovada pelo autor em 22/11/2026 (MySQL oficial na versão LTS, primeira versão sem TLS); **parte A implementada** (a especificação por engine, com o PostgreSQL migrado e nenhum comportamento novo); partes B (MySQL) e C (Redis) abertas.
 >
 > **Escopo:** generalizar o serviço gerenciado (hoje só PostgreSQL, DEC-42/44/47) para uma especificação por engine e entregar MySQL e Redis sobre ela: detectar, perguntar, provisionar, ligar às variáveis do projeto, fazer backup e restaurar.
 >
@@ -74,3 +74,11 @@ Cada parte é um commit e uma subida na VM.
 1. **MySQL oficial na versão LTS** como padrão; MariaDB como outra engine mais tarde.
 2. **Primeira versão sem TLS**, dito na análise; TLS compatível com a maior parte dos casos como meta futura.
 3. Pendentes na leitura: persistência do Redis ligada por padrão; a ordem A, B, C.
+
+## Implementação da parte A (23/11/2026)
+
+- **`dockerrt.Engine` (`internal/dockerrt/engine.go`):** a especificação de uma engine: imagem fixada, diretório de dados, porta, usuário e banco da aplicação, uid dos contêineres de dump e de restauração, limites, capacidades, teste de saúde, variáveis de inicialização (a senha só aqui), gancho de TLS (nulo quando a engine não o suporta), variáveis do cliente, comando de dump e script de restauração. O PostgreSQL é a única linha (`postgresEngine`), com exatamente os valores que o runtime usava antes; `EngineFor` recusa o que o Cobogó não provê.
+- **O ciclo de vida é um só:** `EnsurePostgres`, `RemovePostgres`, `DumpPostgres` e `RestorePostgres` viram `EnsureService`, `RemoveService`, `DumpService` e `RestoreService`, que leem a engine (`ServiceSpec` ganha o campo `Engine`). Os contêineres descartáveis que só copiam volumes usam a `UtilityImage` (a do PostgreSQL, já baixada e fixada). O worker passa `svc.Engine` em vez de assumir PostgreSQL, e o diretório de dados do volume vem da engine.
+- **Nomes por engine, com os do PostgreSQL intactos:** `domain.ServiceContainerNameFor` e `ServiceVolumeNameFor` usam o código curto e o diretório de dados de cada engine; os nomes do PostgreSQL (`cobogo-pg-<projeto>` e o volume por hash do caminho) existem em produção e são fixados por teste. A escolha do destino do banco (`ChooseDatabase`) ainda é do PostgreSQL, com a engine num único ponto para a parte B trocar.
+- **Prova:** testes novos fixam os valores do PostgreSQL (imagem, caminho, porta, uid, saúde, variáveis, dump, restauração em transação única, nomes) e a coerência entre o domínio e o runtime; a suíte completa, com banco e Docker (provisão, TLS, backup, restauração e remoção do PostgreSQL gerenciado, de verdade), passa sem mudança de comportamento.
+

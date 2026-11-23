@@ -75,6 +75,8 @@ func (s *Store) ChooseDatabase(ctx context.Context, projectID, ownerID uuid.UUID
 	} else if err != nil && !errors.Is(err, ErrNotFound) {
 		return domain.Service{}, err
 	}
+	// Hoje só o PostgreSQL tem a pergunta de destino; a engine vira parâmetro com a DEC-50.
+	engine := domain.ServicePostgres
 	style := domain.StyleURL
 	if _, ok := variables[domain.RoleURL]; !ok {
 		style = domain.StyleParts
@@ -92,7 +94,7 @@ func (s *Store) ChooseDatabase(ctx context.Context, projectID, ownerID uuid.UUID
 				return domain.Service{}, err
 			}
 		}
-		container, volume = domain.ServiceContainerName(projectID.String()), domain.ServiceVolumeName(projectID.String())
+		container, volume = domain.ServiceContainerNameFor(projectID.String(), engine), domain.ServiceVolumeNameFor(projectID.String(), engine)
 		tls = true
 	}
 	sv, err := scanService(s.pool.QueryRow(ctx, `
@@ -102,7 +104,7 @@ func (s *Store) ChooseDatabase(ctx context.Context, projectID, ownerID uuid.UUID
 		SET mode = EXCLUDED.mode, variable = EXCLUDED.variable, variables = EXCLUDED.variables, tls = EXCLUDED.tls,
 		    container_name = EXCLUDED.container_name, volume_name = EXCLUDED.volume_name,
 		    status = 'pending', status_detail = '', updated_at = now()
-		RETURNING `+serviceColumns, uuid.New(), projectID, domain.ServicePostgres, mode, primary, variables, tls, container, volume))
+		RETURNING `+serviceColumns, uuid.New(), projectID, engine, mode, primary, variables, tls, container, volume))
 	if err != nil {
 		return domain.Service{}, err
 	}

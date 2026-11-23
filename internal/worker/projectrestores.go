@@ -184,7 +184,7 @@ func (w *Worker) executeRestore(ctx context.Context, r *domain.ProjectRestore) {
 			fail("ler a senha do banco: " + err.Error())
 			return
 		}
-		if err := rt.RestorePostgres(ctx, pid, bid, svc.ContainerName, pass, dockerrt.ProjectNetwork(pid), w.backupVolume, sub, dump.File, copyTimeout); err != nil {
+		if err := rt.RestoreService(ctx, svc.Engine, pid, bid, svc.ContainerName, pass, dockerrt.ProjectNetwork(pid), w.backupVolume, sub, dump.File, copyTimeout); err != nil {
 			fail("restaurar o banco: " + err.Error())
 			return
 		}

@@ -135,7 +135,7 @@ func (r *Runtime) RunCopy(ctx context.Context, spec CopySpec, timeout time.Durat
 // TarVolume grava um volume de dados num .tar.gz em /out/<file>, lendo-o somente leitura.
 func (r *Runtime) TarVolume(ctx context.Context, projectID, backupID, sourceVolume, backupVolume, subpath, file string, timeout time.Duration) error {
 	return r.RunCopy(ctx, CopySpec{
-		ProjectID: projectID, BackupID: backupID, Image: PostgresImage,
+		ProjectID: projectID, BackupID: backupID, Image: UtilityImage,
 		Command:      []string{"tar", "czf", "/out/" + file, "-C", "/src", "."},
 		User:         "0",
 		SourceVolume: sourceVolume, BackupVolume: backupVolume, Subpath: subpath,
@@ -143,14 +143,18 @@ func (r *Runtime) TarVolume(ctx context.Context, projectID, backupID, sourceVolu
 	}, timeout)
 }
 
-// DumpPostgres grava o dump (formato custom) do banco gerenciado em /out/<file>. A
+// DumpService grava o dump do serviço gerenciado em /out/<file>, com o comando da engine. A
 // senha vai por ambiente do contêiner descartável, nunca na linha de comando.
-func (r *Runtime) DumpPostgres(ctx context.Context, projectID, backupID, host, password, projectNetwork, backupVolume, subpath, file string, timeout time.Duration) error {
+func (r *Runtime) DumpService(ctx context.Context, engine, projectID, backupID, host, password, projectNetwork, backupVolume, subpath, file string, timeout time.Duration) error {
+	eng, err := EngineFor(engine)
+	if err != nil {
+		return err
+	}
 	return r.RunCopy(ctx, CopySpec{
-		ProjectID: projectID, BackupID: backupID, Image: PostgresImage,
-		Command:      []string{"pg_dump", "--format=custom", "--no-owner", "--no-acl", "-h", host, "-U", "app", "-d", "app", "-f", "/out/" + file},
-		Env:          []string{"PGPASSWORD=" + password},
-		User:         "70",
+		ProjectID: projectID, BackupID: backupID, Image: eng.Image,
+		Command:      eng.DumpCommand(host, file),
+		Env:          eng.ClientEnv(password),
+		User:         eng.UID,
 		BackupVolume: backupVolume, Subpath: subpath, Network: projectNetwork, MemoryMB: 256,
 	}, timeout)
 }
@@ -174,7 +178,7 @@ rmdir /src/.cobogo-restore`
 // posse e as permissões dos arquivos (o tar as guarda), sem rede e sem acesso ao resto.
 func (r *Runtime) RestoreVolume(ctx context.Context, projectID, backupID, volumeName, backupVolume, subpath, file string, timeout time.Duration) error {
 	return r.RunCopy(ctx, CopySpec{
-		ProjectID: projectID, BackupID: backupID, Image: PostgresImage,
+		ProjectID: projectID, BackupID: backupID, Image: UtilityImage,
 		Command:      []string{"sh", "-c", shellQuote(restoreVolumeScript), "restore", shellQuote(file)},
 		User:         "0",
 		SourceVolume: volumeName, SourceWritable: true,
@@ -183,18 +187,19 @@ func (r *Runtime) RestoreVolume(ctx context.Context, projectID, backupID, volume
 	}, timeout)
 }
 
-// RestorePostgres restaura o banco gerenciado a partir do dump de um backup, **numa transação
-// só**: troca o esquema `public` pelo do dump; se qualquer comando falhar, nada muda. A senha vai
-// por ambiente do contêiner descartável. O banco tem de estar no ar.
-func (r *Runtime) RestorePostgres(ctx context.Context, projectID, backupID, host, password, projectNetwork, backupVolume, subpath, file string, timeout time.Duration) error {
-	script := `set -e; set -o pipefail
-pg_restore --list "/out/$1" > /dev/null
-{ echo 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'; pg_restore --no-owner --no-acl -f - "/out/$1"; } | psql -q -v ON_ERROR_STOP=1 --single-transaction -h "$2" -U app -d app`
+// RestoreService restaura o serviço gerenciado a partir do dump de um backup, com o script da
+// engine (no PostgreSQL, numa transação só: se qualquer comando falhar, nada muda). A senha vai
+// por ambiente do contêiner descartável. O serviço tem de estar no ar.
+func (r *Runtime) RestoreService(ctx context.Context, engine, projectID, backupID, host, password, projectNetwork, backupVolume, subpath, file string, timeout time.Duration) error {
+	eng, err := EngineFor(engine)
+	if err != nil {
+		return err
+	}
 	return r.RunCopy(ctx, CopySpec{
-		ProjectID: projectID, BackupID: backupID, Image: PostgresImage,
-		Command:      []string{"sh", "-c", shellQuote(script), "restore", shellQuote(file), shellQuote(host)},
-		Env:          []string{"PGPASSWORD=" + password},
-		User:         "70",
+		ProjectID: projectID, BackupID: backupID, Image: eng.Image,
+		Command:      []string{"sh", "-c", shellQuote(eng.RestoreScript), "restore", shellQuote(file), shellQuote(host)},
+		Env:          eng.ClientEnv(password),
+		User:         eng.UID,
 		BackupVolume: backupVolume, Subpath: subpath, OutReadOnly: true, Network: projectNetwork, MemoryMB: 256,
 	}, timeout)
 }

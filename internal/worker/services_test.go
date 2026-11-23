@@ -130,7 +130,7 @@ func TestManagedPostgresLifecycle(t *testing.T) {
 	w := &Worker{store: st, runtime: rt, log: quiet}
 	net := dockerrt.ProjectNetwork(p.ID.String())
 	t.Cleanup(func() {
-		_ = rt.RemovePostgres(context.Background(), p.ID.String(), svc.ContainerName, svc.VolumeName)
+		_ = rt.RemoveService(context.Background(), p.ID.String(), svc.ContainerName, svc.VolumeName)
 		_ = rt.RemoveProjectNetwork(context.Background(), p.ID.String())
 	})
 
@@ -248,7 +248,7 @@ func TestManagedPostgresServesTLSAndTheAppTrustsIt(t *testing.T) {
 	w := &Worker{store: st, runtime: rt, log: quiet}
 	net := dockerrt.ProjectNetwork(p.ID.String())
 	t.Cleanup(func() {
-		_ = rt.RemovePostgres(context.Background(), p.ID.String(), svc.ContainerName, svc.VolumeName)
+		_ = rt.RemoveService(context.Background(), p.ID.String(), svc.ContainerName, svc.VolumeName)
 		_ = rt.RemoveProjectNetwork(context.Background(), p.ID.String())
 	})
 	if _, err := w.provisionPostgres(ctx, rt, p, svc); err != nil {
