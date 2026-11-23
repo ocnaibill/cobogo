@@ -484,6 +484,29 @@ func TestPythonRedisNeeds(t *testing.T) {
 			t.Fatalf("a senha do endereço escrito no código foi guardada: %+v", e)
 		}
 	}
+	// O endereço como padrão de uma variável de ambiente (o código a lê): não é endereço fixo.
+	for _, line := range []string{
+		"CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://localhost:6379/0')",
+		"CELERY_BROKER_URL = os.getenv(\"CELERY_BROKER_URL\", \"redis://localhost:6379/0\")",
+		"CELERY_BROKER_URL = config('CELERY_BROKER_URL', default='redis://localhost:6379/0')",
+	} {
+		res, err = Analyze(toFS(djangoRepo(map[string]string{
+			"requirements.txt":   "Django==5.1.4\ncelery==5.5.3\nredis==6.2.0\n",
+			"mysite/settings.py": djangoSettings + line + "\n",
+		})), Input{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var n *domain.ServiceNeed
+		for i := range res.ServiceNeeds {
+			if res.ServiceNeeds[i].Engine == domain.ServiceRedis {
+				n = &res.ServiceNeeds[i]
+			}
+		}
+		if n == nil || n.Level != domain.NeedRequired || len(n.FixedAt) != 0 {
+			t.Errorf("%s: o padrão de uma variável não é endereço fixo: %+v", line, res.ServiceNeeds)
+		}
+	}
 	// O cache do Django por django-redis.
 	res, err = Analyze(toFS(djangoRepo(map[string]string{
 		"requirements.txt":   "Django==5.1.4\ndjango-redis==5.4.0\n",

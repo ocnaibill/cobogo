@@ -199,6 +199,11 @@ func TestDetectRedisNeeds(t *testing.T) {
 	if strings.Contains(strings.Join(got[0].Evidence, " ")+strings.Join(got[0].FixedAt, " ")+got[0].Reason, "segredo123") {
 		t.Error("a senha escrita no código apareceu na análise")
 	}
+	// O endereço como padrão de uma variável: uso do Redis, mas não endereço fixo.
+	got = needs(map[string]string{"src/q.js": "const url = process.env.REDIS_URL || 'redis://localhost:6379'\nconst b = process.env['QUEUE_URL'] ?? \"redis://cache:6379/1\"\n"})
+	if len(got) != 1 || got[0].Level != domain.NeedRequired || len(got[0].FixedAt) != 0 {
+		t.Errorf("padrão de variável no JS: %+v", got)
+	}
 	// Partes REDIS_*: host e senha, sem usuário nem banco.
 	got = needs(map[string]string{"a.js": "require('redis')"}, "REDIS_HOST", "REDIS_PORT", "REDIS_PASSWORD", "REDIS_DB")
 	if len(got) != 1 || got[0].Style != domain.StyleParts || got[0].Family != "REDIS" || got[0].Variables[domain.RoleDatabase] != "" || got[0].Variables[domain.RoleUser] != "" || got[0].Variables[domain.RolePassword] != "REDIS_PASSWORD" {

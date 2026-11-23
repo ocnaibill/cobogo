@@ -64,6 +64,20 @@ func buildRedisNeed(strong []string, dep, depSource string, fixed []string, vars
 	return []domain.ServiceNeed{need}
 }
 
+// Um endereço que é o padrão de uma leitura de variável de ambiente (os.environ.get('X', 'redis://…'),
+// process.env.X || 'redis://…') não é um endereço fixo: o código lê a variável, e o literal é só o que vale
+// sem ela. O que vem antes do literal, na mesma linha, decide.
+var envDefaultBefore = regexp.MustCompile(`(?:environ\.get|getenv|config|env(?:\.\w+)?)\(\s*["'][A-Za-z_]\w*["']\s*,\s*(?:default\s*=\s*)?$|(?:process\.env|import\.meta\.env)(?:\.\w+|\[\s*["']\w+["']\s*\])\s*(?:\|\||\?\?)\s*$`)
+
+// isEnvDefault diz se o literal que começa em start é o padrão de uma variável de ambiente.
+func isEnvDefault(data []byte, start int) bool {
+	lineStart := start
+	for lineStart > 0 && data[lineStart-1] != '\n' {
+		lineStart--
+	}
+	return envDefaultBefore.Match(data[lineStart:start])
+}
+
 func isLocalHost(h string) bool {
 	switch strings.ToLower(h) {
 	case "localhost", "127.0.0.1", "::1", "0.0.0.0":

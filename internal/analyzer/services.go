@@ -83,9 +83,12 @@ func detectJSRedisNeeds(fsys fs.FS, vars []domain.ConfigVariable) []domain.Servi
 			strong = append(strong, fmt.Sprintf("%s:%d", name, lineAt(data, loc[0])))
 		}
 		for _, m := range redisURLLiteral.FindAllSubmatchIndex(data, -1) {
-			if _, _, ok := redisAddress(string(data[m[2]:m[3]])); ok && len(fixed) < 3 {
+			if _, _, ok := redisAddress(string(data[m[2]:m[3]])); ok {
 				ref := fmt.Sprintf("%s:%d", name, lineAt(data, m[0]))
-				fixed = append(fixed, ref)
+				// O padrão de uma variável de ambiente é uso do Redis, mas não um endereço fixo.
+				if !isEnvDefault(data, m[0]) && len(fixed) < 3 {
+					fixed = append(fixed, ref)
+				}
 				if len(strong) < 3 {
 					strong = append(strong, ref)
 				}

@@ -437,7 +437,11 @@ func extractPythonSource(fsys fs.FS, x *Extraction) error {
 		}
 		for _, m := range redisURLLiteral.FindAllSubmatchIndex(data, -1) {
 			if display, _, ok := redisAddress(string(data[m[2]:m[3]])); ok {
-				x.emit(extractorPySource, domain.Evidence{Kind: kindPyRedis, Name: "url", Value: display, Source: name, Line: lineAt(data, m[0]), Scope: scope})
+				kind := "url"
+				if isEnvDefault(data, m[0]) {
+					kind = "url_default" // o padrão de uma variável de ambiente: o código a lê
+				}
+				x.emit(extractorPySource, domain.Evidence{Kind: kindPyRedis, Name: kind, Value: display, Source: name, Line: lineAt(data, m[0]), Scope: scope})
 			}
 		}
 		if m := pyMySQLImport.FindSubmatchIndex(data); m != nil {
