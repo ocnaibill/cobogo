@@ -96,7 +96,7 @@ func TestProjectBackupEndToEnd(t *testing.T) {
 		_ = rt.RemoveService(context.Background(), pid, svc.ContainerName, svc.VolumeName)
 		_ = rt.RemoveProjectNetwork(context.Background(), pid)
 	})
-	if _, err := w.provisionPostgres(ctx, rt, p, svc); err != nil {
+	if _, err := w.provisionService(ctx, rt, p, svc); err != nil {
 		t.Fatal(err)
 	}
 	docker(t, ctx, "run", "--rm", "--network", net, "postgres:16-alpine", "psql", url, "-c", "create table cadernos(id int, nome text); insert into cadernos values (1, 'meu caderno'), (2, 'outro')")

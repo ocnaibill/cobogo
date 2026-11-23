@@ -67,7 +67,7 @@ func (r *Runtime) EnsureService(ctx context.Context, spec ServiceSpec) (created 
 		return false, err
 	}
 	env := eng.InitEnv(spec.Password)
-	var args []string
+	args := append([]string(nil), eng.Args...)
 	if spec.TLS {
 		if eng.TLS == nil {
 			return false, fmt.Errorf("dockerrt: %s ainda não suporta TLS gerenciado", eng.Label)
@@ -76,7 +76,7 @@ func (r *Runtime) EnsureService(ctx context.Context, spec ServiceSpec) (created 
 		if err != nil {
 			return false, err
 		}
-		env, args = append(env, tlsEnv...), tlsArgs
+		env, args = append(env, tlsEnv...), append(args, tlsArgs...)
 	}
 	memory := int64(eng.MemoryMB) * mib
 	pids := eng.Pids

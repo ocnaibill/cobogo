@@ -46,7 +46,7 @@ func (s *Server) projectHasContent(r *http.Request, p domain.Project) (bool, err
 	if len(p.PersistentPaths) > 0 {
 		return true, nil
 	}
-	svc, err := s.store.GetService(r.Context(), p.ID, domain.ServicePostgres)
+	svc, err := s.store.GetDatabaseService(r.Context(), p.ID)
 	if errors.Is(err, store.ErrNotFound) {
 		return false, nil
 	}
@@ -245,7 +245,7 @@ func (s *Server) restorable(r *http.Request, p domain.Project, b domain.ProjectB
 					n++
 				}
 			}
-		case domain.BackupItemPostgres:
+		case domain.BackupItemPostgres, domain.BackupItemMySQL:
 			if has, err := s.projectHasManagedDB(r, p); err != nil {
 				return 0, err
 			} else if has {
@@ -257,7 +257,7 @@ func (s *Server) restorable(r *http.Request, p domain.Project, b domain.ProjectB
 }
 
 func (s *Server) projectHasManagedDB(r *http.Request, p domain.Project) (bool, error) {
-	svc, err := s.store.GetService(r.Context(), p.ID, domain.ServicePostgres)
+	svc, err := s.store.GetDatabaseService(r.Context(), p.ID)
 	if errors.Is(err, store.ErrNotFound) {
 		return false, nil
 	}

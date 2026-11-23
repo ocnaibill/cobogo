@@ -87,7 +87,7 @@ func (w *Worker) executeRestore(ctx context.Context, r *domain.ProjectRestore) {
 
 	// 2. O que dá para restaurar neste projeto, hoje.
 	var svc *domain.Service
-	if s, err := w.store.GetService(ctx, project.ID, domain.ServicePostgres); err == nil && s.Mode == domain.ServiceManaged && s.Status != domain.ServiceDeleting {
+	if s, err := w.store.GetDatabaseService(ctx, project.ID); err == nil && s.Mode == domain.ServiceManaged && s.Status != domain.ServiceDeleting {
 		svc = &s
 	}
 	var volumes []domain.BackupItem
@@ -101,11 +101,17 @@ func (w *Worker) executeRestore(ctx context.Context, r *domain.ProjectRestore) {
 			} else {
 				result.Skipped = append(result.Skipped, it.Path+": o projeto não declara mais este caminho")
 			}
-		case domain.BackupItemPostgres:
+		case domain.BackupItemPostgres, domain.BackupItemMySQL:
 			switch {
 			case svc == nil:
 				result.Skipped = append(result.Skipped, "banco: há um dump, mas o projeto não tem banco gerenciado (crie-o na aba Banco e restaure de novo)")
-			case m.Postgres != "" && m.Postgres != backupPostgresMajor:
+			case svc.Engine != domain.EngineOfBackupItem(it.Kind):
+				finish(domain.RestoreFailed, fmt.Sprintf("o dump do banco é de %s e o banco gerenciado do projeto é %s. Nada foi alterado.", domain.EngineOfBackupItem(it.Kind), svc.Engine))
+				return
+			case it.Kind == domain.BackupItemMySQL && m.MySQL != "" && m.MySQL != backupMySQLVersion:
+				finish(domain.RestoreFailed, fmt.Sprintf("o dump do banco é do MySQL %s e o banco gerenciado é o %s. Nada foi alterado.", m.MySQL, backupMySQLVersion))
+				return
+			case it.Kind == domain.BackupItemPostgres && m.Postgres != "" && m.Postgres != backupPostgresMajor:
 				finish(domain.RestoreFailed, fmt.Sprintf("o dump do banco é do PostgreSQL %s e o banco gerenciado é o %s. Nada foi alterado.", m.Postgres, backupPostgresMajor))
 				return
 			default:

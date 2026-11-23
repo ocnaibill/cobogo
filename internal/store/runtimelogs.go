@@ -92,11 +92,11 @@ func (s *Store) ListRuntimeLogsFor(ctx context.Context, projectID, ownerID uuid.
 	)
 	switch {
 	case after > 0:
-		rows, err = s.pool.Query(ctx, `SELECT `+cols+` FROM runtime_logs WHERE project_id = $1 AND ($2::text = '' OR origin = $2::text) AND id > $3 ORDER BY id ASC LIMIT $4`, projectID, origin, after, limit+1)
+		rows, err = s.pool.Query(ctx, `SELECT `+cols+` FROM runtime_logs WHERE project_id = $1 AND ($2::text = '' OR origin = $2::text OR ($2::text = 'database' AND origin <> 'app')) AND id > $3 ORDER BY id ASC LIMIT $4`, projectID, origin, after, limit+1)
 	case before > 0:
-		rows, err = s.pool.Query(ctx, `SELECT * FROM (SELECT `+cols+` FROM runtime_logs WHERE project_id = $1 AND ($2::text = '' OR origin = $2::text) AND id < $3 ORDER BY id DESC LIMIT $4) t ORDER BY id ASC`, projectID, origin, before, limit)
+		rows, err = s.pool.Query(ctx, `SELECT * FROM (SELECT `+cols+` FROM runtime_logs WHERE project_id = $1 AND ($2::text = '' OR origin = $2::text OR ($2::text = 'database' AND origin <> 'app')) AND id < $3 ORDER BY id DESC LIMIT $4) t ORDER BY id ASC`, projectID, origin, before, limit)
 	default:
-		rows, err = s.pool.Query(ctx, `SELECT * FROM (SELECT `+cols+` FROM runtime_logs WHERE project_id = $1 AND ($2::text = '' OR origin = $2::text) ORDER BY id DESC LIMIT $3) t ORDER BY id ASC`, projectID, origin, limit)
+		rows, err = s.pool.Query(ctx, `SELECT * FROM (SELECT `+cols+` FROM runtime_logs WHERE project_id = $1 AND ($2::text = '' OR origin = $2::text OR ($2::text = 'database' AND origin <> 'app')) ORDER BY id DESC LIMIT $3) t ORDER BY id ASC`, projectID, origin, limit)
 	}
 	if err != nil {
 		return RuntimeLogPage{}, fmt.Errorf("store: ler logs de execução: %w", err)
@@ -118,7 +118,7 @@ func (s *Store) ListRuntimeLogsFor(ctx context.Context, projectID, ownerID uuid.
 	}
 	if len(page.Lines) > 0 {
 		var older bool
-		if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM runtime_logs WHERE project_id = $1 AND ($2::text = '' OR origin = $2::text) AND id < $3)`, projectID, origin, page.Lines[0].ID).Scan(&older); err != nil {
+		if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM runtime_logs WHERE project_id = $1 AND ($2::text = '' OR origin = $2::text OR ($2::text = 'database' AND origin <> 'app')) AND id < $3)`, projectID, origin, page.Lines[0].ID).Scan(&older); err != nil {
 			return RuntimeLogPage{}, fmt.Errorf("store: conferir logs anteriores: %w", err)
 		}
 		page.HasOlder = older

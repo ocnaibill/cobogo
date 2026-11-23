@@ -171,7 +171,7 @@ func (w *Worker) executeCommand(ctx context.Context, cmd *domain.Command) {
 
 	// O banco gerenciado: a CA entra como na aplicação (DEC-44). Sem ela o comando
 	// ainda roda (nem todo comando usa o banco): só se registra o aviso.
-	if svc, err := w.store.GetService(ctx, project.ID, domain.ServicePostgres); err == nil && svc.Mode == domain.ServiceManaged && svc.TLS && svc.Status != domain.ServiceDeleting {
+	if svc, err := w.store.GetDatabaseService(ctx, project.ID); err == nil && svc.Mode == domain.ServiceManaged && svc.TLS && svc.Status != domain.ServiceDeleting {
 		if files, tlsEnv, err := w.databaseTrust(ctx, rt, project, svc, defined); err != nil {
 			w.log.Warn("CA do banco indisponível para o comando", "projeto", project.Slug, "erro", err)
 		} else {

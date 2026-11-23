@@ -205,3 +205,173 @@ func TestPythonSystemPackage(t *testing.T) {
 		t.Errorf("system packages = %v", plan.SystemPackages)
 	}
 }
+
+// Um Django com mysqlclient, publicado pelo planner, contra o MySQL gerenciado de verdade
+// (DEC-50): o driver (libmariadb) autentica com mysql_native_password e sem TLS, o migrate
+// cria as tabelas e a aplicação lê e grava no banco.
+func TestPythonDjangoWithManagedMySQL(t *testing.T) {
+	rt := requireDocker(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+	settings := `import os
+SECRET_KEY = os.environ["SECRET_KEY"]
+DEBUG = False
+ALLOWED_HOSTS = ["*"]
+INSTALLED_APPS = ["django.contrib.contenttypes", "django.contrib.auth", "notas"]
+MIDDLEWARE = []
+ROOT_URLCONF = "mysite.urls"
+WSGI_APPLICATION = "mysite.wsgi.application"
+DATABASES = {"default": {"ENGINE": "django.db.backends.mysql", "NAME": os.environ["DB_NAME"], "USER": os.environ["DB_USER"],
+    "PASSWORD": os.environ["DB_PASSWORD"], "HOST": os.environ["DB_HOST"], "PORT": os.environ.get("DB_PORT", "3306"),
+    "OPTIONS": {"charset": "utf8mb4"}}}
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+STATIC_URL = "static/"
+`
+	dir := writePyProject(t, map[string]string{
+		"requirements.txt":                 "Django==5.2.8\nmysqlclient==2.2.7\n",
+		"manage.py":                        "import os, sys\nif __name__ == '__main__':\n    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'mysite.settings')\n    from django.core.management import execute_from_command_line\n    execute_from_command_line(sys.argv)\n",
+		"mysite/__init__.py":               "",
+		"mysite/settings.py":               settings,
+		"mysite/urls.py":                   "from django.http import HttpResponse\nfrom django.urls import path\nfrom notas.models import Nota\n\ndef home(request):\n    Nota.objects.create(texto='olá, ç')\n    return HttpResponse('notas=%d ultima=%s' % (Nota.objects.count(), Nota.objects.last().texto))\n\nurlpatterns = [path('', home)]\n",
+		"mysite/wsgi.py":                   "import os\nfrom django.core.wsgi import get_wsgi_application\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'mysite.settings')\napplication = get_wsgi_application()\n",
+		"notas/__init__.py":                "",
+		"notas/models.py":                  "from django.db import models\n\nclass Nota(models.Model):\n    texto = models.CharField(max_length=80)\n",
+		"notas/migrations/__init__.py":     "",
+		"notas/migrations/0001_initial.py": "from django.db import migrations, models\n\nclass Migration(migrations.Migration):\n    initial = True\n    dependencies = []\n    operations = [migrations.CreateModel(name='Nota', fields=[('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False)), ('texto', models.CharField(max_length=80))])]\n",
+	})
+	res, err := analyzer.Analyze(os.DirFS(dir), analyzer.Input{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.ServiceNeeds) != 1 || res.ServiceNeeds[0].Engine != domain.ServiceMySQL || res.ServiceNeeds[0].Style != domain.StyleParts {
+		t.Fatalf("a análise não viu o MySQL em partes: %+v", res.ServiceNeeds)
+	}
+	plan, err := planner.FromAnalysis(res)
+	if err != nil {
+		t.Fatalf("plan: %v (outcome %s, pending %+v)", err, res.Outcome, res.Pending)
+	}
+	name := "cobogo-test-pymysql"
+	tag := "cobogo-test/planner:" + name
+	if _, err := rt.Build(ctx, dir, plan.Dockerfile, tag, plan.Runtime, func(string) {}); err != nil {
+		t.Fatalf("build: %v\nDockerfile:\n%s", err, plan.Dockerfile)
+	}
+	t.Cleanup(func() { _ = exec.Command("docker", "rmi", "-f", tag).Run() })
+
+	netName := name + "-net"
+	if err := rt.EnsureNetwork(ctx, netName, map[string]string{dockerrt.LabelProject: "pymysql-test"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = exec.Command("docker", "network", "rm", netName).Run() })
+	const dbHost, dbPass = "cobogo-mysql-pytest", "senha-django-mysql-77"
+	if _, err := rt.EnsureService(ctx, dockerrt.ServiceSpec{Engine: domain.ServiceMySQL, ProjectID: "pymysql-test", Container: dbHost, Network: netName, Volume: name + "-vol", Password: dbPass}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = rt.RemoveService(context.Background(), "pymysql-test", dbHost, name+"-vol")
+	})
+	if err := rt.WaitHealthy(ctx, dbHost, 3*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"-e", "SECRET_KEY=x", "-e", "DB_HOST=" + dbHost, "-e", "DB_PORT=3306", "-e", "DB_USER=app", "-e", "DB_PASSWORD=" + dbPass, "-e", "DB_NAME=app", "-e", "PORT=8080"}
+	// O migrate, como a aba Comandos o roda: um contêiner descartável da imagem, na rede do projeto.
+	args := append([]string{"run", "--rm", "--network", netName}, env...)
+	if out, err := exec.Command("docker", append(args, tag, "python", "manage.py", "migrate", "--noinput")...).CombinedOutput(); err != nil {
+		t.Fatalf("migrate: %v\n%s", err, out)
+	}
+	// A aplicação, com o servidor que a plataforma monta.
+	run := append([]string{"run", "-d", "--name", name, "--network", netName, "-p", "127.0.0.1::8080"}, env...)
+	if out, err := exec.Command("docker", append(run, tag)...).CombinedOutput(); err != nil {
+		t.Fatalf("run: %v\n%s", err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", name).Run() })
+	portOut, err := exec.Command("docker", "port", name, "8080/tcp").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hostPort int
+	if _, err := fmt.Sscanf(strings.TrimSpace(strings.SplitN(string(portOut), "\n", 2)[0]), "127.0.0.1:%d", &hostPort); err != nil {
+		t.Fatalf("porta: %q", portOut)
+	}
+	if _, err := dockerrt.ProbeReady(ctx, hostPort, "/", time.Minute, nil); err != nil {
+		logs, _ := exec.Command("docker", "logs", name).CombinedOutput()
+		t.Fatalf("probe: %v\n%s", err, logs)
+	}
+	if code, body := getPath(t, hostPort, "/", ""); code != 200 || !strings.Contains(body, "ultima=olá, ç") {
+		t.Errorf("GET / = %d %q (a aplicação deve gravar e ler no MySQL, com acentos)", code, body)
+	}
+}
+
+// Um Node com mysql2 contra o MySQL gerenciado (DEC-50): o outro driver comum, com a análise
+// vendo o MySQL pelas dependências e pelo código.
+func TestNodeWithManagedMySQL(t *testing.T) {
+	rt := requireDocker(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+	dir := writeProject(t, map[string]string{
+		"package.json": `{"name":"app","version":"1.0.0","scripts":{"start":"node server.js"},"dependencies":{"mysql2":"3.11.5"}}`,
+		"server.js": `const http = require('http');
+const mysql = require('mysql2/promise');
+const pool = mysql.createPool({host: process.env.DB_HOST, port: +process.env.DB_PORT, user: process.env.DB_USER, password: process.env.DB_PASSWORD, database: process.env.DB_NAME});
+async function main() {
+  await pool.query('create table if not exists notas (id int auto_increment primary key, texto varchar(80)) default charset utf8mb4');
+  http.createServer(async (req, res) => {
+    await pool.query('insert into notas (texto) values (?)', ['olá, ç']);
+    const [rows] = await pool.query('select count(*) as n, max(texto) as t from notas');
+    res.end('notas=' + rows[0].n + ' ultima=' + rows[0].t);
+  }).listen(process.env.PORT);
+}
+main();
+`,
+	})
+	res, err := analyzer.Analyze(os.DirFS(dir), analyzer.Input{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.ServiceNeeds) != 1 || res.ServiceNeeds[0].Engine != domain.ServiceMySQL || res.ServiceNeeds[0].Level != domain.NeedRequired || res.ServiceNeeds[0].Style != domain.StyleParts {
+		t.Fatalf("a análise não viu o MySQL em partes: %+v", res.ServiceNeeds)
+	}
+	plan, err := planner.FromAnalysis(res)
+	if err != nil {
+		t.Fatalf("plan: %v (outcome %s, pending %+v)", err, res.Outcome, res.Pending)
+	}
+	name := "cobogo-test-nodemysql"
+	tag := "cobogo-test/planner:" + name
+	if _, err := rt.Build(ctx, dir, plan.Dockerfile, tag, plan.Runtime, func(string) {}); err != nil {
+		t.Fatalf("build: %v\nDockerfile:\n%s", err, plan.Dockerfile)
+	}
+	t.Cleanup(func() { _ = exec.Command("docker", "rmi", "-f", tag).Run() })
+	netName := name + "-net"
+	if err := rt.EnsureNetwork(ctx, netName, map[string]string{dockerrt.LabelProject: "nodemysql-test"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = exec.Command("docker", "network", "rm", netName).Run() })
+	const dbHost, dbPass = "cobogo-mysql-nodetest", "senha-node-mysql-88"
+	if _, err := rt.EnsureService(ctx, dockerrt.ServiceSpec{Engine: domain.ServiceMySQL, ProjectID: "nodemysql-test", Container: dbHost, Network: netName, Volume: name + "-vol", Password: dbPass}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rt.RemoveService(context.Background(), "nodemysql-test", dbHost, name+"-vol") })
+	if err := rt.WaitHealthy(ctx, dbHost, 3*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	run := []string{"run", "-d", "--name", name, "--network", netName, "-p", "127.0.0.1::8080",
+		"-e", "DB_HOST=" + dbHost, "-e", "DB_PORT=3306", "-e", "DB_USER=app", "-e", "DB_PASSWORD=" + dbPass, "-e", "DB_NAME=app", "-e", "PORT=8080"}
+	if out, err := exec.Command("docker", append(run, tag)...).CombinedOutput(); err != nil {
+		t.Fatalf("run: %v\n%s", err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", name).Run() })
+	portOut, err := exec.Command("docker", "port", name, "8080/tcp").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hostPort int
+	if _, err := fmt.Sscanf(strings.TrimSpace(strings.SplitN(string(portOut), "\n", 2)[0]), "127.0.0.1:%d", &hostPort); err != nil {
+		t.Fatalf("porta: %q", portOut)
+	}
+	if _, err := dockerrt.ProbeReady(ctx, hostPort, "/", time.Minute, nil); err != nil {
+		logs, _ := exec.Command("docker", "logs", name).CombinedOutput()
+		t.Fatalf("probe: %v\n%s", err, logs)
+	}
+	if code, body := getPath(t, hostPort, "/", ""); code != 200 || !strings.Contains(body, "ultima=olá, ç") {
+		t.Errorf("GET / = %d %q", code, body)
+	}
+}

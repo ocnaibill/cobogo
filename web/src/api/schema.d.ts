@@ -1391,7 +1391,7 @@ export interface components {
             container_id: string;
             operational_state: string;
             /**
-             * @description `healthy`, ou `degraded` quando a sonda do deploy teve resposta 4xx: a
+             * @description `healthy`, ou `degraded` quando a sonda do deploy teve resposta 400 (ou 421): a
              *     aplicação está no ar, mas não serve o que se espera (por exemplo, um
              *     Django que responde 400 por `ALLOWED_HOSTS`; DEC-49).
              */
@@ -1662,7 +1662,7 @@ export interface components {
             /** Format: uuid */
             deployment_id: string | null;
             /** @enum {string} */
-            origin: "app" | "postgres";
+            origin: "app" | "postgres" | "mysql";
             /**
              * @description `system` são avisos do Cobogó no meio do log (linhas descartadas pelo limite de taxa).
              * @enum {string}
@@ -1717,7 +1717,7 @@ export interface components {
         };
         BackupItem: {
             /** @enum {string} */
-            kind: "volume" | "postgres";
+            kind: "volume" | "postgres" | "mysql";
             /** @description O caminho do contêiner de um volume; ausente no banco. */
             path?: string;
             file: string;
@@ -1813,7 +1813,7 @@ export interface components {
         };
         ServiceNeed: {
             /** @enum {string} */
-            engine: "postgres";
+            engine: "postgres" | "mysql";
             /**
              * @description `required`: código de runtime usa a engine (a pergunta bloqueia o
              *     deploy antes do build). `possible`: só a dependência (vira sugestão).
@@ -1842,7 +1842,7 @@ export interface components {
             /** Format: uuid */
             project_id: string;
             /** @enum {string} */
-            engine: "postgres";
+            engine: "postgres" | "mysql";
             /** @enum {string} */
             mode: "managed" | "external" | "none";
             variable: string;
@@ -1863,6 +1863,11 @@ export interface components {
             updated_at: string;
         };
         DatabaseView: {
+            /**
+             * @description A engine do banco do projeto (DEC-50): a do serviço, a da necessidade que a análise achou ou PostgreSQL.
+             * @enum {string}
+             */
+            engine: "postgres" | "mysql";
             need: components["schemas"]["ServiceNeed"] | null;
             service: components["schemas"]["Service"] | null;
             variable: string;
@@ -3159,6 +3164,11 @@ export interface operations {
                 "application/json": {
                     /** @enum {string} */
                     choice: "managed" | "external" | "none";
+                    /**
+                     * @description A engine do banco. Vazio vale a da necessidade que a análise achou, ou `postgres` (DEC-50).
+                     * @enum {string}
+                     */
+                    engine?: "postgres" | "mysql";
                     /** @description A variável da URL de conexão (forma curta). Padrão `DATABASE_URL`. */
                     variable?: string;
                     /**
@@ -3426,8 +3436,8 @@ export interface operations {
     getRuntimeLogs: {
         parameters: {
             query?: {
-                /** @description Só uma origem. Sem o parâmetro, todas. */
-                origin?: "app" | "postgres";
+                /** @description Só uma origem. `database` reúne os bancos gerenciados de qualquer engine. Sem o parâmetro, todas. */
+                origin?: "app" | "database" | "postgres" | "mysql";
                 /** @description Devolve as linhas com `id` maior que este. */
                 after?: number;
                 /** @description Devolve as linhas imediatamente anteriores a este `id`. Não se combina com `after`. */

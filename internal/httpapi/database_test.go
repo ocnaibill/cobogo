@@ -211,3 +211,54 @@ func TestChooseDatabaseInPartsThroughTheAPI(t *testing.T) {
 		t.Error("the password leaked")
 	}
 }
+
+// DEC-50: o banco do projeto pode ser MySQL. A engine vem do pedido ou da necessidade que a
+// análise achou; a conexão sai com o esquema e a porta dela; um segundo banco gerenciado, de
+// outra engine, é recusado.
+func TestChooseMySQLDatabaseThroughTheAPI(t *testing.T) {
+	h := newHarness(t)
+	h.login()
+	p := h.createProject("com-mysql")
+	base := "/api/v1/projects/" + p.ID.String() + "/database"
+
+	// A análise achou MySQL em partes: a engine da escolha vem dela.
+	dep := h.deployment(p.ID.String(), `{"idempotency_key":"m1"}`)
+	result := domain.AnalysisResult{Outcome: domain.AnalysisReady, ServiceNeeds: []domain.ServiceNeed{{
+		Engine: domain.ServiceMySQL, Level: domain.NeedRequired, Style: domain.StyleParts, Family: "DB",
+		Variables: map[string]string{"host": "DB_HOST", "port": "DB_PORT", "user": "DB_USER", "password": "DB_PASSWORD", "database": "DB_NAME"},
+		Variable:  "DB_HOST", Evidence: []string{"settings.py:3"},
+	}}}
+	if _, err := h.leased().SaveAnalysis(t.Context(), dep.ID, p.ID, "abc", result); err != nil {
+		t.Fatal(err)
+	}
+	if rec := h.do("GET", base, ""); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"engine":"mysql"`) {
+		t.Fatalf("a visão deve trazer a engine da necessidade: %d %s", rec.Code, rec.Body)
+	}
+	if rec := h.do("POST", base, `{"choice":"managed","engine":"oracle"}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("engine desconhecida: %d", rec.Code)
+	}
+	rec := h.do("POST", base, `{"choice":"managed","variables":{"host":"DB_HOST","port":"DB_PORT","user":"DB_USER","password":"DB_PASSWORD","database":"DB_NAME"}}`)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"engine":"mysql"`) || !strings.Contains(rec.Body.String(), `"tls":false`) {
+		t.Fatalf("managed mysql: %d %s", rec.Code, rec.Body)
+	}
+	vals, _, _ := h.st.RevealEnvValues(t.Context(), p.ID)
+	if vals["DB_PORT"] != "3306" || vals["DB_USER"] != "app" || vals["DB_NAME"] != "app" || !strings.HasPrefix(vals["DB_HOST"], "cobogo-mysql-") || len(vals["DB_PASSWORD"]) < 20 {
+		t.Errorf("valores entregues = host %q port %q user %q name %q", vals["DB_HOST"], vals["DB_PORT"], vals["DB_USER"], vals["DB_NAME"])
+	}
+	if strings.Contains(rec.Body.String(), vals["DB_PASSWORD"]) {
+		t.Error("a senha gerada apareceu na resposta")
+	}
+	// Outra engine gerenciada no mesmo projeto: recusada, o banco que existe ficaria órfão.
+	if rec := h.do("POST", base, `{"choice":"managed","engine":"postgres"}`); rec.Code != http.StatusConflict {
+		t.Errorf("segundo banco gerenciado de outra engine: %d %s", rec.Code, rec.Body)
+	}
+	// A URL do MySQL leva o esquema e a porta da engine.
+	p2 := h.createProject("mysql-url")
+	if rec := h.do("POST", "/api/v1/projects/"+p2.ID.String()+"/database", `{"choice":"managed","engine":"mysql","variable":"MYSQL_URL"}`); rec.Code != http.StatusOK {
+		t.Fatalf("managed mysql url: %d %s", rec.Code, rec.Body)
+	}
+	vals2, _, _ := h.st.RevealEnvValues(t.Context(), p2.ID)
+	if u := vals2["MYSQL_URL"]; !strings.HasPrefix(u, "mysql://app:") || !strings.Contains(u, "@cobogo-mysql-") || !strings.HasSuffix(u, ":3306/app") {
+		t.Errorf("MYSQL_URL = %q", u)
+	}
+}

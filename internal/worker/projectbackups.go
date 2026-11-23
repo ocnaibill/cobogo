@@ -27,6 +27,8 @@ const (
 	copyTimeout          = 20 * time.Minute
 	// backupPostgresMajor é a versão do PostgreSQL gerenciado (DEC-42).
 	backupPostgresMajor = "16"
+	// backupMySQLVersion é a versão do MySQL gerenciado (DEC-50).
+	backupMySQLVersion = "8.4"
 )
 
 // runProjectBackups é o laço dos backups de projeto.
@@ -134,7 +136,7 @@ func (w *Worker) executeProjectBackup(ctx context.Context, b *domain.ProjectBack
 
 	// O que copiar: os caminhos declarados e o banco gerenciado.
 	var svc *domain.Service
-	if s, err := w.store.GetService(ctx, project.ID, domain.ServicePostgres); err == nil && s.Mode == domain.ServiceManaged && s.Status != domain.ServiceDeleting {
+	if s, err := w.store.GetDatabaseService(ctx, project.ID); err == nil && s.Mode == domain.ServiceManaged && s.Status != domain.ServiceDeleting {
 		svc = &s
 	}
 	paths := append([]string(nil), project.PersistentPaths...)
@@ -225,17 +227,25 @@ func (w *Worker) executeProjectBackup(ctx context.Context, b *domain.ProjectBack
 			fail("ler a senha do banco: " + err.Error())
 			return
 		}
-		if err := rt.DumpService(ctx, svc.Engine, pid, bid, svc.ContainerName, pass, dockerrt.ProjectNetwork(pid), w.backupVolume, sub, backup.DatabaseFile, copyTimeout); err != nil {
+		dumpFile := backup.DatabaseFile
+		if svc.Engine == domain.ServiceMySQL {
+			dumpFile = backup.DatabaseFileSQL
+		}
+		if err := rt.DumpService(ctx, svc.Engine, pid, bid, svc.ContainerName, pass, dockerrt.ProjectNetwork(pid), w.backupVolume, sub, dumpFile, copyTimeout); err != nil {
 			fail("copiar o banco: " + err.Error())
 			return
 		}
-		size, sum, err := backup.FileInfo(filepath.Join(dir, backup.DatabaseFile))
+		size, sum, err := backup.FileInfo(filepath.Join(dir, dumpFile))
 		if err != nil || size == 0 {
 			fail("conferir a cópia do banco: o dump saiu vazio")
 			return
 		}
-		manifest.Postgres = backupPostgresMajor
-		manifest.Items = append(manifest.Items, domain.BackupItem{Kind: domain.BackupItemPostgres, File: backup.DatabaseFile, Size: size, SHA256: sum})
+		if svc.Engine == domain.ServiceMySQL {
+			manifest.MySQL = backupMySQLVersion
+		} else {
+			manifest.Postgres = backupPostgresMajor
+		}
+		manifest.Items = append(manifest.Items, domain.BackupItem{Kind: domain.BackupItemKindOf(svc.Engine), File: dumpFile, Size: size, SHA256: sum})
 	}
 
 	if len(manifest.Items) == 0 {

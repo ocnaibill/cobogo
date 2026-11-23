@@ -255,8 +255,6 @@ var serviceSignatures = []struct {
 	role, label, note string
 	pyDeps, jsDeps    []string
 }{
-	{domain.CompDatabase, "MySQL", "o Cobogó ainda não provê MySQL (DEC-50): use um banco externo nas variáveis de conexão",
-		[]string{"mysqlclient", "pymysql", "mysql-connector-python", "aiomysql"}, []string{"mysql2", "mysql"}},
 	{domain.CompDatabase, "MongoDB", "o Cobogó ainda não provê MongoDB: use um banco externo",
 		[]string{"pymongo", "motor"}, []string{"mongoose", "mongodb"}},
 	{domain.CompCache, "Redis", "o Cobogó ainda não provê Redis (DEC-50): use um Redis externo",
@@ -282,8 +280,9 @@ func buildComponents(fsys fs.FS, res domain.AnalysisResult) []domain.Component {
 		out = append(out, own)
 	}
 	for _, need := range res.ServiceNeeds {
-		if need.Engine == domain.ServicePostgres && need.Level == domain.NeedRequired {
-			out = append(out, domain.Component{Dir: ".", Role: domain.CompDatabase, Label: "PostgreSQL", Supported: true, Evidence: need.Evidence})
+		if need.Level == domain.NeedRequired && domain.IsRelationalEngine(need.Engine) {
+			label := map[string]string{domain.ServicePostgres: "PostgreSQL", domain.ServiceMySQL: "MySQL"}[need.Engine]
+			out = append(out, domain.Component{Dir: ".", Role: domain.CompDatabase, Label: label, Supported: true, Evidence: need.Evidence})
 		}
 	}
 	queue := false
@@ -315,13 +314,6 @@ func buildComponents(fsys fs.FS, res domain.AnalysisResult) []domain.Component {
 			Dir: ".", Role: role, Label: s.label, Supported: false, Note: s.note,
 			Evidence: []string{fmt.Sprintf("%s: %s", map[bool]string{true: "package.json", false: "requirements"}[d.ecosystem == domain.EcosystemJavaScript], dep)},
 		})
-	}
-	// O Django com MySQL declarado no settings, mesmo sem o driver nas dependências lidas.
-	for _, e := range res.Evidences {
-		if e.Kind == kindDjangoSet && e.Name == "MYSQL" && !slices.ContainsFunc(out, func(c domain.Component) bool { return c.Label == "MySQL" }) {
-			out = append(out, domain.Component{Dir: ".", Role: domain.CompDatabase, Label: "MySQL", Supported: false,
-				Note: serviceSignatures[0].note, Evidence: []string{evidenceRef(e)}})
-		}
 	}
 	return append(out, findSiblings(fsys)...)
 }

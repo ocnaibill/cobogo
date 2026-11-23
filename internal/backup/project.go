@@ -28,8 +28,9 @@ const (
 	// ManifestFile e SumsFile acompanham os arquivos de cada backup de projeto.
 	ManifestFile = "manifest.json"
 	SumsFile     = "sha256sums.txt"
-	// DatabaseFile é o dump do PostgreSQL gerenciado.
-	DatabaseFile = "database.dump"
+	// DatabaseFile é o dump do PostgreSQL gerenciado; DatabaseFileSQL, o do MySQL.
+	DatabaseFile    = "database.dump"
+	DatabaseFileSQL = "database.sql"
 	// ManifestVersion é a versão do formato do manifest.
 	ManifestVersion = 1
 )
@@ -56,7 +57,7 @@ func VolumeFileName(path string) string {
 	return "volume-" + slug + "-" + hex.EncodeToString(sum[:3]) + ".tar.gz"
 }
 
-var artifactName = regexp.MustCompile(`^(volume-[a-z0-9-]+-[0-9a-f]{6}\.tar\.gz|database\.dump|manifest\.json|sha256sums\.txt)$`)
+var artifactName = regexp.MustCompile(`^(volume-[a-z0-9-]+-[0-9a-f]{6}\.tar\.gz|database\.dump|database\.sql|manifest\.json|sha256sums\.txt)$`)
 
 // ValidArtifact diz se o nome é o de um arquivo que um backup de projeto pode ter.
 func ValidArtifact(name string) bool { return artifactName.MatchString(name) }

@@ -417,3 +417,29 @@ func TestCheckOverridesKnowsPythonFields(t *testing.T) {
 		t.Error("alvo inválido aceito")
 	}
 }
+
+func TestPythonMySQLNeeds(t *testing.T) {
+	files := djangoRepo(map[string]string{
+		"requirements.txt":   "Django==5.1.4\nmysqlclient==2.2.7\n",
+		"mysite/settings.py": strings.Replace(djangoSettings, `os.environ.get("DB_HOST")`, `os.environ.get("DB_HOST"), "PASSWORD": os.environ.get("DB_PASSWORD"), "NAME": os.environ.get("DB_NAME"), "USER": os.environ.get("DB_USER")`, 1),
+	})
+	files["mysite/settings.py"] = strings.Replace(files["mysite/settings.py"], "django.db.backends.postgresql", "django.db.backends.mysql", 1)
+	res, err := Analyze(toFS(files), Input{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.ServiceNeeds) != 1 || res.ServiceNeeds[0].Engine != domain.ServiceMySQL || res.ServiceNeeds[0].Level != domain.NeedRequired ||
+		res.ServiceNeeds[0].Style != domain.StyleParts || res.ServiceNeeds[0].Family != "DB" {
+		t.Errorf("service needs = %+v", res.ServiceNeeds)
+	}
+	// Só o driver nas dependências, sem uso: sugestão.
+	res, err = Analyze(toFS(map[string]string{"requirements.txt": "flask==3.1.0\nmysqlclient==2.2.7\n", "app.py": "from flask import Flask\napp = Flask(__name__)\n"}), Input{})
+	if err != nil || len(res.ServiceNeeds) != 1 || res.ServiceNeeds[0].Level != domain.NeedPossible {
+		t.Errorf("só a dependência: %v %+v", err, res.ServiceNeeds)
+	}
+	// O import do driver em código de runtime.
+	res, err = Analyze(toFS(map[string]string{"requirements.txt": "flask==3.1.0\npymysql==1.1.1\n", "app.py": "import pymysql\nfrom flask import Flask\napp = Flask(__name__)\n"}), Input{})
+	if err != nil || len(res.ServiceNeeds) != 1 || res.ServiceNeeds[0].Level != domain.NeedRequired {
+		t.Errorf("import do driver: %v %+v", err, res.ServiceNeeds)
+	}
+}

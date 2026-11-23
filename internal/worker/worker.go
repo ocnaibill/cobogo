@@ -558,14 +558,14 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 	}
 	services := []string{}
 	var managedDB *domain.Service
-	if svc, serr := w.store.GetService(ctx, project.ID, domain.ServicePostgres); serr == nil && svc.Mode == domain.ServiceManaged && svc.Status != domain.ServiceDeleting {
-		created, err := w.provisionPostgres(ctx, rt, project, svc)
+	if svc, serr := w.store.GetDatabaseService(ctx, project.ID); serr == nil && svc.Mode == domain.ServiceManaged && svc.Status != domain.ServiceDeleting {
+		created, err := w.provisionService(ctx, rt, project, svc)
 		if err != nil {
 			return at("PROVISIONING", err)
 		}
-		services = append(services, domain.ServicePostgres)
+		services = append(services, svc.Engine)
 		managedDB = &svc
-		if err := w.emit(ctx, o, dep.ID, "provisioning", "postgres", map[string]any{"container": svc.ContainerName, "created": created, "variable": svc.Variable}); err != nil {
+		if err := w.emit(ctx, o, dep.ID, "provisioning", svc.Engine, map[string]any{"container": svc.ContainerName, "created": created, "variable": svc.Variable}); err != nil {
 			return err
 		}
 	}

@@ -67,7 +67,7 @@ func (s *Store) CreateRestore(ctx context.Context, projectID, ownerID, backupID 
 		return domain.ProjectRestore{}, domain.ProjectBackup{}, ErrBackupNotUsable
 	}
 	managed := false
-	if svc, err := s.GetService(ctx, projectID, domain.ServicePostgres); err == nil {
+	if svc, err := s.GetDatabaseService(ctx, projectID); err == nil {
 		managed = svc.Mode == domain.ServiceManaged && svc.Status != domain.ServiceDeleting
 	} else if !errors.Is(err, ErrNotFound) {
 		return domain.ProjectRestore{}, domain.ProjectBackup{}, err

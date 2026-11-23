@@ -35,7 +35,7 @@ export const hasUsableBackup = (list: ProjectBackup[]) => list.some(isUsable);
 
 /** Um resumo do que o backup guardou: "volume /app/data (1,2 MiB) · banco (40 KiB)". */
 export function itemsSummary(b: ProjectBackup, fmt: (n: number) => string): string {
-  const parts = b.manifest.items.map((it) => (it.kind === "postgres" ? `banco (${fmt(it.size_bytes)})` : `volume ${it.path ?? ""} (${fmt(it.size_bytes)})`));
+  const parts = b.manifest.items.map((it) => (it.kind === "postgres" || it.kind === "mysql" ? `banco (${fmt(it.size_bytes)})` : `volume ${it.path ?? ""} (${fmt(it.size_bytes)})`));
   return parts.join(" · ");
 }
 

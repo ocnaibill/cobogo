@@ -19,11 +19,11 @@ var (
 	// ErrVariableDefined: a variável de conexão já tem um valor que a pessoa
 	// digitou; o vínculo nunca o sobrescreve (DEC-42 item 5).
 	ErrVariableDefined = errors.New("store: a variável de conexão já tem um valor definido pelo usuário")
-	// ErrNoManagedService: não há PostgreSQL gerenciado para apagar.
-	ErrNoManagedService = errors.New("store: o projeto não tem PostgreSQL gerenciado")
-	// ErrManagedExists: já há um PostgreSQL gerenciado; trocar de escolha sem
+	// ErrNoManagedService: não há banco gerenciado para apagar.
+	ErrNoManagedService = errors.New("store: o projeto não tem banco gerenciado")
+	// ErrManagedExists: já há um banco gerenciado; trocar de escolha sem
 	// apagá-lo deixaria o banco e os dados órfãos.
-	ErrManagedExists = errors.New("store: o projeto já tem um PostgreSQL gerenciado; apague-o antes de escolher outra coisa")
+	ErrManagedExists = errors.New("store: o projeto já tem um banco gerenciado; apague-o antes de escolher outra coisa")
 )
 
 // DefinedVariableError diz qual variável de conexão já tem valor digitado.
@@ -55,28 +55,46 @@ func (s *Store) GetService(ctx context.Context, projectID uuid.UUID, engine stri
 	return scanService(s.pool.QueryRow(ctx, `SELECT `+serviceColumns+` FROM project_services WHERE project_id = $1 AND engine = $2 AND deleted_at IS NULL`, projectID, engine))
 }
 
-// ChooseDatabase registra a escolha do dono sobre o banco do projeto (HEU-06.6).
+// GetDatabaseService devolve o banco relacional vigente do projeto, de qualquer engine
+// provida (DEC-50), ou ErrNotFound. O projeto tem um banco; havendo mais de um registro vivo, vale
+// o mais recente.
+func (s *Store) GetDatabaseService(ctx context.Context, projectID uuid.UUID) (domain.Service, error) {
+	return scanService(s.pool.QueryRow(ctx, `SELECT `+serviceColumns+` FROM project_services
+		WHERE project_id = $1 AND engine = ANY($2) AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1`, projectID, domain.RelationalEngines))
+}
+
+// ChooseDatabase registra a escolha sobre o banco PostgreSQL do projeto; ChooseDatabaseFor, de qualquer engine.
+func (s *Store) ChooseDatabase(ctx context.Context, projectID, ownerID uuid.UUID, mode string, variables, values map[string]string) (domain.Service, error) {
+	return s.ChooseDatabaseFor(ctx, domain.ServicePostgres, projectID, ownerID, mode, variables, values)
+}
+
+// ChooseDatabaseFor registra a escolha do dono sobre o banco do projeto (HEU-06.6).
 // variables são os nomes das variáveis por papel (DEC-44); values, o valor de
 // cada papel que o Cobogó entrega, só no modo gerenciado. No modo gerenciado
 // grava cada variável (cifrada, origem `linked`); se alguma já tem um valor que
 // não é do vínculo, recusa sem gravar nada. O papel `ca` é entregue na hora de
 // iniciar o app e nunca é gravado, mas o nome dele também não pode colidir.
 // Troca de uma escolha anterior vale: a intenção vigente é uma só.
-func (s *Store) ChooseDatabase(ctx context.Context, projectID, ownerID uuid.UUID, mode string, variables, values map[string]string) (domain.Service, error) {
+func (s *Store) ChooseDatabaseFor(ctx context.Context, engine string, projectID, ownerID uuid.UUID, mode string, variables, values map[string]string) (domain.Service, error) {
+	if !domain.IsRelationalEngine(engine) {
+		return domain.Service{}, fmt.Errorf("store: a engine %q não é provida", engine)
+	}
 	if _, err := s.GetProjectFor(ctx, projectID, ownerID); err != nil {
 		return domain.Service{}, err
 	}
-	if current, err := s.GetService(ctx, projectID, domain.ServicePostgres); err == nil && current.Mode == domain.ServiceManaged && current.Status != domain.ServiceDeleting {
+	if current, err := s.GetDatabaseService(ctx, projectID); err == nil && current.Mode == domain.ServiceManaged && current.Status != domain.ServiceDeleting {
 		if mode != domain.ServiceManaged {
 			return domain.Service{}, ErrManagedExists
 		}
-		// Escolher o gerenciado de novo não muda nada, e a senha não é trocada.
+		// Escolher o gerenciado de novo, da mesma engine, não muda nada e a senha não é trocada;
+		// de outra engine, o banco que existe ficaria órfão.
+		if current.Engine != engine {
+			return domain.Service{}, ErrManagedExists
+		}
 		return current, nil
 	} else if err != nil && !errors.Is(err, ErrNotFound) {
 		return domain.Service{}, err
 	}
-	// Hoje só o PostgreSQL tem a pergunta de destino; a engine vira parâmetro com a DEC-50.
-	engine := domain.ServicePostgres
 	style := domain.StyleURL
 	if _, ok := variables[domain.RoleURL]; !ok {
 		style = domain.StyleParts
@@ -95,7 +113,7 @@ func (s *Store) ChooseDatabase(ctx context.Context, projectID, ownerID uuid.UUID
 			}
 		}
 		container, volume = domain.ServiceContainerNameFor(projectID.String(), engine), domain.ServiceVolumeNameFor(projectID.String(), engine)
-		tls = true
+		tls = domain.EngineSupportsTLS(engine)
 	}
 	sv, err := scanService(s.pool.QueryRow(ctx, `
 		INSERT INTO project_services (id, project_id, engine, mode, variable, variables, tls, container_name, volume_name, status)
@@ -142,7 +160,7 @@ func (s *Store) RequestDeleteService(ctx context.Context, projectID, ownerID uui
 	if confirmSlug != p.Slug {
 		return domain.Operation{}, ErrConfirmationMismatch
 	}
-	sv, err := s.GetService(ctx, projectID, domain.ServicePostgres)
+	sv, err := s.GetDatabaseService(ctx, projectID)
 	if err != nil || sv.Mode != domain.ServiceManaged {
 		return domain.Operation{}, ErrNoManagedService
 	}
@@ -176,6 +194,11 @@ func (s *Store) RequestDeleteService(ctx context.Context, projectID, ownerID uui
 // precisa dele para apagar). Só o vigente: um já apagado não volta.
 func (s *Store) GetServiceForWorker(ctx context.Context, projectID uuid.UUID, engine string) (domain.Service, error) {
 	return s.GetService(ctx, projectID, engine)
+}
+
+// GetDatabaseServiceForWorker é GetDatabaseService para o worker (DEC-50).
+func (s *Store) GetDatabaseServiceForWorker(ctx context.Context, projectID uuid.UUID) (domain.Service, error) {
+	return s.GetDatabaseService(ctx, projectID)
 }
 
 // MarkServiceDeleted fecha o serviço: o registro fica como história e uma nova

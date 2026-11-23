@@ -134,7 +134,7 @@ func TestManagedPostgresLifecycle(t *testing.T) {
 		_ = rt.RemoveProjectNetwork(context.Background(), p.ID.String())
 	})
 
-	created, err := w.provisionPostgres(ctx, rt, p, svc)
+	created, err := w.provisionService(ctx, rt, p, svc)
 	if err != nil || !created {
 		t.Fatalf("first provision = %v, %v", created, err)
 	}
@@ -172,7 +172,7 @@ func TestManagedPostgresLifecycle(t *testing.T) {
 	if out, err := exec.CommandContext(ctx, "docker", "run", "--rm", "--network", net, "postgres:16-alpine", "psql", url, "-tAc", "create table marca(x int); insert into marca values (42)").CombinedOutput(); err != nil {
 		t.Fatalf("write: %s %v", out, err)
 	}
-	created, err = w.provisionPostgres(ctx, rt, p, svc)
+	created, err = w.provisionService(ctx, rt, p, svc)
 	if err != nil || created {
 		t.Fatalf("second provision = %v, %v; want the existing one reused", created, err)
 	}
@@ -182,7 +182,7 @@ func TestManagedPostgresLifecycle(t *testing.T) {
 	}
 	// Parado, é iniciado de novo.
 	_ = exec.CommandContext(ctx, "docker", "stop", svc.ContainerName).Run()
-	if created, err := w.provisionPostgres(ctx, rt, p, svc); err != nil || created {
+	if created, err := w.provisionService(ctx, rt, p, svc); err != nil || created {
 		t.Fatalf("provision with a stopped database = %v, %v", created, err)
 	}
 
@@ -251,7 +251,7 @@ func TestManagedPostgresServesTLSAndTheAppTrustsIt(t *testing.T) {
 		_ = rt.RemoveService(context.Background(), p.ID.String(), svc.ContainerName, svc.VolumeName)
 		_ = rt.RemoveProjectNetwork(context.Background(), p.ID.String())
 	})
-	if _, err := w.provisionPostgres(ctx, rt, p, svc); err != nil {
+	if _, err := w.provisionService(ctx, rt, p, svc); err != nil {
 		t.Fatal(err)
 	}
 

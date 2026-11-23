@@ -40,6 +40,7 @@ const (
 	kindDjangoApp    = "django.app"                // Name = wsgi|asgi; Value = modulo:atributo
 	kindDjangoSet    = "django.setting"            // Name = configuração; Value = o que se leu
 	kindPyPostgres   = "py.postgres"               // Name = driver importado em código de runtime
+	kindPyMySQL      = "py.mysql"                  // Name = driver MySQL importado em código de runtime
 )
 
 // Pastas que não são código da aplicação.
@@ -57,10 +58,11 @@ var (
 	procfileLine = regexp.MustCompile(`^([A-Za-z0-9_-]+)\s*:\s*(.+?)\s*$`)
 
 	// Atribuição de nível de módulo de uma aplicação (DEC-48 item 5).
-	pyAppAssign = regexp.MustCompile(`(?m)^([A-Za-z_]\w*)\s*(?::\s*[\w.\[\], ]+)?=\s*((?:[A-Za-z_]\w*\.)*)(Flask|FastAPI|Starlette|Quart|Litestar|Sanic|App)\s*\(`)
-	pyFactory   = regexp.MustCompile(`(?m)^(?:async\s+)?def\s+(create_app|make_app|app_factory|get_app|build_app)\s*\(`)
-	pyPgImport  = regexp.MustCompile(`(?m)^\s*(?:import|from)\s+(psycopg2|psycopg|asyncpg|pg8000)\b`)
-	pyRunTarget = regexp.MustCompile(`uvicorn\.run\(\s*["']([A-Za-z_][\w.]*:[A-Za-z_]\w*)["']`)
+	pyAppAssign   = regexp.MustCompile(`(?m)^([A-Za-z_]\w*)\s*(?::\s*[\w.\[\], ]+)?=\s*((?:[A-Za-z_]\w*\.)*)(Flask|FastAPI|Starlette|Quart|Litestar|Sanic|App)\s*\(`)
+	pyFactory     = regexp.MustCompile(`(?m)^(?:async\s+)?def\s+(create_app|make_app|app_factory|get_app|build_app)\s*\(`)
+	pyMySQLImport = regexp.MustCompile(`(?m)^\s*(?:import|from)\s+(MySQLdb|pymysql|mysql\.connector|aiomysql|asyncmy)\b`)
+	pyPgImport    = regexp.MustCompile(`(?m)^\s*(?:import|from)\s+(psycopg2|psycopg|asyncpg|pg8000)\b`)
+	pyRunTarget   = regexp.MustCompile(`uvicorn\.run\(\s*["']([A-Za-z_][\w.]*:[A-Za-z_]\w*)["']`)
 
 	pyImport = map[string]*regexp.Regexp{
 		domain.FrameworkFlask:     regexp.MustCompile(`(?m)^\s*(?:from\s+flask\b|import\s+flask\b)`),
@@ -408,6 +410,9 @@ func extractPythonSource(fsys fs.FS, x *Extraction) error {
 					break
 				}
 			}
+		}
+		if m := pyMySQLImport.FindSubmatchIndex(data); m != nil {
+			x.emit(extractorPySource, domain.Evidence{Kind: kindPyMySQL, Name: string(data[m[2]:m[3]]), Source: name, Line: lineAt(data, m[0]), Scope: scope})
 		}
 		if m := pyPgImport.FindSubmatchIndex(data); m != nil {
 			x.emit(extractorPySource, domain.Evidence{Kind: kindPyPostgres, Name: string(data[m[2]:m[3]]), Source: name, Line: lineAt(data, m[0]), Scope: scope})

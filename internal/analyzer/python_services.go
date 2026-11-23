@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/ocnaibill/cobogo/internal/domain"
@@ -23,7 +24,47 @@ func evidenceRef(e domain.Evidence) string {
 	return e.Source
 }
 
-func detectPythonServiceNeeds(_ fs.FS, ev []domain.Evidence, vars []domain.ConfigVariable) []domain.ServiceNeed {
+func detectPythonServiceNeeds(fsys fs.FS, ev []domain.Evidence, vars []domain.ConfigVariable) []domain.ServiceNeed {
+	return append(detectPythonPostgresNeeds(fsys, ev, vars), detectPythonMySQLNeeds(ev, vars)...)
+}
+
+// pyMySQLDeps: pacotes Python que falam com MySQL e MariaDB.
+var pyMySQLDeps = []string{"mysqlclient", "pymysql", "mysql-connector-python", "aiomysql", "asyncmy"}
+
+// detectPythonMySQLNeeds é a HEU-06 para MySQL: o ENGINE do Django, o import do driver em runtime
+// (necessidade `required`) ou só a dependência (`possible`).
+func detectPythonMySQLNeeds(ev []domain.Evidence, vars []domain.ConfigVariable) []domain.ServiceNeed {
+	var runtime []string
+	for _, e := range ev {
+		if len(runtime) >= 3 {
+			break
+		}
+		if (e.Kind == kindPyMySQL && e.Scope == domain.ScopeRuntime) || (e.Kind == kindDjangoSet && e.Name == "MYSQL") {
+			runtime = append(runtime, evidenceRef(e))
+		}
+	}
+	dep := ""
+	for _, e := range ev {
+		if e.Kind == kindPyDependency && dep == "" && slices.Contains(pyMySQLDeps, e.Name) {
+			dep = e.Name
+		}
+	}
+	need := domain.ServiceNeed{Engine: domain.ServiceMySQL}
+	switch {
+	case len(runtime) > 0:
+		need.Level, need.Evidence, need.Reason = domain.NeedRequired, runtime, "o código usa MySQL"
+	case dep != "":
+		need.Level, need.Evidence = domain.NeedPossible, []string{"requirements"}
+		need.Reason = "a dependência " + dep + " fala com MySQL, mas nenhum arquivo de runtime a importa"
+	default:
+		return nil
+	}
+	need.Style, need.Family, need.Variables = connectionStyleFor(domain.ServiceMySQL, "", vars)
+	need.Variable = need.Variables[domain.PrimaryRole(need.Style)]
+	return []domain.ServiceNeed{need}
+}
+
+func detectPythonPostgresNeeds(_ fs.FS, ev []domain.Evidence, vars []domain.ConfigVariable) []domain.ServiceNeed {
 	var runtime []string
 	for _, e := range ev {
 		if len(runtime) >= 3 {

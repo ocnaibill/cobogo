@@ -19,11 +19,20 @@ export function useDatabase(projectId: string) {
 
 type Choice = "managed" | "external" | "none";
 
-const CHOICE_TEXT: Record<Choice, { title: string; text: string }> = {
-  managed: { title: "Criar um PostgreSQL do Cobogó e conectar", text: "Um banco só deste projeto, com TLS e os dados em volume, ligado às variáveis acima. Começa vazio." },
+const ENGINE_LABEL: Record<string, string> = { postgres: "PostgreSQL", mysql: "MySQL" };
+const engineLabel = (engine?: string) => ENGINE_LABEL[engine ?? "postgres"] ?? "banco";
+
+const CHOICE_TEXT = (engine?: string): Record<Choice, { title: string; text: string }> => ({
+  managed: {
+    title: `Criar um ${engineLabel(engine)} do Cobogó e conectar`,
+    text:
+      engine === "mysql"
+        ? "Um banco só deste projeto, na rede privada dele e sem TLS (o TLS do MySQL entra depois), com os dados em volume, ligado às variáveis acima. Começa vazio."
+        : "Um banco só deste projeto, com TLS e os dados em volume, ligado às variáveis acima. Começa vazio.",
+  },
   external: { title: "Usar um banco que já tenho", text: "Você informa os dados do seu banco, como segredo, na aba Variáveis." },
   none: { title: "Não preciso de banco", text: "O deploy segue sem perguntar de novo." },
-};
+});
 
 type Style = "url" | "parts";
 
@@ -93,7 +102,7 @@ export function DatabaseChoice({ projectId, view, onChosen }: { projectId: strin
     setError(null);
     try {
       const variables = clean();
-      await unwrap(api.POST("/projects/{id}/database", { params: { path: { id: projectId } }, body: { choice, variables } }));
+      await unwrap(api.POST("/projects/{id}/database", { params: { path: { id: projectId } }, body: { choice, engine: view.engine, variables } }));
       qc.invalidateQueries({ queryKey: ["database", projectId] });
       qc.invalidateQueries({ queryKey: ["env", projectId] });
       qc.invalidateQueries({ queryKey: ["persistent", projectId] });
@@ -132,11 +141,11 @@ export function DatabaseChoice({ projectId, view, onChosen }: { projectId: strin
         ))}
       </div>
       <div className="options" role="group" aria-label="Destino do banco">
-        {(Object.keys(CHOICE_TEXT) as Choice[]).map((c) => (
+        {(Object.keys(CHOICE_TEXT(view.engine)) as Choice[]).map((c) => (
           <div key={c} className="option row-between">
             <div className="stack-sm">
-              <span className="strong">{CHOICE_TEXT[c].title}</span>
-              <span className="muted small">{CHOICE_TEXT[c].text}</span>
+              <span className="strong">{CHOICE_TEXT(view.engine)[c].title}</span>
+              <span className="muted small">{CHOICE_TEXT(view.engine)[c].text}</span>
             </div>
             <Button variant={c === "managed" ? "primary" : "secondary"} busy={busy === c} disabled={busy !== null || !complete} onClick={() => choose(c)}>
               Escolher
@@ -195,7 +204,7 @@ export function DatabaseTab({ projectId, slug }: { projectId: string; slug: stri
 
       {!svc && (
         <Card title={v.need ? "Onde está o banco?" : "Criar um banco"} icon="server">
-          {!v.need && <p className="small muted card-text">A análise não achou uso de PostgreSQL neste projeto. Se ele usa um, você pode criar o banco aqui mesmo.</p>}
+          {!v.need && <p className="small muted card-text">A análise não achou uso de {engineLabel(v.engine)} neste projeto. Se ele usa um, você pode criar o banco aqui mesmo.</p>}
           <DatabaseChoice projectId={projectId} view={v} />
         </Card>
       )}
@@ -258,7 +267,7 @@ function ManagedDatabase({ projectId, slug, view }: { projectId: string; slug: s
   }
 
   return (
-    <Card title="PostgreSQL do projeto" icon="server" actions={<Badge tone={badge.tone}>{badge.label}</Badge>}>
+    <Card title={`${engineLabel(svc.engine)} do projeto`} icon="server" actions={<Badge tone={badge.tone}>{badge.label}</Badge>}>
       <div className="stack">
         {svc.status === "failed" && <Notice tone="danger" title="O banco não ficou pronto">{svc.status_detail || "Veja o log do deploy."}</Notice>}
         {done && <Notice tone="success">A exclusão foi pedida; o worker a executa em instantes.</Notice>}
@@ -269,7 +278,11 @@ function ManagedDatabase({ projectId, slug, view }: { projectId: string; slug: s
             <span className="small muted">
               Ligada à aplicação como <Badge tone="info">vinculada</Badge>. A senha e a URL nunca aparecem no painel.
             </span>
-            {svc.tls ? (
+            {svc.engine === "mysql" ? (
+              <span className="small muted">
+                <Badge tone="neutral">sem TLS</Badge> O banco só existe na rede privada do projeto, sem porta pública. O TLS do MySQL entra numa próxima versão.
+              </span>
+            ) : svc.tls ? (
               <span className="small muted">
                 <Badge tone="success">TLS</Badge> O banco tem certificado próprio. A aplicação recebe a CA em <span className="mono">/etc/cobogo/db-ca.pem</span>, apontada por <span className="mono">NODE_EXTRA_CA_CERTS</span> e <span className="mono">PGSSLROOTCERT</span>
                 {svc.variables?.ca ? (
@@ -288,7 +301,9 @@ function ManagedDatabase({ projectId, slug, view }: { projectId: string; slug: s
           <div className="inset stack-sm">
             <span className="label">Dados</span>
             <span className="strong">{view.volume ? bytes(view.volume.size_bytes) : "—"}</span>
-            <span className="small muted">PostgreSQL 16, 256 MiB, só na rede do projeto, sem porta pública. Sem backup (issue #28), perder o disco perde os dados.</span>
+            <span className="small muted">
+              {svc.engine === "mysql" ? "MySQL 8.4 (LTS), 512 MiB" : "PostgreSQL 16, 256 MiB"}, só na rede do projeto, sem porta pública. Os dados entram no backup do projeto.
+            </span>
           </div>
         </div>
         <div className="small muted">

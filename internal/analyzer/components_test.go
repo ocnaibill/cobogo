@@ -25,6 +25,7 @@ func componentSummary(cs []domain.Component) []string {
 func TestComponentsMapOfADjangoWithReactSibling(t *testing.T) {
 	files := djangoRepo(map[string]string{
 		"requirements.txt":      "Django==5.1.4\ndjangorestframework==3.16.0\nmysqlclient==2.2.7\ncelery==5.5.3\nredis==6.2.0\nwhitenoise==6.8.2\n",
+		"mysite/settings.py":    strings.Replace(djangoSettings, "django.db.backends.postgresql", "django.db.backends.mysql", 1),
 		"frontend/package.json": `{"scripts":{"build":"vite build"},"dependencies":{"react":"19.0.0","axios":"1.9.0"},"devDependencies":{"vite":"6.0.0"}}`,
 		"docs/package.json":     `{"scripts":{"build":"vite build"},"dependencies":{"react":"19.0.0"}}`,
 		"media/leia-me.txt":     "x",
@@ -36,7 +37,7 @@ func TestComponentsMapOfADjangoWithReactSibling(t *testing.T) {
 	got := strings.Join(componentSummary(res.Components), "\n")
 	for _, want := range []string{
 		".|backend|Django REST",
-		".|database|MySQL|fora",
+		".|database|MySQL",
 		".|worker|Celery|fora",
 		"frontend|frontend|React + Vite|irmã",
 	} {

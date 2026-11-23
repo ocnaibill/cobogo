@@ -170,8 +170,11 @@ func (c *logCapture) follow(ctx context.Context, m dockerrt.ManagedContainer) {
 		return
 	}
 	origin := domain.LogOriginApp
-	if m.Service == domain.ServicePostgres {
+	switch m.Service {
+	case domain.ServicePostgres:
 		origin = domain.LogOriginPostgres
+	case domain.ServiceMySQL:
+		origin = domain.LogOriginMySQL
 	}
 	var deployment *uuid.UUID
 	if id, err := uuid.Parse(m.DeploymentID); err == nil {

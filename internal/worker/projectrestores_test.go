@@ -78,7 +78,7 @@ func TestProjectRestoreEndToEnd(t *testing.T) {
 		_ = rt.RemoveService(context.Background(), pid, svc.ContainerName, svc.VolumeName)
 		_ = rt.RemoveProjectNetwork(context.Background(), pid)
 	})
-	if _, err := w.provisionPostgres(ctx, rt, p, svc); err != nil {
+	if _, err := w.provisionService(ctx, rt, p, svc); err != nil {
 		t.Fatal(err)
 	}
 	psql := func(sql string) string {

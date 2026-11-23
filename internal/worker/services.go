@@ -23,17 +23,26 @@ const databaseReadyTimeout = 3 * time.Minute
 // de conexão ainda não tem valor. Quem já definiu a variável conectou o banco por
 // conta própria: não há pergunta. Nada é criado aqui.
 func (w *Worker) databaseFinding(ctx context.Context, project domain.Project, result domain.AnalysisResult) (*domain.Finding, error) {
+	// O banco é o da engine que a análise mais sustenta; um projeto com o serviço já escolhido
+	// segue a engine dele (DEC-50).
 	var need *domain.ServiceNeed
+	chosen, cerr := w.store.GetDatabaseService(ctx, project.ID)
+	if cerr != nil && !errors.Is(cerr, store.ErrNotFound) {
+		return nil, cerr
+	}
 	for i := range result.ServiceNeeds {
 		n := result.ServiceNeeds[i]
-		if n.Engine == domain.ServicePostgres && n.Level == domain.NeedRequired {
+		if n.Level != domain.NeedRequired || !domain.IsRelationalEngine(n.Engine) {
+			continue
+		}
+		if need == nil || (cerr == nil && n.Engine == chosen.Engine) {
 			need = &n
-			break
 		}
 	}
 	if need == nil {
 		return nil, nil
 	}
+	label := map[string]string{domain.ServicePostgres: "PostgreSQL", domain.ServiceMySQL: "MySQL"}[need.Engine]
 	vars, err := w.store.ListEnvVariables(ctx, project.ID)
 	if err != nil {
 		return nil, err
@@ -43,9 +52,12 @@ func (w *Worker) databaseFinding(ctx context.Context, project domain.Project, re
 			return nil, nil
 		}
 	}
-	svc, err := w.store.GetService(ctx, project.ID, domain.ServicePostgres)
+	svc, err := w.store.GetDatabaseService(ctx, project.ID)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return nil, err
+	}
+	if err == nil && svc.Engine != need.Engine {
+		err = store.ErrNotFound
 	}
 	if err == nil && svc.Mode == domain.ServiceNone {
 		return nil, nil
@@ -55,14 +67,14 @@ func (w *Worker) databaseFinding(ctx context.Context, project domain.Project, re
 	if need.Style == domain.StyleParts {
 		target, how = connectionNames(need), "os dados de conexão"
 	}
-	message := fmt.Sprintf("O código usa PostgreSQL (%s) e a conexão não está definida (%s). Onde está o banco?", firstEvidence(need.Evidence), target)
+	message := fmt.Sprintf("O código usa %s (%s) e a conexão não está definida (%s). Onde está o banco?", label, firstEvidence(need.Evidence), target)
 	if err == nil && svc.Mode == domain.ServiceExternal {
 		message = fmt.Sprintf("Você escolheu usar um banco que já tem, mas a conexão não está definida (%s). Informe %s na aba Variáveis, ou escolha outra opção.", target, how)
 	}
 	return &domain.Finding{
 		Rule: "HEU-06.6", Field: domain.FieldDatabase, Message: message,
 		Options: []domain.Option{
-			{Value: domain.ServiceManaged, Note: "O Cobogó cria um PostgreSQL só deste projeto, com os dados em volume, e liga " + target + " a ele."},
+			{Value: domain.ServiceManaged, Note: "O Cobogó cria um " + label + " só deste projeto, com os dados em volume, e liga " + target + " a ele."},
 			{Value: domain.ServiceExternal, Note: "Você informa " + how + " de um banco que já tem, como segredo, em " + target + "."},
 			{Value: domain.ServiceNone, Note: "O projeto não precisa de banco; o deploy segue sem perguntar de novo."},
 		},
@@ -76,10 +88,10 @@ func firstEvidence(ev []string) string {
 	return ev[0]
 }
 
-// provisionPostgres garante o PostgreSQL gerenciado do projeto e espera o banco
+// provisionService garante o banco gerenciado do projeto (de qualquer engine) e espera o banco
 // ficar saudável, antes de a aplicação subir. Criar de novo é seguro: o que existe
 // é reaproveitado. Devolve se criou o contêiner agora.
-func (w *Worker) provisionPostgres(ctx context.Context, rt *dockerrt.Runtime, project domain.Project, svc domain.Service) (created bool, err error) {
+func (w *Worker) provisionService(ctx context.Context, rt *dockerrt.Runtime, project domain.Project, svc domain.Service) (created bool, err error) {
 	fail := func(err error) (bool, error) {
 		_ = w.store.SetServiceStatus(context.WithoutCancel(ctx), svc.ID, domain.ServiceFailed, err.Error())
 		return false, err
@@ -122,7 +134,7 @@ func (w *Worker) deleteService(ctx context.Context, op *domain.Operation) (map[s
 	if err != nil {
 		return nil, err
 	}
-	svc, err := w.store.GetServiceForWorker(ctx, projectID, domain.ServicePostgres)
+	svc, err := w.store.GetDatabaseServiceForWorker(ctx, projectID)
 	if errors.Is(err, store.ErrNotFound) {
 		return map[string]any{"already_gone": true}, nil
 	}

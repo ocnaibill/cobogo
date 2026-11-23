@@ -1038,6 +1038,10 @@ paths:
                 choice:
                   type: string
                   enum: [managed, external, none]
+                engine:
+                  type: string
+                  enum: [postgres, mysql]
+                  description: A engine do banco. Vazio vale a da necessidade que a análise achou, ou `postgres` (DEC-50).
                 variable:
                   type: string
                   description: A variável da URL de conexão (forma curta). Padrão `DATABASE_URL`.
@@ -1326,10 +1330,10 @@ paths:
         - name: origin
           in: query
           required: false
-          description: Só uma origem. Sem o parâmetro, todas.
+          description: Só uma origem. `database` reúne os bancos gerenciados de qualquer engine. Sem o parâmetro, todas.
           schema:
             type: string
-            enum: [app, postgres]
+            enum: [app, database, postgres, mysql]
         - name: after
           in: query
           required: false
@@ -3070,7 +3074,7 @@ components:
           nullable: true
         origin:
           type: string
-          enum: [app, postgres]
+          enum: [app, postgres, mysql]
         stream:
           type: string
           enum: [stdout, stderr, system]
@@ -3165,7 +3169,7 @@ components:
       properties:
         kind:
           type: string
-          enum: [volume, postgres]
+          enum: [volume, postgres, mysql]
         path:
           type: string
           description: O caminho do contêiner de um volume; ausente no banco.
@@ -3352,7 +3356,7 @@ components:
       properties:
         engine:
           type: string
-          enum: [postgres]
+          enum: [postgres, mysql]
         level:
           type: string
           enum: [required, possible]
@@ -3392,7 +3396,7 @@ components:
           format: uuid
         engine:
           type: string
-          enum: [postgres]
+          enum: [postgres, mysql]
         mode:
           type: string
           enum: [managed, external, none]
@@ -3423,8 +3427,12 @@ components:
           format: date-time
     DatabaseView:
       type: object
-      required: [need, service, variable, volume]
+      required: [engine, need, service, variable, volume]
       properties:
+        engine:
+          type: string
+          enum: [postgres, mysql]
+          description: 'A engine do banco do projeto (DEC-50): a do serviço, a da necessidade que a análise achou ou PostgreSQL.'
         need:
           allOf:
             - $ref: '#/components/schemas/ServiceNeed'

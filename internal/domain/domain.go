@@ -308,6 +308,7 @@ type Operation struct {
 // Modos e estados de um serviço auxiliar (DEC-42).
 const (
 	ServicePostgres = "postgres"
+	ServiceMySQL    = "mysql"
 
 	ServiceManaged  = "managed"  // o Cobogó cria e mantém o banco
 	ServiceExternal = "external" // o usuário informa a conexão de um banco que já tem
@@ -428,6 +429,7 @@ func (c Command) Active() bool { return c.State == CommandQueued || c.State == C
 const (
 	LogOriginApp      = "app"
 	LogOriginPostgres = "postgres"
+	LogOriginMySQL    = "mysql"
 
 	LogStdout = "stdout"
 	LogStderr = "stderr"
@@ -468,9 +470,10 @@ const (
 	BackupSucceeded = "succeeded"
 	BackupFailed    = "failed"
 
-	// BackupItemVolume e BackupItemPostgres são o que um backup guarda.
+	// BackupItemVolume, BackupItemPostgres e BackupItemMySQL são o que um backup guarda.
 	BackupItemVolume   = "volume"
 	BackupItemPostgres = "postgres"
+	BackupItemMySQL    = "mysql"
 
 	// BackupMinFreeBytes é o que tem de sobrar livre no disco depois de um backup.
 	BackupMinFreeBytes = 5 << 30
@@ -495,6 +498,7 @@ type BackupManifest struct {
 	PausedApp   bool         `json:"paused_app"`
 	Reason      string       `json:"reason"`
 	Postgres    string       `json:"postgres_major,omitempty"`
+	MySQL       string       `json:"mysql_version,omitempty"`
 	Items       []BackupItem `json:"items"`
 	// Skipped são caminhos declarados que não foram copiados, com o motivo.
 	Skipped []string `json:"skipped,omitempty"`
@@ -559,3 +563,56 @@ type ProjectRestore struct {
 
 // Active diz se a restauração ainda ocupa a vaga do projeto.
 func (r ProjectRestore) Active() bool { return r.State == RestoreQueued || r.State == RestoreRunning }
+
+// RelationalEngines são as engines de banco relacional que o Cobogó provê (DEC-50): o
+// projeto tem um banco, de uma delas.
+var RelationalEngines = []string{ServicePostgres, ServiceMySQL}
+
+// EngineConnection é o que muda na conexão de um banco gerenciado de uma engine para outra: o
+// esquema da URL e a porta. O usuário e o banco da aplicação são os mesmos (DBUser, DBName).
+type EngineConnection struct{ Scheme, Port string }
+
+var engineConnection = map[string]EngineConnection{
+	ServicePostgres: {"postgres", DBPort},
+	ServiceMySQL:    {"mysql", "3306"},
+}
+
+// ConnectionOf devolve a conexão de uma engine; cai no PostgreSQL para uma engine desconhecida.
+func ConnectionOf(engine string) EngineConnection {
+	if c, ok := engineConnection[engine]; ok {
+		return c
+	}
+	return engineConnection[ServicePostgres]
+}
+
+// IsRelationalEngine diz se o Cobogó provê a engine como banco relacional.
+func IsRelationalEngine(engine string) bool {
+	for _, e := range RelationalEngines {
+		if e == engine {
+			return true
+		}
+	}
+	return false
+}
+
+// EngineSupportsTLS diz se o banco gerenciado da engine aceita TLS (DEC-44); o MySQL ainda não (DEC-50).
+func EngineSupportsTLS(engine string) bool { return engine == ServicePostgres }
+
+// BackupItemKindOf é o tipo de item de backup do dump de uma engine.
+func BackupItemKindOf(engine string) string {
+	if engine == ServiceMySQL {
+		return BackupItemMySQL
+	}
+	return BackupItemPostgres
+}
+
+// EngineOfBackupItem é a engine de um item de dump, ou "" se o item não é um dump.
+func EngineOfBackupItem(kind string) string {
+	switch kind {
+	case BackupItemPostgres:
+		return ServicePostgres
+	case BackupItemMySQL:
+		return ServiceMySQL
+	}
+	return ""
+}

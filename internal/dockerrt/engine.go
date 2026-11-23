@@ -26,6 +26,8 @@ type Engine struct {
 	MemoryMB int
 	CPUs     float64
 	Pids     int64
+	// Args são os argumentos do servidor (depois da imagem), antes dos do TLS.
+	Args []string
 	// CapAdd são as capacidades que a imagem usa para ajustar a posse do diretório de
 	// dados e largar o root; nada além.
 	CapAdd []string
@@ -49,6 +51,7 @@ type Engine struct {
 
 var engines = map[string]Engine{
 	domain.ServicePostgres: postgresEngine,
+	domain.ServiceMySQL:    mysqlEngine,
 }
 
 // EngineFor devolve a especificação de uma engine, ou um erro se o Cobogó não a provê.
@@ -91,4 +94,40 @@ var postgresEngine = Engine{
 	RestoreScript: `set -e; set -o pipefail
 pg_restore --list "/out/$1" > /dev/null
 { echo 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'; pg_restore --no-owner --no-acl -f - "/out/$1"; } | psql -q -v ON_ERROR_STOP=1 --single-transaction -h "$2" -U app -d app`,
+}
+
+// MySQLImage é a imagem oficial do MySQL na versão LTS (8.4), fixada por digest.
+const MySQLImage = "mysql:8.4@sha256:a81d043930e51745522bd5c430961cf8286f0a23f0a9a2a6e0108f7ea71b0902"
+
+// mysqlEngine: MySQL LTS sem TLS na primeira versão (DEC-50). O banco só existe na rede privada
+// do projeto, e o driver do Django não lê a CA por variável de ambiente.
+//
+// A senha do administrador (root) é aleatória e ninguém a conhece; a aplicação usa o usuário
+// `app`, dono só do banco `app`. O plugin mysql_native_password fica ligado e é o padrão dos usuários
+// novos: sem TLS, o caching_sha2_password (o padrão do 8.4) exige uma troca de chave que muitos
+// drivers (mysqlclient com a libmariadb, PyMySQL sem a biblioteca de criptografia) não fazem.
+var mysqlEngine = Engine{
+	Name: domain.ServiceMySQL, Label: "MySQL",
+	Image: MySQLImage, DataPath: domain.EngineDataPath(domain.ServiceMySQL), Port: 3306,
+	User: "app", Database: "app", UID: "999",
+	MemoryMB: 512, CPUs: 1, Pids: 256,
+	Args:   []string{"--character-set-server=utf8mb4", "--collation-server=utf8mb4_0900_ai_ci", "--mysql-native-password=ON", "--authentication-policy=mysql_native_password"},
+	CapAdd: []string{"CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"},
+	// O mysqladmin ping responde 0 com o servidor no ar, ainda que sem a senha; na
+	// inicialização o servidor temporário só ouve no socket, então o TCP só responde no fim.
+	Health: []string{"CMD-SHELL", "mysqladmin ping -h 127.0.0.1 --silent"},
+	InitEnv: func(password string) []string {
+		return []string{"MYSQL_RANDOM_ROOT_PASSWORD=yes", "MYSQL_DATABASE=app", "MYSQL_USER=app", "MYSQL_PASSWORD=" + password}
+	},
+	ClientEnv: func(password string) []string { return []string{"MYSQL_PWD=" + password} },
+	DumpCommand: func(host, file string) []string {
+		return []string{"mysqldump", "--single-transaction", "--routines", "--triggers", "--no-tablespaces", "--default-character-set=utf8mb4",
+			"-h", host, "-u", "app", "--result-file=/out/" + file, "app"}
+	},
+	// O MySQL não troca o esquema numa transação só (o DDL confirma sozinho): a restauração confere
+	// que o dump está completo, recria o banco e carrega. O backup de segurança que a restauração
+	// faz antes é o caminho de volta.
+	RestoreScript: `set -e; set -o pipefail
+grep -q -- '-- Dump completed' "/out/$1"
+{ echo 'DROP DATABASE IF EXISTS app; CREATE DATABASE app CHARACTER SET utf8mb4; USE app;'; cat "/out/$1"; } | mysql -h "$2" -u app --batch`,
 }

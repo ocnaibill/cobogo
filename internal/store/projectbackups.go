@@ -54,7 +54,7 @@ func (s *Store) CreateProjectBackup(ctx context.Context, projectID, ownerID uuid
 		return domain.ProjectBackup{}, err
 	}
 	managed := false
-	if svc, err := s.GetService(ctx, projectID, domain.ServicePostgres); err == nil {
+	if svc, err := s.GetDatabaseService(ctx, projectID); err == nil {
 		managed = svc.Mode == domain.ServiceManaged && svc.Status != domain.ServiceDeleting
 	} else if !errors.Is(err, ErrNotFound) {
 		return domain.ProjectBackup{}, err

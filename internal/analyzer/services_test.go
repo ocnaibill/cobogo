@@ -88,7 +88,7 @@ func TestDetectServiceNeeds(t *testing.T) {
 			"tooling":               {"scripts/seed.js": "const pg = require('pg')"},
 			"a sqlite app":          {"package.json": `{"dependencies":{"better-sqlite3":"9"}}`, "a.js": "require('better-sqlite3')"},
 			"a mention in a string": {"a.js": "const help = 'install the pg driver first'"},
-			"another database":      {"a.js": "require('mysql2')"},
+			"another database":      {"a.js": "require('mongodb')"},
 		} {
 			if got := needs(files); len(got) != 0 {
 				t.Errorf("%s: got %+v, want none", name, got)
@@ -145,4 +145,36 @@ func TestConnectionStyle(t *testing.T) {
 			t.Fatalf("got %+v", got)
 		}
 	})
+}
+
+// MySQL (DEC-50): o mesmo critério do PostgreSQL, com os nomes de variável do MySQL.
+func TestDetectMySQLNeeds(t *testing.T) {
+	got := needs(map[string]string{"package.json": `{"dependencies":{"mysql2":"3"}}`, "src/db.js": "const mysql = require('mysql2/promise')\n"}, "MYSQL_URL")
+	if len(got) != 1 || got[0].Engine != domain.ServiceMySQL || got[0].Level != domain.NeedRequired || got[0].Variable != "MYSQL_URL" || got[0].Style != domain.StyleURL {
+		t.Fatalf("mysql2 em runtime: %+v", got)
+	}
+	// Só a dependência: sugestão.
+	got = needs(map[string]string{"package.json": `{"dependencies":{"mysql":"2"}}`})
+	if len(got) != 1 || got[0].Level != domain.NeedPossible {
+		t.Errorf("só a dependência: %+v", got)
+	}
+	// Partes: a família DB_ (como o fec) e a MYSQL_.
+	got = needs(map[string]string{"a.js": "require('mysql2')"}, "DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD", "DB_NAME")
+	if len(got) != 1 || got[0].Style != domain.StyleParts || got[0].Family != "DB" || got[0].Variables[domain.RoleDatabase] != "DB_NAME" || got[0].Variables[domain.RoleCA] != "" {
+		t.Errorf("partes DB_: %+v", got)
+	}
+	got = needs(map[string]string{"a.js": "require('mysql2')"}, "MYSQL_HOST", "MYSQL_PASSWORD", "MYSQL_DATABASE")
+	if len(got) != 1 || got[0].Family != "MYSQL" {
+		t.Errorf("partes MYSQL_: %+v", got)
+	}
+	// PostgreSQL e MySQL no mesmo projeto: uma necessidade para cada.
+	got = needs(map[string]string{"a.js": "require('pg'); require('mysql2')"})
+	if len(got) != 2 {
+		t.Errorf("dois bancos: %+v", got)
+	}
+	// Prisma com provider mysql.
+	got = needs(map[string]string{"package.json": `{"dependencies":{"@prisma/client":"5"}}`, "prisma/schema.prisma": "datasource db {\n  provider = \"mysql\"\n  url = env(\"MYSQL_DATABASE_URL\")\n}\n"})
+	if len(got) != 1 || got[0].Engine != domain.ServiceMySQL || got[0].Variable != "MYSQL_DATABASE_URL" {
+		t.Errorf("prisma: %+v", got)
+	}
 }

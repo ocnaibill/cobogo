@@ -12,7 +12,7 @@ const POLL_MS = 2000;
 const ORIGINS: [LogOrigin, string][] = [
   ["", "Tudo"],
   ["app", "Aplicação"],
-  ["postgres", "Banco"],
+  ["database", "Banco"],
 ];
 
 /** Aba "Logs". */
@@ -172,14 +172,14 @@ export function LogsTab({ projectId }: { projectId: string }) {
               <div key={l.id}>
                 {!search && startsNewContainer(shown[i - 1], l) && (
                   <div className="log-divider">
-                    <Tag>{l.origin === "postgres" ? "banco" : "aplicação"}</Tag> {l.container} começou
+                    <Tag>{l.origin !== "app" ? "banco" : "aplicação"}</Tag> {l.container} começou
                   </div>
                 )}
                 <div className={`log-line log-${l.stream}`}>
                   <time dateTime={l.at} className="log-time">
                     {clockTime(l.at)}
                   </time>
-                  {origin === "" && <span className={`log-origin log-origin-${l.origin}`}>{l.origin === "postgres" ? "banco" : "app"}</span>}
+                  {origin === "" && <span className={`log-origin log-origin-${l.origin}`}>{l.origin !== "app" ? "banco" : "app"}</span>}
                   <span className="log-text">{l.line}</span>
                 </div>
               </div>

@@ -11,7 +11,7 @@ import (
 	"github.com/ocnaibill/cobogo/internal/store"
 )
 
-// PostgreSQL auxiliar (DEC-42). A API registra a escolha do usuário e gera a
+// Banco auxiliar (DEC-42, DEC-50). A API registra a escolha do usuário e gera a
 // credencial; quem cria e apaga o banco é o worker.
 
 const (
@@ -23,7 +23,9 @@ const (
 )
 
 type databaseView struct {
-	// Need é o que a última análise achou sobre PostgreSQL (nulo se nada).
+	// Engine é a engine do banco do projeto: a do serviço, a da necessidade que a análise achou ou PostgreSQL.
+	Engine string `json:"engine"`
+	// Need é o que a última análise achou sobre o banco relacional (nulo se nada).
 	Need *domain.ServiceNeed `json:"need"`
 	// Service é a escolha vigente do projeto (nulo se ainda não escolheu).
 	Service *domain.Service `json:"service"`
@@ -34,20 +36,28 @@ type databaseView struct {
 }
 
 func (s *Server) databaseView(w http.ResponseWriter, r *http.Request, p domain.Project, user domain.User) (databaseView, bool) {
-	view := databaseView{Variable: "DATABASE_URL"}
+	view := databaseView{Variable: "DATABASE_URL", Engine: domain.ServicePostgres}
+	var needs []domain.ServiceNeed
 	if analysis, err := s.store.LatestAnalysis(r.Context(), p.ID); err == nil {
-		for i := range analysis.Result.ServiceNeeds {
-			if n := analysis.Result.ServiceNeeds[i]; n.Engine == domain.ServicePostgres {
-				view.Need, view.Variable = &n, n.Variable
-				break
-			}
-		}
+		needs = analysis.Result.ServiceNeeds
 	} else if !errors.Is(err, store.ErrNotFound) {
 		s.log.Error("buscar análise", "erro", err)
 		writeError(w, http.StatusInternalServerError, "erro interno")
 		return databaseView{}, false
 	}
-	svc, err := s.store.GetService(r.Context(), p.ID, domain.ServicePostgres)
+	svc, err := s.store.GetDatabaseService(r.Context(), p.ID)
+	if err == nil {
+		view.Engine = svc.Engine
+	} else if n := primaryNeed(needs); n != nil {
+		view.Engine = n.Engine
+	}
+	for i := range needs {
+		if needs[i].Engine == view.Engine {
+			n := needs[i]
+			view.Need, view.Variable = &n, n.Variable
+			break
+		}
+	}
 	switch {
 	case err == nil:
 		view.Service, view.Variable = &svc, svc.Variable
@@ -64,12 +74,26 @@ func (s *Server) databaseView(w http.ResponseWriter, r *http.Request, p domain.P
 			return databaseView{}, false
 		}
 		for i := range vols {
-			if vols[i].Path == domain.PostgresDataPath {
+			if vols[i].Path == domain.EngineDataPath(view.Engine) {
 				view.Volume = &vols[i]
 			}
 		}
 	}
 	return view, true
+}
+
+// primaryNeed é a necessidade de banco relacional que a análise mais sustenta: a primeira
+// `required` (na ordem das engines) ou, na falta, a primeira `possible`.
+func primaryNeed(needs []domain.ServiceNeed) *domain.ServiceNeed {
+	for _, level := range []string{domain.NeedRequired, domain.NeedPossible} {
+		for i := range needs {
+			if needs[i].Level == level && domain.IsRelationalEngine(needs[i].Engine) {
+				n := needs[i]
+				return &n
+			}
+		}
+	}
+	return nil
 }
 
 func (s *Server) handleGetDatabase(w http.ResponseWriter, r *http.Request, user domain.User) {
@@ -84,6 +108,8 @@ func (s *Server) handleGetDatabase(w http.ResponseWriter, r *http.Request, user 
 
 type chooseDatabaseRequest struct {
 	Choice string `json:"choice"`
+	// Engine é a engine do banco (postgres ou mysql); vazio vale a da necessidade que a análise achou, ou PostgreSQL.
+	Engine string `json:"engine"`
 	// Variable é o nome da variável da URL (forma curta, DEC-42).
 	Variable string `json:"variable"`
 	// Variables liga cada papel da conexão ao nome da variável (DEC-44).
@@ -142,14 +168,15 @@ func connectionVariables(req chooseDatabaseRequest) (map[string]string, string) 
 
 // connectionValues são os valores que o banco gerenciado entrega por papel. O
 // papel `ca` não está aqui: o certificado é entregue na execução.
-func connectionValues(vars map[string]string, host, pass string) map[string]string {
+func connectionValues(engine string, vars map[string]string, host, pass string) map[string]string {
 	values := map[string]string{}
+	conn := domain.ConnectionOf(engine)
 	if _, isURL := vars[domain.RoleURL]; isURL {
-		values[domain.RoleURL] = "postgres://" + domain.DBUser + ":" + pass + "@" + host + ":" + domain.DBPort + "/" + domain.DBName
+		values[domain.RoleURL] = conn.Scheme + "://" + domain.DBUser + ":" + pass + "@" + host + ":" + conn.Port + "/" + domain.DBName
 		return values
 	}
 	values[domain.RoleHost] = host
-	values[domain.RolePort] = domain.DBPort
+	values[domain.RolePort] = conn.Port
 	values[domain.RoleUser] = domain.DBUser
 	values[domain.RolePassword] = pass
 	values[domain.RoleDatabase] = domain.DBName
@@ -185,6 +212,19 @@ func (s *Server) handleChooseDatabase(w http.ResponseWriter, r *http.Request, us
 		writeError(w, http.StatusBadRequest, problem)
 		return
 	}
+	engine := req.Engine
+	if engine == "" {
+		engine = domain.ServicePostgres
+		if analysis, err := s.store.LatestAnalysis(r.Context(), p.ID); err == nil {
+			if n := primaryNeed(analysis.Result.ServiceNeeds); n != nil {
+				engine = n.Engine
+			}
+		}
+	}
+	if !domain.IsRelationalEngine(engine) {
+		writeError(w, http.StatusBadRequest, "engine deve ser postgres ou mysql")
+		return
+	}
 
 	var values map[string]string
 	if req.Choice == domain.ServiceManaged {
@@ -194,9 +234,9 @@ func (s *Server) handleChooseDatabase(w http.ResponseWriter, r *http.Request, us
 			writeError(w, http.StatusInternalServerError, "erro interno")
 			return
 		}
-		values = connectionValues(vars, domain.ServiceContainerName(p.ID.String()), pass)
+		values = connectionValues(engine, vars, domain.ServiceContainerNameFor(p.ID.String(), engine), pass)
 	}
-	svc, err := s.store.ChooseDatabase(r.Context(), p.ID, user.ID, req.Choice, vars, values)
+	svc, err := s.store.ChooseDatabaseFor(r.Context(), engine, p.ID, user.ID, req.Choice, vars, values)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, "projeto não encontrado")
@@ -211,7 +251,7 @@ func (s *Server) handleChooseDatabase(w http.ResponseWriter, r *http.Request, us
 		writeCode(w, http.StatusConflict, codeVariableDefined, name+" já tem um valor digitado por você; remova-o (ou escolha usar um banco que já tem) antes de criar o banco do Cobogó, que não sobrescreve o que você definiu")
 		return
 	case errors.Is(err, store.ErrManagedExists):
-		writeCode(w, http.StatusConflict, codeManagedExists, "o projeto já tem um PostgreSQL do Cobogó; apague-o (com os dados) antes de escolher outra coisa")
+		writeCode(w, http.StatusConflict, codeManagedExists, "o projeto já tem um banco do Cobogó; apague-o (com os dados) antes de escolher outra coisa")
 		return
 	case err != nil:
 		s.log.Error("registrar escolha do banco", "erro", err)
@@ -262,7 +302,7 @@ func (s *Server) handleDeleteDatabase(w http.ResponseWriter, r *http.Request, us
 		s.audit(r, &user, "project.database.delete", p.ID.String(), "refused")
 		writeCode(w, http.StatusBadRequest, codeConfirmationMismatch, "o nome de confirmação não é o do projeto")
 	case errors.Is(err, store.ErrNoManagedService):
-		writeCode(w, http.StatusConflict, codeNoManagedDB, "o projeto não tem um PostgreSQL do Cobogó para apagar")
+		writeCode(w, http.StatusConflict, codeNoManagedDB, "o projeto não tem um banco do Cobogó para apagar")
 	case err != nil:
 		s.log.Error("pedir exclusão do banco", "erro", err)
 		writeError(w, http.StatusInternalServerError, "erro interno")
