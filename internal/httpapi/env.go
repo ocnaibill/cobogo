@@ -77,7 +77,21 @@ func (s *Server) handleListEnv(w http.ResponseWriter, r *http.Request, user doma
 		writeError(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"variables": vars})
+	// Os valores que a plataforma calculou são endereços públicos, não segredos: o
+	// painel os mostra com a regra (DEC-52 item 3). Só os que ainda são da plataforma.
+	recs, err := s.store.PlatformEnv(r.Context(), projectID)
+	if err != nil {
+		s.log.Error("ler variáveis da plataforma", "erro", err)
+		writeError(w, http.StatusInternalServerError, "erro interno")
+		return
+	}
+	platform := []store.PlatformRecord{}
+	for _, v := range vars {
+		if rec, ok := recs[v.Name]; ok && v.Source == domain.EnvSourcePlatform {
+			platform = append(platform, rec)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"variables": vars, "platform": platform})
 }
 
 type putEnvRequest struct {

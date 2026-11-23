@@ -36,6 +36,9 @@ type Plan struct {
 	// DjangoPlatformHosts: a imagem usa o módulo de ajuste que acrescenta o endereço
 	// do projeto a ALLOWED_HOSTS e CSRF_TRUSTED_ORIGINS (DEC-49 item 6).
 	DjangoPlatformHosts bool `json:"django_platform_hosts,omitempty"`
+	// ReleaseCommand roda uma vez por deploy, num contêiner descartável da imagem nova,
+	// antes de a aplicação nova subir (DEC-52 item 4); se falha, o deploy falha.
+	ReleaseCommand string `json:"release_command,omitempty"`
 }
 
 // gitHookTools são ferramentas que só instalam ganchos do Git; num contêiner

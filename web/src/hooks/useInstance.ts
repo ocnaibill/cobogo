@@ -20,11 +20,11 @@ export function useAppsDomain() {
   };
 }
 
-/** Os projetos mais recentes, para a navegação lateral. */
+/** Os projetos (repositórios), para a navegação lateral (DEC-52). */
 export function useProjectNav() {
   return useQuery({
-    queryKey: ["projects", "nav"],
-    queryFn: () => unwrap(api.GET("/projects", { params: { query: { limit: 50 } } })),
+    queryKey: ["stacks"],
+    queryFn: () => unwrap(api.GET("/stacks")),
     refetchInterval: 10_000,
   });
 }

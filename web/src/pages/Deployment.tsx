@@ -787,6 +787,7 @@ function PlanView({ deploymentId, hasAnalysis }: { deploymentId: string; hasAnal
           ["Alvo", p.app_target ? `${p.app_target} (${p.interface === "asgi" ? "ASGI, uvicorn" : "WSGI, gunicorn"})` : "—"],
           ["Pacotes de sistema", p.system_packages?.length ? p.system_packages.join(", ") : "nenhum"],
           ...(p.processes ?? []).map((pr) => [pr.kind === "scheduler" ? "Agendador" : "Worker", pr.command] as [string, string]),
+          ...(p.release_command ? ([["Fase de release", `${p.release_command} (a cada deploy, antes de a versão nova subir)`]] as [string, string][]) : []),
           ...(p.django_platform_hosts
             ? ([["Ajuste do Django", "acrescenta o endereço do projeto a ALLOWED_HOSTS e CSRF_TRUSTED_ORIGINS (módulo gerado na imagem)"]] as [string, string][])
             : []),

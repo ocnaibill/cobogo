@@ -451,6 +451,12 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 	if _, err := o.SaveAnalysis(ctx, dep.ID, dep.ProjectID, ws.CommitSHA, result); err != nil {
 		return at("ANALYZING", err)
 	}
+	// O papel da aplicação no projeto (DEC-52) é o que a análise viu na própria pasta.
+	if role := appRole(result); role != "" && role != project.Role {
+		if err := w.store.SetProjectRole(ctx, project.ID, role); err != nil {
+			return at("ANALYZING", err)
+		}
+	}
 	if err := w.emit(ctx, o, dep.ID, "analyzing", "completed", map[string]any{
 		"outcome":  result.Outcome,
 		"analysis": result,
@@ -497,6 +503,7 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 		"build_command":   plan.BuildCommand,
 		"start_command":   plan.StartCommand,
 		"processes":       plan.Processes,
+		"release_command": plan.ReleaseCommand,
 		"execution_mode":  plan.ExecutionMode,
 		"port":            plan.Port,
 		"port_origin":     plan.PortOrigin,
@@ -685,11 +692,13 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 	if len(runFiles) > 0 {
 		runOpts = append(runOpts, dockerrt.WithFiles(runFiles))
 	}
+	var appVolumes map[string]string
 	if store.HasPersistentPaths(project) && plan.Profile != domain.ProfileStatic {
 		volumes, created, err := w.prepareVolumes(ctx, rt, project, imageTag)
 		if err != nil {
 			return at("STARTING", err)
 		}
+		appVolumes = volumes
 		runOpts = append(runOpts, dockerrt.WithVolumes(volumes))
 		paths := make([]string, 0, len(volumes))
 		for p := range volumes {
@@ -720,6 +729,21 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 				}
 				_ = w.emit(cleanup, o, dep.ID, "starting", "previous_restored", map[string]any{"container": shortContainer(paused.release.ContainerID)})
 			}()
+		}
+	}
+	// A fase de release (DEC-52 item 4): as migrações rodam da imagem nova, uma vez, antes
+	// de a aplicação nova subir. A anterior segue no ar; se falha, o deploy falha aqui.
+	if plan.ReleaseCommand != "" && plan.Profile != domain.ProfileStatic {
+		if err := w.emit(ctx, o, dep.ID, "starting", "release", map[string]any{"command": plan.ReleaseCommand}); err != nil {
+			return err
+		}
+		rel, err := w.runRelease(ctx, rt, project, dep.ID.String(), imageTag, plan.ReleaseCommand, envValues, projectNet, appVolumes, runFiles, limits, projectValues)
+		if err != nil {
+			code := rel.ExitCode
+			return at("STARTING", &detailedError{err: err, detail: failureDetail{LogTail: tailOf(rel.Output, releaseTailShown), ExitCode: &code}})
+		}
+		if err := w.emit(ctx, o, dep.ID, "starting", "release_done", map[string]any{"command": plan.ReleaseCommand, "seconds": rel.Seconds, "output": tailOf(rel.Output, releaseTailShown)}); err != nil {
+			return err
 		}
 	}
 	runResult, err := rt.Run(ctx, imageTag, containerName, plan.Port, envValues, dep.ID.String(), runOpts...)

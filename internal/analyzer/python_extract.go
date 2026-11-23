@@ -43,6 +43,19 @@ const (
 	kindPyMySQL      = "py.mysql"                  // Name = driver MySQL importado em código de runtime
 	kindPyCelery     = "py.celery"                 // Name = worker|beat|beat_setting; Value = o alvo do -A do Celery
 	kindPyRedis      = "py.redis"                  // Name = import|url; Value = o endereço redis:// sem credenciais
+	// DEC-52 C: as migrações do Django no repositório (a primeira achada) e o modelo de
+	// usuário (Name = classe; Value = "campo|obrigatórios,separados").
+	kindDjangoMigration = "django.migration"
+	kindDjangoUser      = "django.user_model"
+)
+
+var (
+	djangoMigrationFile = regexp.MustCompile(`(^|/)migrations/0001_\w*\.py$`)
+	djangoUsernameField = regexp.MustCompile(`(?m)^\s+USERNAME_FIELD\s*=\s*['"](\w+)['"]`)
+	djangoRequiredField = regexp.MustCompile(`(?ms)^\s+REQUIRED_FIELDS\s*=\s*[\[(]([^\])]*)[\])]`)
+	pyClassDecl         = regexp.MustCompile(`(?m)^class\s+(\w+)\s*\(`)
+	djangoAuthApp       = regexp.MustCompile(`['"]django\.contrib\.auth['"]`)
+	djangoUserModel     = regexp.MustCompile(`(?m)^AUTH_USER_MODEL\s*=\s*['"]([\w]+)\.(\w+)['"]`)
 )
 
 // Pastas que não são código da aplicação.
@@ -352,6 +365,25 @@ func extractPythonSource(fsys fs.FS, x *Extraction) error {
 			continue
 		}
 		x.filesRead++
+		if djangoMigrationFile.MatchString(name) && len(x.of(kindDjangoMigration)) == 0 {
+			x.emit(extractorPySource, domain.Evidence{Kind: kindDjangoMigration, Value: path.Dir(name), Source: name, Line: 1, Scope: domain.ScopeRuntime})
+		}
+		// Um modelo de usuário próprio: o campo de login e os obrigatórios do createsuperuser.
+		if m := djangoUsernameField.FindSubmatchIndex(data); m != nil {
+			class := ""
+			for _, c := range pyClassDecl.FindAllSubmatchIndex(data[:m[0]], -1) {
+				class = string(data[c[2]:c[3]])
+			}
+			required := []string{}
+			if r := djangoRequiredField.FindSubmatch(data); r != nil {
+				for _, f := range pyStringValue.FindAllSubmatch(r[1], -1) {
+					required = append(required, string(f[1]))
+				}
+			}
+			if class != "" {
+				x.emit(extractorPySource, domain.Evidence{Kind: kindDjangoUser, Name: class, Value: string(data[m[2]:m[3]]) + "|" + strings.Join(required, ","), Source: name, Line: lineAt(data, m[0]), Scope: domain.ScopeRuntime})
+			}
+		}
 		scope := classifyScope(name)
 		if isPyTestFile(name) {
 			scope = domain.ScopeTest
@@ -577,6 +609,12 @@ func extractDjango(fsys fs.FS, x *Extraction, srcLayout bool) {
 				origins = append(origins, string(o[1]))
 			}
 			set("CSRF_TRUSTED_ORIGINS_LITERAL", strings.Join(origins, ","), file, data, m[0])
+		}
+		if loc := djangoAuthApp.FindIndex(data); loc != nil {
+			set("AUTH", "", file, data, loc[0])
+		}
+		if m := djangoUserModel.FindSubmatchIndex(data); m != nil {
+			set("AUTH_USER_MODEL", string(data[m[4]:m[5]]), file, data, m[0])
 		}
 		if m := djangoSecretDefault.FindSubmatchIndex(data); m != nil {
 			set("SECRET_KEY_DEFAULT", string(data[m[2]:m[3]]), file, data, m[0])

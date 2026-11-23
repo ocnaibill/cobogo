@@ -315,6 +315,121 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/stacks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Lista os projetos (repositórios)
+         * @description O projeto é o repositório (DEC-52): cada um com as aplicações (o frontend
+         *     primeiro, depois o backend), e cada aplicação com o último deploy.
+         */
+        get: operations["listStacks"];
+        put?: never;
+        /**
+         * Cria um projeto a partir do link do repositório
+         * @description Cria o projeto sem aplicações e pede ao worker a leitura do repositório
+         *     (`scan_state` = `scanning`). A proposta (`scan`) diz quais aplicações criar,
+         *     com a pasta, o papel e o endereço; confirme com `POST /stacks/{id}/apps`.
+         *     Recusado com `slug_taken` se o nome já é de outro projeto.
+         */
+        post: operations["createStack"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/stacks/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Um projeto, pelo id ou pelo slug */
+        get: operations["getStack"];
+        put?: never;
+        post?: never;
+        /**
+         * Exclui o projeto e todas as aplicações
+         * @description Cada aplicação segue a exclusão de `DELETE /projects/{id}` (DEC-38), com os
+         *     serviços e, se `delete_data`, os volumes. Recusado com
+         *     `deployment_in_progress` se alguma tem deploy em execução, e com
+         *     `confirmation_mismatch` se `confirm_slug` não é o nome do projeto.
+         */
+        delete: operations["deleteStack"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/stacks/{id}/scan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Lê o repositório de novo
+         * @description Recusado com `scan_busy` se já há uma leitura em andamento.
+         */
+        post: operations["scanStack"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/stacks/{id}/apps": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cria as aplicações do projeto (e as publica)
+         * @description Cria uma aplicação por item (pasta, endereço e papel); uma pasta que já é
+         *     aplicação do projeto é ignorada. Com `deploy`, publica cada uma, o backend
+         *     antes do frontend. Recusado com `slug_taken` se um endereço já é de outra
+         *     aplicação.
+         */
+        post: operations["createStackApps"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/stacks/{id}/deployments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Publica todas as aplicações do projeto
+         * @description Um deploy por aplicação, o backend antes do frontend.
+         */
+        post: operations["deployStack"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/projects": {
         parameters: {
             query?: never;
@@ -932,7 +1047,8 @@ export interface paths {
         };
         /**
          * Lista as variáveis do projeto
-         * @description Só nome e metadados; o valor nunca é devolvido.
+         * @description Só nome e metadados; o valor nunca é devolvido, exceto o das variáveis que
+         *     a plataforma calculou (`platform`, DEC-52): são endereços públicos, com a regra.
          */
         get: operations["listEnv"];
         put?: never;
@@ -1300,6 +1416,51 @@ export interface components {
             root_directory: string;
             /** Format: date-time */
             created_at: string;
+            /**
+             * Format: uuid
+             * @description O projeto (repositório) a que esta aplicação pertence (DEC-52).
+             */
+            stack_id?: string | null;
+            /** @description O papel da aplicação no projeto (`frontend`, `backend`, `fullstack`, `app`), ou vazio antes da primeira análise. */
+            role?: string;
+        };
+        /**
+         * @description O projeto que o painel mostra (DEC-52): um repositório, com as aplicações
+         *     dentro. Cada aplicação é um `Project` da API (a unidade de deploy).
+         */
+        Stack: {
+            /** Format: uuid */
+            id: string;
+            slug: string;
+            repository_url: string;
+            /** Format: date-time */
+            created_at: string;
+            /** @enum {string} */
+            scan_state: "none" | "scanning" | "done" | "failed";
+            scan: components["schemas"]["StackScan"] | null;
+            scan_error?: string;
+            /** Format: date-time */
+            scanned_at: string | null;
+            apps: components["schemas"]["ProjectSummary"][];
+        };
+        StackScan: {
+            commit_sha: string;
+            apps: components["schemas"]["StackScanApp"][];
+        };
+        /** @description Uma aplicação que o Cobogó propõe criar, com o que a análise da pasta dela achou. */
+        StackScanApp: {
+            root_directory: string;
+            role: string;
+            label: string;
+            ecosystem?: string;
+            profile?: string;
+            /** @description O endereço sugerido (`<slug>.<domínio>`). */
+            slug: string;
+            evidence: string[];
+            components: components["schemas"]["Component"][];
+            /** @description Os campos que a análise ainda perguntaria (`unsupported` se não há como publicar). */
+            questions: string[];
+            warnings: number;
         };
         ProjectSummary: components["schemas"]["Project"] & {
             last_deployment: components["schemas"]["DeploymentBrief"] | null;
@@ -1413,10 +1574,20 @@ export interface components {
             name: string;
             version: number;
             /** @enum {string} */
-            source: "user" | "generated" | "imported" | "linked";
+            source: "user" | "generated" | "imported" | "linked" | "platform";
             key_version: number;
             /** Format: date-time */
             created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /** @description Um valor que o Cobogó calculou e mantém (DEC-52), com a regra. */
+        PlatformEnvValue: {
+            name: string;
+            value: string;
+            reason: string;
+            /** @description O valor entra no build (variável pública); mudar exige publicar de novo. */
+            build_time: boolean;
             /** Format: date-time */
             updated_at: string;
         };
@@ -1631,7 +1802,10 @@ export interface components {
             /** @description O texto rodado, com os valores das variáveis do projeto trocados por `[REDIGIDO]` ao concluir. */
             command: string;
             /** @enum {string} */
-            source: "script" | "custom";
+            source: "script" | "custom" | "recipe";
+            recipe?: string;
+            /** @description Os nomes dos valores só desta execução; os valores nunca voltam. */
+            input_names: string[];
             pause_app: boolean;
             /** @enum {string} */
             state: "queued" | "running" | "succeeded" | "failed" | "timed_out" | "canceled" | "interrupted";
@@ -1806,12 +1980,27 @@ export interface components {
         CommandsView: {
             commands: components["schemas"]["Command"][];
             scripts: components["schemas"]["ScriptOption"][];
+            /** @description Comandos conhecidos que pedem dados, montados por evidência (DEC-52). */
+            recipes: components["schemas"]["Recipe"][];
             available: boolean;
             reason?: string;
             /** Format: date-time */
             reauth_until: string | null;
             default_timeout: number;
             max_timeout: number;
+        };
+        Recipe: {
+            id: string;
+            title: string;
+            description: string;
+            command: string;
+            inputs: {
+                name: string;
+                label: string;
+                secret: boolean;
+                required: boolean;
+            }[];
+            evidence: string[];
         };
         ServiceNeed: {
             /** @enum {string} */
@@ -1925,6 +2114,11 @@ export interface components {
                 kind: "worker" | "scheduler";
                 command: string;
             }[];
+            /**
+             * @description A fase de release (DEC-52): roda uma vez por deploy, da imagem nova, antes de a
+             *     aplicação nova subir (as migrações). Se falha, o deploy falha e a versão anterior segue no ar.
+             */
+            release_command?: string;
             /** @description A imagem usa o módulo de ajuste do Django que acrescenta o endereço do projeto às listas de hosts e de origens; só no perfil P-PY (DEC-49). */
             django_platform_hosts?: boolean;
             /** @description Pacotes de sistema do catálogo fechado instalados na execução; só no perfil P-PY. */
@@ -2152,6 +2346,8 @@ export interface components {
         };
     };
     parameters: {
+        /** @description O id do projeto ou o slug dele. */
+        StackRef: string;
         BackupId: string;
         CommandId: string;
         SettingKey: "app_memory_mb" | "app_cpus" | "app_pids" | "build_memory_mb" | "build_cpus" | "extra_git_hosts" | "apps_domain" | "apps_scheme" | "retire_grace_seconds" | "release_images_kept" | "backup_keep_daily" | "backup_keep_weekly" | "backup_project_keep";
@@ -2672,6 +2868,265 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+        };
+    };
+    listStacks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Os projetos do dono. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        stacks: components["schemas"]["Stack"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+        };
+    };
+    createStack: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    repository_url: string;
+                    /** @description Nome do projeto; vazio usa o nome do repositório. */
+                    slug?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description O projeto, lendo o repositório. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Stack"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            /** @description O nome já é de outro projeto (`slug_taken`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getStack: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description O id do projeto ou o slug dele. */
+                id: components["parameters"]["StackRef"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description O projeto, com as aplicações e a proposta. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Stack"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    deleteStack: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description O id do projeto ou o slug dele. */
+                id: components["parameters"]["StackRef"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    confirm_slug: string;
+                    delete_data?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description As exclusões pedidas, uma operação por aplicação. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        operations: components["schemas"]["Operation"][];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+            /** @description Há deploy em andamento (`deployment_in_progress`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    scanStack: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description O id do projeto ou o slug dele. */
+                id: components["parameters"]["StackRef"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description O projeto, lendo o repositório. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Stack"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+            /** @description Já está lendo (`scan_busy`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    createStackApps: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description O id do projeto ou o slug dele. */
+                id: components["parameters"]["StackRef"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    apps: {
+                        root_directory: string;
+                        slug: string;
+                        /** @enum {string} */
+                        role?: "frontend" | "backend" | "fullstack" | "app" | "";
+                    }[];
+                    deploy?: boolean;
+                    idempotency_key?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description O projeto e os deploys pedidos. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        stack: components["schemas"]["Stack"];
+                        deployments: components["schemas"]["Deployment"][];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+            /** @description Um endereço já é de outra aplicação (`slug_taken`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    deployStack: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description O id do projeto ou o slug dele. */
+                id: components["parameters"]["StackRef"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    idempotency_key: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Os deploys criados. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        deployments: components["schemas"]["Deployment"][];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthenticated"];
+            404: components["responses"]["NotFound"];
+            /** @description O projeto não tem aplicações (`no_apps`) ou a chave já foi usada. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     listProjects: {
@@ -3360,6 +3815,16 @@ export interface operations {
                     script?: string;
                     /** @description Comando livre, de até 2000 caracteres. */
                     command?: string;
+                    /** @description Uma receita oferecida pelo projeto (`recipes` da lista), no lugar de `script` ou `command` (DEC-52). */
+                    recipe?: string;
+                    /**
+                     * @description Valores só desta execução (DEC-52): variáveis que só este comando recebe,
+                     *     até 10, com nomes em maiúsculas. Vão cifradas até o worker, valem sobre as
+                     *     do projeto, saem da saída gravada e são apagadas ao concluir. Nunca voltam.
+                     */
+                    inputs?: {
+                        [key: string]: string;
+                    };
                     /** @description Para a aplicação durante o comando e a inicia de novo depois. Padrão `false` (roda com a aplicação no ar). */
                     pause_app?: boolean;
                     /** @description Prazo do comando. Padrão 300. */
@@ -3798,6 +4263,7 @@ export interface operations {
                 content: {
                     "application/json": {
                         variables: components["schemas"]["EnvVariable"][];
+                        platform: components["schemas"]["PlatformEnvValue"][];
                     };
                 };
             };

@@ -46,21 +46,68 @@ func New(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool}
 }
 
-// CreateProject registra um repositório para deploy (RF-01) em nome do dono.
+// CreateProject registra um repositório para deploy (RF-01) em nome do dono: uma
+// aplicação na raiz ou numa pasta. Ela entra no projeto (DEC-52) do mesmo repositório
+// do dono, ou num projeto novo com o mesmo slug.
 func (s *Store) CreateProject(ctx context.Context, ownerID uuid.UUID, slug, repositoryURL, rootDirectory string) (domain.Project, error) {
-	p := domain.Project{
-		ID:            uuid.New(),
-		OwnerID:       &ownerID,
-		Slug:          slug,
-		RepositoryURL: repositoryURL,
-		RootDirectory: rootDirectory,
-		CreatedAt:     time.Now().UTC(),
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return domain.Project{}, fmt.Errorf("store: criar projeto: %w", err)
 	}
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO projects (id, owner_id, slug, repository_url, root_directory, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6)`,
-		p.ID, p.OwnerID, p.Slug, p.RepositoryURL, p.RootDirectory, p.CreatedAt,
+	defer tx.Rollback(ctx)
+	var stackID uuid.UUID
+	err = tx.QueryRow(ctx, `
+		SELECT id FROM stacks WHERE owner_id = $1 AND repository_url = $2 AND deleted_at IS NULL
+		ORDER BY created_at LIMIT 1`, ownerID, repositoryURL).Scan(&stackID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// O nome do projeto não é endereço: se outro projeto já o usa, ganha um sufixo.
+		stackID = uuid.New()
+		stackSlug := slug
+		for n := 2; ; n++ {
+			var taken bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM stacks WHERE slug = $1 AND deleted_at IS NULL)`, stackSlug).Scan(&taken); err != nil {
+				return domain.Project{}, fmt.Errorf("store: criar projeto: %w", err)
+			}
+			if !taken {
+				break
+			}
+			stackSlug = fmt.Sprintf("%s-%d", slug, n)
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO stacks (id, owner_id, slug, repository_url) VALUES ($1, $2, $3, $4)`,
+			stackID, ownerID, stackSlug, repositoryURL); err != nil {
+			return domain.Project{}, fmt.Errorf("store: criar projeto: %w", err)
+		}
+	} else if err != nil {
+		return domain.Project{}, fmt.Errorf("store: criar projeto: %w", err)
+	}
+	p, err := insertApp(ctx, tx, ownerID, stackID, slug, repositoryURL, rootDirectory, "")
+	if err != nil {
+		return domain.Project{}, err
+	}
+	return p, tx.Commit(ctx)
+}
+
+func insertApp(ctx context.Context, tx pgx.Tx, ownerID, stackID uuid.UUID, slug, repositoryURL, rootDirectory, role string) (domain.Project, error) {
+	p := domain.Project{
+		ID:              uuid.New(),
+		OwnerID:         &ownerID,
+		Slug:            slug,
+		RepositoryURL:   repositoryURL,
+		RootDirectory:   rootDirectory,
+		CreatedAt:       time.Now().UTC(),
+		StackID:         &stackID,
+		Role:            role,
+		AppState:        domain.AppNone,
+		PersistentPaths: []string{},
+	}
+	_, err := tx.Exec(ctx, `
+		INSERT INTO projects (id, owner_id, slug, repository_url, root_directory, created_at, stack_id, role)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		p.ID, p.OwnerID, p.Slug, p.RepositoryURL, p.RootDirectory, p.CreatedAt, p.StackID, p.Role,
 	)
+	if isUniqueViolation(err) {
+		return domain.Project{}, fmt.Errorf("%w: %s", ErrSlugTaken, slug)
+	}
 	if err != nil {
 		return domain.Project{}, fmt.Errorf("store: criar projeto: %w", err)
 	}
@@ -74,13 +121,13 @@ func (s *Store) GetProject(ctx context.Context, id uuid.UUID) (domain.Project, e
 	var p domain.Project
 	var limitsRaw string
 	err := s.pool.QueryRow(ctx, `
-		SELECT p.id, p.owner_id, p.slug, p.repository_url, p.root_directory, p.limits, p.created_at, p.deleted_at, p.persistent_paths,
+		SELECT p.id, p.owner_id, p.slug, p.repository_url, p.root_directory, p.limits, p.created_at, p.deleted_at, p.persistent_paths, p.stack_id, p.role,
 		       COALESCE((SELECT CASE WHEN r.stopped_at IS NULL THEN 'running' ELSE 'stopped' END
 		            FROM releases r JOIN deployments dd ON dd.id = r.deployment_id
 		            WHERE dd.project_id = p.id AND r.operational_state = 'active'
 		            ORDER BY r.created_at DESC LIMIT 1), 'none')
 		FROM projects p WHERE p.id = $1`, id,
-	).Scan(&p.ID, &p.OwnerID, &p.Slug, &p.RepositoryURL, &p.RootDirectory, &limitsRaw, &p.CreatedAt, &p.DeletedAt, &p.PersistentPaths, &p.AppState)
+	).Scan(&p.ID, &p.OwnerID, &p.Slug, &p.RepositoryURL, &p.RootDirectory, &limitsRaw, &p.CreatedAt, &p.DeletedAt, &p.PersistentPaths, &p.StackID, &p.Role, &p.AppState)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Project{}, ErrNotFound
 	}

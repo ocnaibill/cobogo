@@ -144,6 +144,16 @@ export function eventToLines(e: DeploymentEvent): LogLine[] {
       return [{ ...base, kind: "step", text: `✓ serviço ${e.event_type === "postgres" ? "PostgreSQL" : e.event_type === "mysql" ? "MySQL" : "Redis"}: ${p.created ? "criado" : "já existia"} (${str(p.container)})` }];
     case "process":
       return [{ ...base, kind: "step", text: `▸ processo ${str(p.name)} iniciado (${str(p.container)}): \`${str(p.command)}\`` }];
+    case "release":
+      return [{ ...base, kind: "step", text: `▸ fase de release: \`${str(p.command)}\` (da imagem nova, antes de a versão nova subir)` }];
+    case "release_done": {
+      const out = str(p.output)
+        .split("\n")
+        .filter((l) => l.trim() !== "")
+        .slice(-12)
+        .map((l, i) => ({ ...base, seq: base.seq + (i + 1) / 100, kind: "output" as const, text: l }));
+      return [...out, { ...base, kind: "step", text: `✓ fase de release concluída em ${str(p.seconds)} s` }];
+    }
     case "processes":
       return [{ ...base, kind: "step", text: `✓ ${str(p.count)} processo(s) de pé por ${str(p.stable_seconds)} s, sem sair` }];
     case "promoted":
@@ -206,6 +216,7 @@ export const FIELD_LABEL: Record<string, string> = {
   django_platform_hosts: "Ajuste de hosts do Django",
   process_worker: "Comando do worker",
   process_scheduler: "Comando do agendador",
+  release_command: "Fase de release (migrações)",
   output_dir: "Diretório servido",
   spa_fallback: "Fallback de SPA",
   health_path: "Caminho da verificação",

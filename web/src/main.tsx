@@ -9,7 +9,7 @@ import { RequireSession } from "./components/Layout";
 import { LoginPage, SetupPage } from "./pages/Auth";
 import { OverviewPage } from "./pages/Overview";
 import { ImportPage } from "./pages/Import";
-import { ProjectPage } from "./pages/Project";
+import { StackPage } from "./pages/Stack";
 import { DeploymentPage } from "./pages/Deployment";
 import { Empty } from "./components/ui";
 import "./styles/fonts.css";
@@ -45,7 +45,7 @@ const router = createBrowserRouter([
       { path: "/", element: <OverviewPage /> },
       { path: "/importar", element: <ImportPage /> },
       { path: "/backups", element: <BackupsPage /> },
-      { path: "/projetos/:id", element: <ProjectPage /> },
+      { path: "/projetos/:id", element: <StackPage /> },
       { path: "/deploys/:id", element: <DeploymentPage /> },
       { path: "*", element: <NotFound /> },
     ],

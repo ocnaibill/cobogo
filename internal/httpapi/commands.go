@@ -192,6 +192,8 @@ type commandsView struct {
 	Commands []domain.Command `json:"commands"`
 	// Scripts são os botões: os scripts do package.json que servem de comando pontual.
 	Scripts []scriptOption `json:"scripts"`
+	// Recipes são os comandos conhecidos que pedem dados (DEC-52 C).
+	Recipes []recipe `json:"recipes"`
 	// Available diz se o projeto aceita comandos agora; Reason explica quando não.
 	Available bool   `json:"available"`
 	Reason    string `json:"reason,omitempty"`
@@ -221,12 +223,13 @@ func (s *Server) handleListCommands(w http.ResponseWriter, r *http.Request, user
 	if !ok {
 		return
 	}
-	view := commandsView{Scripts: []scriptOption{}, DefaultTimeout: domain.CommandDefaultTimeout, MaxTimeout: domain.CommandMaxTimeout}
+	view := commandsView{Scripts: []scriptOption{}, Recipes: []recipe{}, DefaultTimeout: domain.CommandDefaultTimeout, MaxTimeout: domain.CommandMaxTimeout}
 	var result *domain.AnalysisResult
 	switch a, err := s.store.LatestAnalysis(r.Context(), p.ID); {
 	case err == nil:
 		result = &a.Result
 		view.Scripts = scriptsFrom(a.Result)
+		view.Recipes = recipesFrom(a.Result)
 	case !errors.Is(err, store.ErrNotFound):
 		s.log.Error("buscar análise", "erro", err)
 		writeError(w, http.StatusInternalServerError, "erro interno")
@@ -254,6 +257,11 @@ type createCommandRequest struct {
 	// texto livre. Exatamente um dos dois.
 	Script  string `json:"script"`
 	Command string `json:"command"`
+	// Recipe é uma receita da lista (DEC-52 C), no lugar do script ou do comando.
+	Recipe string `json:"recipe"`
+	// Inputs são valores só desta execução: variáveis que só este comando recebe,
+	// cifradas até o worker e apagadas ao concluir. Nunca voltam pela API.
+	Inputs map[string]string `json:"inputs"`
 	// PauseApp para a aplicação durante o comando (DEC-45 item 7).
 	PauseApp       bool `json:"pause_app"`
 	TimeoutSeconds int  `json:"timeout_seconds"`
@@ -282,8 +290,18 @@ func (s *Server) handleCreateCommand(w http.ResponseWriter, r *http.Request, use
 	}
 
 	command, source := strings.TrimSpace(req.Command), domain.CommandCustom
-	if (req.Script == "") == (command == "") {
-		writeError(w, http.StatusBadRequest, "informe um script ou um comando, e só um dos dois")
+	chosen := 0
+	for _, v := range []string{req.Script, command, req.Recipe} {
+		if v != "" {
+			chosen++
+		}
+	}
+	if chosen != 1 {
+		writeError(w, http.StatusBadRequest, "informe um script, uma receita ou um comando, e só um deles")
+		return
+	}
+	if problem := checkCommandInputs(req.Inputs); problem != "" {
+		writeError(w, http.StatusBadRequest, problem)
 		return
 	}
 	var result *domain.AnalysisResult
@@ -309,6 +327,36 @@ func (s *Server) handleCreateCommand(w http.ResponseWriter, r *http.Request, use
 			return
 		}
 	}
+	if req.Recipe != "" {
+		source = domain.CommandRecipe
+		var found *recipe
+		if result != nil {
+			for _, rc := range recipesFrom(*result) {
+				if rc.ID == req.Recipe {
+					found = &rc
+				}
+			}
+		}
+		if found == nil {
+			writeError(w, http.StatusBadRequest, "essa receita não está entre as que o projeto oferece")
+			return
+		}
+		allowed := map[string]bool{}
+		for _, in := range found.Inputs {
+			allowed[in.Name] = true
+			if in.Required && strings.TrimSpace(req.Inputs[in.Name]) == "" {
+				writeError(w, http.StatusBadRequest, "falta o valor de "+in.Label)
+				return
+			}
+		}
+		for k := range req.Inputs {
+			if !allowed[k] {
+				writeError(w, http.StatusBadRequest, "a receita não usa "+k)
+				return
+			}
+		}
+		command = found.Command
+	}
 	if len(command) > domain.CommandMaxLen || !utf8.ValidString(command) || strings.ContainsRune(command, 0) {
 		writeError(w, http.StatusBadRequest, "o comando precisa ser um texto de até 2000 caracteres, sem bytes nulos")
 		return
@@ -330,7 +378,9 @@ func (s *Server) handleCreateCommand(w http.ResponseWriter, r *http.Request, use
 		return
 	}
 
-	cmd, err := s.store.CreateCommand(r.Context(), p.ID, user.ID, command, source, req.PauseApp, timeout)
+	cmd, err := s.store.CreateCommandWith(r.Context(), p.ID, user.ID, store.NewCommand{
+		Command: command, Source: source, Recipe: req.Recipe, PauseApp: req.PauseApp, TimeoutSeconds: timeout, Inputs: req.Inputs,
+	})
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, "projeto não encontrado")
@@ -346,7 +396,7 @@ func (s *Server) handleCreateCommand(w http.ResponseWriter, r *http.Request, use
 		// das variáveis (só o worker), então a auditoria guarda a referência. O texto,
 		// já sem os valores, fica no registro do comando, que o worker conclui.
 		s.auditDetail(r, &user, "project.command", p.ID.String(), "ok", map[string]any{
-			"names": []string{cmd.ID.String(), source},
+			"names": append([]string{cmd.ID.String(), source, req.Recipe}, cmd.InputNames...),
 		})
 		writeJSON(w, http.StatusAccepted, cmd)
 	}

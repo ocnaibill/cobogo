@@ -25,6 +25,9 @@ const (
 	// do projeto (DEC-51); "none" os desliga.
 	FieldProcessWorker    = "process_worker"
 	FieldProcessScheduler = "process_scheduler"
+	// FieldReleaseCommand é a fase de release (DEC-52 item 4): roda uma vez por deploy, da
+	// imagem nova, antes de a aplicação nova subir (as migrações); "none" a desliga.
+	FieldReleaseCommand = "release_command"
 )
 
 // Ecossistemas.

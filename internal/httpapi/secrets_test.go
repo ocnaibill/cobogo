@@ -398,8 +398,14 @@ func TestPairSuggestions(t *testing.T) {
 	if b["FRONTEND_URL"] != "https://app-teste-frontend.apps.cobogo.test" {
 		t.Errorf("backend FRONTEND_URL = %q (%v)", b["FRONTEND_URL"], b)
 	}
-	if b["ALLOWED_HOSTS"] != "app-teste.apps.cobogo.test" || b["CSRF_TRUSTED_ORIGINS"] != "https://app-teste.apps.cobogo.test" {
-		t.Errorf("backend own suggestions = %v", b)
+	// O endereço do próprio backend já é aplicado pela plataforma ao pedir o deploy
+	// (DEC-52 parte B), então não sobra como sugestão.
+	if _, ok := b["ALLOWED_HOSTS"]; ok {
+		t.Errorf("ALLOWED_HOSTS já é da plataforma: %v", b)
+	}
+	vals, _, _ := h.st.RevealEnvValues(t.Context(), uuid.MustParse(backend))
+	if vals["ALLOWED_HOSTS"] != "app-teste.apps.cobogo.test" || !strings.HasPrefix(vals["CSRF_TRUSTED_ORIGINS"], "https://app-teste.apps.cobogo.test") {
+		t.Errorf("backend, valores da plataforma = %q %q", vals["ALLOWED_HOSTS"], vals["CSRF_TRUSTED_ORIGINS"])
 	}
 	if _, ok := b["VITE_API_URL"]; ok {
 		t.Errorf("o par do backend é um frontend: não há API a sugerir: %v", b)

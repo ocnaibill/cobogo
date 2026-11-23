@@ -6,7 +6,7 @@ import { Link, Navigate, NavLink, Outlet, useLocation } from "react-router";
 import { useSession } from "../session";
 import { SessionExpiredDialog } from "../pages/Auth";
 import { useProjectNav } from "../hooks/useInstance";
-import { stateTone } from "../lib/deploy";
+import { stackTone } from "../lib/stacks";
 import { Loading, Logo } from "./ui";
 import { Icon } from "./icons";
 
@@ -79,7 +79,7 @@ function Layout() {
 
 function Sidebar() {
   const projects = useProjectNav();
-  const list = projects.data?.projects ?? [];
+  const list = projects.data?.stacks ?? [];
   const backups = useBackups();
   // O ponto vermelho só acende com o volume visível e o backup velho ou ausente.
   const backupAlert = !!backups.data && backups.data.configured && backups.data.stale;
@@ -95,13 +95,13 @@ function Sidebar() {
           </div>
           <NavLink to="/" end className="nav-link">
             <span>Visão geral</span>
-            {projects.isSuccess && <span className="nav-count">{list.length}{projects.data?.next_before ? "+" : ""}</span>}
+            {projects.isSuccess && <span className="nav-count">{list.length}</span>}
           </NavLink>
           {list.length > 0 && (
             <div className="nav-sub" aria-label="Projetos">
               {list.slice(0, 12).map((p) => (
-                <NavLink key={p.id} to={`/projetos/${p.id}`} className="nav-link nav-project" title={p.repository_url}>
-                  <span className={`dot dot-${p.last_deployment ? stateTone(p.last_deployment.state) : "neutral"}`} aria-hidden="true" />
+                <NavLink key={p.id} to={`/projetos/${p.slug}`} className="nav-link nav-project" title={p.repository_url}>
+                  <span className={`dot dot-${stackTone(p)}`} aria-hidden="true" />
                   <span className="truncate">{p.slug}</span>
                 </NavLink>
               ))}
@@ -115,7 +115,7 @@ function Sidebar() {
             Esteira de publicação
           </div>
           <NavLink to="/importar" className="nav-link">
-            <span>Importar repositório</span>
+            <span>Novo projeto</span>
           </NavLink>
         </div>
 

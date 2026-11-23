@@ -158,6 +158,17 @@ func (w *Worker) executeCommand(ctx context.Context, cmd *domain.Command) {
 			env[k] = v
 		}
 	}
+	// Os valores só desta execução (DEC-52 C): valem sobre os do projeto, só neste
+	// contêiner, e saem da saída gravada como qualquer valor de variável.
+	inputs, err := w.store.CommandInputs(ctx, cmd.ID)
+	if err != nil {
+		fail("carregar os valores do comando: " + err.Error())
+		return
+	}
+	for k, v := range inputs {
+		env[k] = v
+		secrets = append(secrets, v)
+	}
 
 	spec := dockerrt.CommandSpec{
 		ProjectID: project.ID.String(), CommandID: cmd.ID.String(), Image: active.ImageID, Command: cmd.Command,

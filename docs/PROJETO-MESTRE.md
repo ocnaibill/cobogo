@@ -154,7 +154,7 @@ Versões exatas de runtimes, imagens e ferramentas serão fixadas no catálogo d
 | RN-10 | Remover projeto ou contêiner não implica remover volumes. Exclusão de dados é uma operação separada, explícita e registrada. |
 | RN-11 | Logs e exportações passam por ocultação de segredos conhecidos. O sistema não promete detectar todo segredo que uma aplicação imprima. |
 | RN-12 | Sucesso histórico do deploy e saúde atual são informações distintas. Uma queda posterior altera a saúde da release, preservando o histórico da execução. |
-| RN-13 | Migrações de esquema da aplicação não são inferidas nem executadas por convenção. Exigem comando declarado e política explícita; rollback da imagem não desfaz migrações. |
+| RN-13 | Migrações de esquema da aplicação rodam só com política explícita: um comando declarado (a fase `release` do Procfile) ou inferido com evidência (o `migrate` do Django com migrações no repositório, DEC-52), sempre visível no plano e desligável. Rollback da imagem não desfaz migrações. |
 | RN-14 | Um Dockerfile ou Compose existente é informado ao usuário; D0 não o executa automaticamente nem o sobrescreve no Git. A pessoa deve selecionar um modo suportado ou receber indicação de incompatibilidade. |
 | RN-15 | Heurísticas descobrem nomes e necessidades de configuração; não inventam valores secretos. Valores de `.env`, credenciais, tokens e conexões autenticadas não entram no contexto de modelos de decisão. |
 | RN-16 | Métricas pertencem ao projeto, recurso e intervalo efetivamente medidos. Novo contêiner/release inicia nova série; ausência de coleta não é consumo zero nem aplicação saudável. |

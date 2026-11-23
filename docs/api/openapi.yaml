@@ -532,6 +532,266 @@ paths:
                 $ref: '#/components/schemas/Error'
         '404':
           $ref: '#/components/responses/NotFound'
+  /stacks:
+    get:
+      tags: [projects]
+      summary: Lista os projetos (repositórios)
+      description: |
+        O projeto é o repositório (DEC-52): cada um com as aplicações (o frontend
+        primeiro, depois o backend), e cada aplicação com o último deploy.
+      operationId: listStacks
+      responses:
+        '200':
+          description: Os projetos do dono.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [stacks]
+                properties:
+                  stacks:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Stack'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+    post:
+      tags: [projects]
+      summary: Cria um projeto a partir do link do repositório
+      description: |
+        Cria o projeto sem aplicações e pede ao worker a leitura do repositório
+        (`scan_state` = `scanning`). A proposta (`scan`) diz quais aplicações criar,
+        com a pasta, o papel e o endereço; confirme com `POST /stacks/{id}/apps`.
+        Recusado com `slug_taken` se o nome já é de outro projeto.
+      operationId: createStack
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [repository_url]
+              properties:
+                repository_url:
+                  type: string
+                slug:
+                  type: string
+                  description: Nome do projeto; vazio usa o nome do repositório.
+      responses:
+        '201':
+          description: O projeto, lendo o repositório.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Stack'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '409':
+          description: O nome já é de outro projeto (`slug_taken`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /stacks/{id}:
+    get:
+      tags: [projects]
+      summary: Um projeto, pelo id ou pelo slug
+      operationId: getStack
+      parameters:
+        - $ref: '#/components/parameters/StackRef'
+      responses:
+        '200':
+          description: O projeto, com as aplicações e a proposta.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Stack'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [projects, operations]
+      summary: Exclui o projeto e todas as aplicações
+      description: |
+        Cada aplicação segue a exclusão de `DELETE /projects/{id}` (DEC-38), com os
+        serviços e, se `delete_data`, os volumes. Recusado com
+        `deployment_in_progress` se alguma tem deploy em execução, e com
+        `confirmation_mismatch` se `confirm_slug` não é o nome do projeto.
+      operationId: deleteStack
+      parameters:
+        - $ref: '#/components/parameters/StackRef'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm_slug]
+              properties:
+                confirm_slug:
+                  type: string
+                delete_data:
+                  type: boolean
+      responses:
+        '202':
+          description: As exclusões pedidas, uma operação por aplicação.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [operations]
+                properties:
+                  operations:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Operation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Há deploy em andamento (`deployment_in_progress`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /stacks/{id}/scan:
+    post:
+      tags: [projects]
+      summary: Lê o repositório de novo
+      description: Recusado com `scan_busy` se já há uma leitura em andamento.
+      operationId: scanStack
+      parameters:
+        - $ref: '#/components/parameters/StackRef'
+      responses:
+        '202':
+          description: O projeto, lendo o repositório.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Stack'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Já está lendo (`scan_busy`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /stacks/{id}/apps:
+    post:
+      tags: [projects]
+      summary: Cria as aplicações do projeto (e as publica)
+      description: |
+        Cria uma aplicação por item (pasta, endereço e papel); uma pasta que já é
+        aplicação do projeto é ignorada. Com `deploy`, publica cada uma, o backend
+        antes do frontend. Recusado com `slug_taken` se um endereço já é de outra
+        aplicação.
+      operationId: createStackApps
+      parameters:
+        - $ref: '#/components/parameters/StackRef'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [apps]
+              properties:
+                apps:
+                  type: array
+                  items:
+                    type: object
+                    required: [root_directory, slug]
+                    properties:
+                      root_directory:
+                        type: string
+                      slug:
+                        type: string
+                      role:
+                        type: string
+                        enum: [frontend, backend, fullstack, app, '']
+                deploy:
+                  type: boolean
+                idempotency_key:
+                  type: string
+      responses:
+        '201':
+          description: O projeto e os deploys pedidos.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [stack, deployments]
+                properties:
+                  stack:
+                    $ref: '#/components/schemas/Stack'
+                  deployments:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Deployment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Um endereço já é de outra aplicação (`slug_taken`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /stacks/{id}/deployments:
+    post:
+      tags: [projects, deployments]
+      summary: Publica todas as aplicações do projeto
+      description: Um deploy por aplicação, o backend antes do frontend.
+      operationId: deployStack
+      parameters:
+        - $ref: '#/components/parameters/StackRef'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [idempotency_key]
+              properties:
+                idempotency_key:
+                  type: string
+      responses:
+        '202':
+          description: Os deploys criados.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deployments]
+                properties:
+                  deployments:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Deployment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: O projeto não tem aplicações (`no_apps`) ou a chave já foi usada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /projects:
     get:
       tags: [projects]
@@ -1242,6 +1502,17 @@ paths:
                 command:
                   type: string
                   description: Comando livre, de até 2000 caracteres.
+                recipe:
+                  type: string
+                  description: Uma receita oferecida pelo projeto (`recipes` da lista), no lugar de `script` ou `command` (DEC-52).
+                inputs:
+                  type: object
+                  additionalProperties:
+                    type: string
+                  description: |
+                    Valores só desta execução (DEC-52): variáveis que só este comando recebe,
+                    até 10, com nomes em maiúsculas. Vão cifradas até o worker, valem sobre as
+                    do projeto, saem da saída gravada e são apagadas ao concluir. Nunca voltam.
                 pause_app:
                   type: boolean
                   description: Para a aplicação durante o comando e a inicia de novo depois. Padrão `false` (roda com a aplicação no ar).
@@ -1677,7 +1948,9 @@ paths:
     get:
       tags: [env]
       summary: Lista as variáveis do projeto
-      description: Só nome e metadados; o valor nunca é devolvido.
+      description: |
+        Só nome e metadados; o valor nunca é devolvido, exceto o das variáveis que
+        a plataforma calculou (`platform`, DEC-52): são endereços públicos, com a regra.
       operationId: listEnv
       parameters:
         - $ref: '#/components/parameters/Id'
@@ -1688,12 +1961,16 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [variables]
+                required: [variables, platform]
                 properties:
                   variables:
                     type: array
                     items:
                       $ref: '#/components/schemas/EnvVariable'
+                  platform:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PlatformEnvValue'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -2144,6 +2421,13 @@ components:
       schema:
         type: string
   parameters:
+    StackRef:
+      name: id
+      in: path
+      required: true
+      description: O id do projeto ou o slug dele.
+      schema:
+        type: string
     BackupId:
       name: bid
       in: path
@@ -2435,6 +2719,91 @@ components:
         created_at:
           type: string
           format: date-time
+        stack_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: O projeto (repositório) a que esta aplicação pertence (DEC-52).
+        role:
+          type: string
+          description: O papel da aplicação no projeto (`frontend`, `backend`, `fullstack`, `app`), ou vazio antes da primeira análise.
+    Stack:
+      type: object
+      description: |
+        O projeto que o painel mostra (DEC-52): um repositório, com as aplicações
+        dentro. Cada aplicação é um `Project` da API (a unidade de deploy).
+      required: [id, slug, repository_url, created_at, scan_state, scan, scanned_at, apps]
+      properties:
+        id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+        repository_url:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        scan_state:
+          type: string
+          enum: [none, scanning, done, failed]
+        scan:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/StackScan'
+        scan_error:
+          type: string
+        scanned_at:
+          type: string
+          format: date-time
+          nullable: true
+        apps:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectSummary'
+    StackScan:
+      type: object
+      required: [commit_sha, apps]
+      properties:
+        commit_sha:
+          type: string
+        apps:
+          type: array
+          items:
+            $ref: '#/components/schemas/StackScanApp'
+    StackScanApp:
+      type: object
+      description: Uma aplicação que o Cobogó propõe criar, com o que a análise da pasta dela achou.
+      required: [root_directory, role, label, slug, evidence, components, questions, warnings]
+      properties:
+        root_directory:
+          type: string
+        role:
+          type: string
+        label:
+          type: string
+        ecosystem:
+          type: string
+        profile:
+          type: string
+        slug:
+          type: string
+          description: O endereço sugerido (`<slug>.<domínio>`).
+        evidence:
+          type: array
+          items:
+            type: string
+        components:
+          type: array
+          items:
+            $ref: '#/components/schemas/Component'
+        questions:
+          type: array
+          items:
+            type: string
+          description: Os campos que a análise ainda perguntaria (`unsupported` se não há como publicar).
+        warnings:
+          type: integer
     ProjectSummary:
       allOf:
         - $ref: '#/components/schemas/Project'
@@ -2604,12 +2973,29 @@ components:
           type: integer
         source:
           type: string
-          enum: [user, generated, imported, linked]
+          enum: [user, generated, imported, linked, platform]
         key_version:
           type: integer
         created_at:
           type: string
           format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    PlatformEnvValue:
+      type: object
+      description: Um valor que o Cobogó calculou e mantém (DEC-52), com a regra.
+      required: [name, value, reason, build_time, updated_at]
+      properties:
+        name:
+          type: string
+        value:
+          type: string
+        reason:
+          type: string
+        build_time:
+          type: boolean
+          description: O valor entra no build (variável pública); mudar exige publicar de novo.
         updated_at:
           type: string
           format: date-time
@@ -3014,7 +3400,7 @@ components:
             type: integer
     Command:
       type: object
-      required: [id, project_id, command, source, pause_app, state, cancel_requested, timeout_seconds, exit_code, output, output_truncated, created_at, started_at, finished_at]
+      required: [id, project_id, command, source, pause_app, state, cancel_requested, timeout_seconds, exit_code, output, output_truncated, created_at, started_at, finished_at, input_names]
       properties:
         id:
           type: string
@@ -3027,7 +3413,14 @@ components:
           description: O texto rodado, com os valores das variáveis do projeto trocados por `[REDIGIDO]` ao concluir.
         source:
           type: string
-          enum: [script, custom]
+          enum: [script, custom, recipe]
+        recipe:
+          type: string
+        input_names:
+          type: array
+          items:
+            type: string
+          description: Os nomes dos valores só desta execução; os valores nunca voltam.
         pause_app:
           type: boolean
         state:
@@ -3341,7 +3734,7 @@ components:
           nullable: true
     CommandsView:
       type: object
-      required: [commands, scripts, available, reauth_until, default_timeout, max_timeout]
+      required: [commands, scripts, recipes, available, reauth_until, default_timeout, max_timeout]
       properties:
         commands:
           type: array
@@ -3351,6 +3744,11 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ScriptOption'
+        recipes:
+          type: array
+          description: Comandos conhecidos que pedem dados, montados por evidência (DEC-52).
+          items:
+            $ref: '#/components/schemas/Recipe'
         available:
           type: boolean
         reason:
@@ -3363,6 +3761,36 @@ components:
           type: integer
         max_timeout:
           type: integer
+    Recipe:
+      type: object
+      required: [id, title, description, command, inputs, evidence]
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        command:
+          type: string
+        inputs:
+          type: array
+          items:
+            type: object
+            required: [name, label, secret, required]
+            properties:
+              name:
+                type: string
+              label:
+                type: string
+              secret:
+                type: boolean
+              required:
+                type: boolean
+        evidence:
+          type: array
+          items:
+            type: string
     ServiceNeed:
       type: object
       required: [engine, level, variable, reason, evidence]
@@ -3548,6 +3976,11 @@ components:
                 enum: [worker, scheduler]
               command:
                 type: string
+        release_command:
+          type: string
+          description: |
+            A fase de release (DEC-52): roda uma vez por deploy, da imagem nova, antes de a
+            aplicação nova subir (as migrações). Se falha, o deploy falha e a versão anterior segue no ar.
         django_platform_hosts:
           type: boolean
           description: A imagem usa o módulo de ajuste do Django que acrescenta o endereço do projeto às listas de hosts e de origens; só no perfil P-PY (DEC-49).

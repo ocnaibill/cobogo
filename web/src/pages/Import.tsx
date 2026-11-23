@@ -1,10 +1,10 @@
-// TEL-03 — Importar repositório: registra o projeto e já pede o primeiro deploy;
-// a análise acontece no worker e a tela de acompanhamento mostra o resto. O
-// quadro à direita descreve o que o pipeline realmente faz, nesta ordem.
+// TEL-03 — Novo projeto (DEC-52): o link do repositório basta. O Cobogó lê o
+// repositório inteiro, propõe as aplicações (frontend, backend), os serviços e os
+// processos, e cria e publica tudo depois da sua confirmação, na página do projeto.
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { api, ApiError, idempotencyKey, unwrap } from "../api/client";
+import { api, ApiError, unwrap } from "../api/client";
 import { Button, Card, Field, Notice, PageHead, Tag } from "../components/ui";
 import { Icon, type IconName } from "../components/icons";
 import { useAppsDomain } from "../hooks/useInstance";
@@ -40,6 +40,8 @@ export function FlowStrip({ current }: { current: 1 | 2 | 3 | 4 }) {
 
 const PIPELINE: { tag: string; text: string }[] = [
   { tag: "clone", text: "git clone --depth 1 --single-branch, sem tags; o commit fica fixado" },
+  { tag: "mapa", text: "acha as aplicações do repositório (a raiz e as pastas) e o que cada uma pede" },
+  { tag: "proposta", text: "mostra o que vai criar, com os endereços; nada é criado antes de você confirmar" },
   { tag: "análise", text: "lê package.json, lockfiles e .env.example; nada do repositório é executado" },
   { tag: "pergunta", text: "se faltar uma decisão (porta, comando), o deploy para e pergunta" },
   { tag: "plano", text: "gera um Dockerfile próprio; o do repositório não é usado" },
@@ -65,8 +67,7 @@ export function ImportPage() {
   const [url, setUrl] = useState("");
   const [slug, setSlug] = useState("");
   const [slugTouched, setSlugTouched] = useState(false);
-  const [root, setRoot] = useState("");
-  const [error, setError] = useState<{ field?: "url" | "slug" | "root"; message: string } | null>(null);
+  const [error, setError] = useState<{ field?: "url" | "slug"; message: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
   const effectiveSlug = slugTouched ? slug : suggestSlug(url);
@@ -78,19 +79,14 @@ export function ImportPage() {
     setBusy(true);
     setError(null);
     try {
-      const project = await unwrap(
-        api.POST("/projects", { body: { slug: effectiveSlug, repository_url: url.trim(), root_directory: root.trim() } }),
-      );
-      const dep = await unwrap(
-        api.POST("/projects/{id}/deployments", { params: { path: { id: project.id } }, body: { idempotency_key: idempotencyKey() } }),
-      );
-      qc.invalidateQueries({ queryKey: ["projects"] });
-      navigate(`/deploys/${dep.id}`);
+      const stack = await unwrap(api.POST("/stacks", { body: { slug: effectiveSlug, repository_url: url.trim() } }));
+      qc.invalidateQueries({ queryKey: ["stacks"] });
+      navigate(`/projetos/${stack.slug}`);
     } catch (e) {
       if (e instanceof ApiError) {
         const m = e.message;
-        const field = /slug/i.test(m) ? "slug" : /root_directory|diretório/i.test(m) ? "root" : /host|reposit|url|https/i.test(m) ? "url" : undefined;
-        setError({ field, message: e.code === "conflict" ? "Já existe um projeto com esse nome. Escolha outro." : m });
+        const field = e.code === "slug_taken" || /nome/i.test(m) ? "slug" : /host|reposit|url|https/i.test(m) ? "url" : undefined;
+        setError({ field, message: m });
       } else setError({ message: String(e) });
     } finally {
       setBusy(false);
@@ -102,12 +98,12 @@ export function ImportPage() {
       <PageHead
         crumbs={
           <>
-            <Link to="/">Projetos</Link> / <strong>Importar repositório</strong>
+            <Link to="/">Projetos</Link> / <strong>Novo projeto</strong>
           </>
         }
-        title="Importar repositório"
+        title="Novo projeto"
       >
-        O Cobogó clona, analisa sem executar nada e propõe um plano. Quando faltar uma informação, ele pergunta em vez de adivinhar.
+        Cole o link do repositório. O Cobogó lê o repositório inteiro sem executar nada, mostra as aplicações que achou (frontend, backend), os serviços e os processos, e cria e publica tudo quando você confirmar.
       </PageHead>
 
       <FlowStrip current={1} />
@@ -135,30 +131,24 @@ export function ImportPage() {
                 spellCheck={false}
               />
             </Field>
-            <div className="grid-2">
-              <Field
-                label="Nome do projeto"
-                htmlFor="slug"
-                icon="box"
-                error={error?.field === "slug" ? error.message : slugInvalid ? "Use letras minúsculas, números e hífen (até 63)." : undefined}
-                hint="Vira o nome do endereço público."
-              >
-                <input
-                  id="slug"
-                  className="mono"
-                  value={effectiveSlug}
-                  onChange={(e) => {
-                    setSlugTouched(true);
-                    setSlug(e.target.value.toLowerCase());
-                  }}
-                  required
-                  spellCheck={false}
-                />
-              </Field>
-              <Field label="Diretório raiz" htmlFor="root" icon="layers" aside="monorrepo" error={error?.field === "root" ? error.message : undefined} hint="Vazio é a raiz. Ex.: apps/web">
-                <input id="root" className="mono" value={root} onChange={(e) => setRoot(e.target.value)} placeholder="./" spellCheck={false} />
-              </Field>
-            </div>
+            <Field
+              label="Nome do projeto"
+              htmlFor="slug"
+              icon="box"
+              error={error?.field === "slug" ? error.message : slugInvalid ? "Use letras minúsculas, números e hífen (até 63)." : undefined}
+              hint="Vira o endereço do que se visita (o frontend); o backend fica em <nome>-api."
+            >
+              <input
+                id="slug"
+                className="mono"
+                value={effectiveSlug}
+                onChange={(e) => {
+                  setSlugTouched(true);
+                  setSlug(e.target.value.toLowerCase());
+                }}
+                spellCheck={false}
+              />
+            </Field>
             <div className="inset row-between">
               <span className="row small">
                 <Icon name="route" size={16} className="card-icon" /> Endereço público
@@ -171,7 +161,7 @@ export function ImportPage() {
             <div className="form-actions">
               <span className="muted small">Repositórios privados e Dockerfiles prontos ainda não fazem parte desta versão.</span>
               <Button type="submit" variant="primary" className="btn-lg" busy={busy} disabled={!url || !effectiveSlug || slugInvalid}>
-                Analisar e publicar <Icon name="arrowRight" size={18} />
+                Ler o repositório <Icon name="arrowRight" size={18} />
               </Button>
             </div>
           </form>

@@ -18,8 +18,12 @@ import (
 // mount). Nunca é um `exec` no contêiner da aplicação: o proxy do Docker segue
 // com EXEC=0.
 
-// RoleCommand é o valor de LabelRole dos contêineres de comando.
-const RoleCommand = "command"
+// RoleCommand é o valor de LabelRole dos contêineres de comando, e RoleRelease o da
+// fase de release de um deploy (DEC-52 item 4), que usa o mesmo caminho.
+const (
+	RoleCommand = "command"
+	RoleRelease = "release"
+)
 
 // LabelCommand guarda o identificador do comando no contêiner.
 const LabelCommand = "cobogo.command"
@@ -28,6 +32,10 @@ const LabelCommand = "cobogo.command"
 type CommandSpec struct {
 	ProjectID string
 	CommandID string
+	// Name é o nome do contêiner; vazio usa cobogo-cmd-<id>.
+	Name string
+	// Role é o papel no rótulo; vazio é um comando pontual.
+	Role string
 	// Image é a imagem da release ativa.
 	Image string
 	// Command é o texto, executado por `sh -c`: dentro da jaula o shell não dá
@@ -74,6 +82,13 @@ func (r *Runtime) StartCommand(ctx context.Context, spec CommandSpec) (string, e
 			Memory: memory, MemorySwap: memory, NanoCPUs: int64(spec.CPUs * 1e9), PidsLimit: &pids,
 		},
 	}
+	name, role := spec.Name, spec.Role
+	if name == "" {
+		name = commandContainerName(spec.CommandID)
+	}
+	if role == "" {
+		role = RoleCommand
+	}
 	created, err := r.cli.ContainerCreate(ctx,
 		&container.Config{
 			Image:      spec.Image,
@@ -81,12 +96,12 @@ func (r *Runtime) StartCommand(ctx context.Context, spec CommandSpec) (string, e
 			Cmd:        []string{spec.Command},
 			Env:        envList,
 			Labels: map[string]string{
-				LabelManaged: "true", LabelProject: spec.ProjectID, LabelRole: RoleCommand, LabelCommand: spec.CommandID,
+				LabelManaged: "true", LabelProject: spec.ProjectID, LabelRole: role, LabelCommand: spec.CommandID,
 			},
 		},
 		hostCfg,
 		&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{spec.Network: {}}},
-		nil, commandContainerName(spec.CommandID))
+		nil, name)
 	if err != nil {
 		return "", fmt.Errorf("dockerrt: criar o contêiner do comando: %w", err)
 	}
@@ -113,7 +128,7 @@ func (r *Runtime) commandInspect(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if inspect.Config == nil || inspect.Config.Labels[LabelManaged] != "true" || inspect.Config.Labels[LabelRole] != RoleCommand {
+	if inspect.Config == nil || inspect.Config.Labels[LabelManaged] != "true" || (inspect.Config.Labels[LabelRole] != RoleCommand && inspect.Config.Labels[LabelRole] != RoleRelease) {
 		return fmt.Errorf("dockerrt: o contêiner %s não é um comando do Cobogó", shortID(id))
 	}
 	return nil
@@ -168,18 +183,20 @@ func (r *Runtime) RemoveCommand(ctx context.Context, id string) error {
 // subir); com um projeto, só os dele (os testes, que rodam ao lado de outros, usam isto).
 // Devolve quantos removeu.
 func (r *Runtime) RemoveCommandContainers(ctx context.Context, projectID string) (int, error) {
-	args := filters.NewArgs(filters.Arg("label", LabelManaged+"=true"), filters.Arg("label", LabelRole+"="+RoleCommand))
-	if projectID != "" {
-		args.Add("label", LabelProject+"="+projectID)
-	}
-	list, err := r.cli.ContainerList(ctx, container.ListOptions{All: true, Filters: args})
-	if err != nil {
-		return 0, fmt.Errorf("dockerrt: listar comandos: %w", err)
-	}
 	n := 0
-	for _, c := range list {
-		if err := r.cli.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true}); err == nil {
-			n++
+	for _, role := range []string{RoleCommand, RoleRelease} {
+		args := filters.NewArgs(filters.Arg("label", LabelManaged+"=true"), filters.Arg("label", LabelRole+"="+role))
+		if projectID != "" {
+			args.Add("label", LabelProject+"="+projectID)
+		}
+		list, err := r.cli.ContainerList(ctx, container.ListOptions{All: true, Filters: args})
+		if err != nil {
+			return n, fmt.Errorf("dockerrt: listar comandos: %w", err)
+		}
+		for _, c := range list {
+			if err := r.cli.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true}); err == nil {
+				n++
+			}
 		}
 	}
 	return n, nil

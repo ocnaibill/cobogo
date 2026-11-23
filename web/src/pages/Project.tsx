@@ -21,10 +21,27 @@ import { TRANSITION_LABEL } from "../lib/operations";
 
 type Tab = "deploys" | "recursos" | "logs" | "variaveis" | "banco" | "dados" | "comandos" | "limites" | "operacoes";
 
-export function ProjectPage() {
-  const { id = "" } = useParams();
+/**
+ * Uma aplicação do projeto (DEC-52). Na página do projeto ela é uma aba (embedded):
+ * sem a trilha de navegação e sem a aba Banco, que é do projeto.
+ */
+export function ProjectPage({ appId, embedded = false }: { appId?: string; embedded?: boolean } = {}) {
+  const { id: paramId = "" } = useParams();
+  const id = appId ?? paramId;
   const [params, setParams] = useSearchParams();
-  const tab = (params.get("aba") as Tab) || "deploys";
+  const rawTab = (params.get("aba") as Tab) || "deploys";
+  const tab: Tab = embedded && rawTab === "banco" ? "deploys" : rawTab;
+  // Trocar de aba mantém a aplicação escolhida na página do projeto.
+  const goTab = (t: Tab) =>
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (t === "deploys") next.delete("aba");
+        else next.set("aba", t);
+        return next;
+      },
+      { replace: true },
+    );
   const navigate = useNavigate();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -58,6 +75,7 @@ export function ProjectPage() {
     retry: false,
   });
   const limits = useQuery({ queryKey: ["limits", id], queryFn: () => unwrap(api.GET("/projects/{id}/limits", { params: { path: { id } } })) });
+  const env = useQuery({ queryKey: ["env", id], queryFn: () => unwrap(api.GET("/projects/{id}/env", { params: { path: { id } } })) });
 
   if (project.isLoading) return <Loading />;
   if (project.isError) return <ErrorBox error={project.error} onRetry={() => project.refetch()} />;
@@ -86,9 +104,11 @@ export function ProjectPage() {
     <div className="page">
       <PageHead
         crumbs={
-          <>
-            <Link to="/">Projetos</Link> / <span>{repoName(p.repository_url)}</span> / <strong>resumo</strong>
-          </>
+          embedded ? undefined : (
+            <>
+              <Link to="/">Projetos</Link> / <span>{repoName(p.repository_url)}</span> / <strong>resumo</strong>
+            </>
+          )
         }
         title={
           <span className="row">
@@ -107,7 +127,7 @@ export function ProjectPage() {
                 Último log
               </LinkButton>
             )}
-            <Button icon="key" onClick={() => setParams({ aba: "variaveis" }, { replace: true })}>
+            <Button icon="key" onClick={() => goTab("variaveis")}>
               Variáveis
             </Button>
           </>
@@ -153,7 +173,7 @@ export function ProjectPage() {
         <Notice tone="warning" icon="sparkle" title="O código parece guardar dados em disco">
           <span>
             Sem volume, o que for gravado em {withPath(persistent.data.suggestions).map((s) => s.path).join(", ")} some a cada deploy.{" "}
-            <Link to={`/projetos/${id}?aba=dados`}>Ver na aba Dados</Link>.
+            <Link to={`/projetos/${id}?aba=dados`} onClick={(e) => { e.preventDefault(); goTab("dados"); }}>Ver na aba Dados</Link>.
           </span>
         </Notice>
       )}
@@ -165,13 +185,27 @@ export function ProjectPage() {
           </span>
         </Notice>
       )}
+      {lastOk && (() => {
+        // Um valor de build que o Cobogó trocou depois do último deploy (DEC-52): o JavaScript publicado ainda tem o antigo.
+        const stale = (env.data?.platform ?? []).filter((v) => v.build_time && v.updated_at > lastOk.created_at);
+        return stale.length > 0 ? (
+          <Notice tone="warning" icon="refresh" title="Publique de novo para usar os endereços novos">
+            <span>
+              {stale.map((v) => v.name).join(", ")} mudou depois do último deploy ({stale.map((v) => v.value).join(", ")}). O valor entra no build, então o site publicado ainda usa o antigo.{" "}
+              <Button variant="ghost" icon="rocket" onClick={deploy} busy={busy}>
+                Publicar agora
+              </Button>
+            </span>
+          </Notice>
+        ) : null;
+      })()}
       {candidateFailed && (
         <Notice tone="warning" title="O último deploy falhou, mas a versão anterior continua no ar.">
           A falha foi só na candidata: o tráfego só troca depois que uma versão passa na verificação. <Link to={`/deploys/${latest!.id}`}>Ver a falha</Link>
         </Notice>
       )}
 
-      {analysis.data?.result.components && analysis.data.result.components.length > 0 && (
+      {!embedded && analysis.data?.result.components && analysis.data.result.components.length > 0 && (
         <RepoMap project={p} items={analysis.data.result.components} />
       )}
 
@@ -274,14 +308,14 @@ export function ProjectPage() {
             ["recursos", "Recursos", "activity"],
             ["logs", "Logs", "terminal"],
             ["variaveis", "Variáveis e segredos", "key"],
-            ["banco", "Banco", "server"],
+            ...(embedded ? [] : [["banco", "Banco", "server"]]),
             ["dados", "Dados", "server"],
             ["comandos", "Comandos", "terminal"],
             ["limites", "Limites", "sliders"],
             ["operacoes", "Operações", "activity"],
           ] as [Tab, string, IconName][]
         ).map(([t, label, icon]) => (
-          <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? "tab active" : "tab"} onClick={() => setParams(t === "deploys" ? {} : { aba: t }, { replace: true })}>
+          <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? "tab active" : "tab"} onClick={() => goTab(t)}>
             <Icon name={icon} size={16} />
             {label}
           </button>
@@ -365,6 +399,8 @@ function VariablesTab({ projectId, discovered }: { projectId: string; discovered
   const hasPublic = discovered.some((d) => d.class === "public");
 
   const stored = new Map((vars.data?.variables ?? []).map((v) => [v.name, v]));
+
+  const platform = new Map((vars.data?.platform ?? []).map((v) => [v.name, v]));
   const extraNames = [...stored.keys()].filter((n) => !discovered.some((d) => d.name === n));
   // Exigidas que o código não cita e ainda não têm valor: sem uma linha, ficariam invisíveis.
   const requiredOnly = requiredNames.filter((n) => !stored.has(n) && !discovered.some((d) => d.name === n));
@@ -500,37 +536,37 @@ function VariablesTab({ projectId, discovered }: { projectId: string; discovered
                       </td>
                       <td>
                         {s ? (
-                          <Badge tone="success">definida · v{s.version}{s.source === "generated" ? " · gerada" : s.source === "imported" ? " · importada" : s.source === "linked" ? " · vinculada ao banco" : ""}</Badge>
+                          <Badge tone="success">definida · v{s.version}{s.source === "generated" ? " · gerada" : s.source === "imported" ? " · importada" : s.source === "linked" ? " · vinculada a um serviço" : s.source === "platform" ? " · pelo Cobogó" : ""}</Badge>
                         ) : d.hint?.code === "likely_required" ? (
                           <Badge tone="danger">falta</Badge>
                         ) : (
                           <Badge tone="neutral">sem valor</Badge>
                         )}
                       </td>
-                      <td className="mono faint">{s ? "••••••••••••" : "—"}</td>
+                      <td className={platform.get(d.name) ? "mono small wrap" : "mono faint"}>{platform.get(d.name)?.value ?? (s ? "••••••••••••" : "—")}</td>
                       <td className="small muted">
                         {d.class === "public" && <Tag tone="info">pública: vai para o JavaScript do navegador</Tag>}{" "}
-                        {d.hint?.message ?? (d.declared_in_example ? "declarada no exemplo" : "referenciada no código")}
+                        {platform.get(d.name) ? `Definida pelo Cobogó: ${platform.get(d.name)!.reason}. Acompanha o endereço; trocar o valor a torna sua.` : d.hint?.message ?? (d.declared_in_example ? "declarada no exemplo" : "referenciada no código")}
                       </td>
                       <td>
                         <RequiredBox name={d.name} names={requiredNames} busy={busy === "required"} onChange={setRequired} />
                       </td>
                       <td>
                         {s?.source === "linked" ? (
-                          <div className="row-end small muted">gerenciada pelo banco</div>
+                          <div className="row-end small muted">gerenciada pelo serviço</div>
                         ) : (
                         <div className="row-end">
                           <Button variant="ghost" onClick={() => setName(d.name)}>
-                            Definir
+                            {s?.source === "platform" ? "Trocar" : "Definir"}
                           </Button>
                           {d.class === "generable" && (
                             <Button variant="ghost" icon="sparkle" busy={busy === `gen-${d.name}`} onClick={() => generate(d.name)}>
                               Gerar
                             </Button>
                           )}
-                          {s && (
+                          {s && s.source !== "platform" && (
                             <Button variant="ghost" busy={busy === `del-${d.name}`} onClick={() => remove(d.name)}>
-                              Remover
+                              {platform.has(d.name) ? "Voltar ao valor do Cobogó" : "Remover"}
                             </Button>
                           )}
                         </div>
@@ -575,8 +611,8 @@ function VariablesTab({ projectId, discovered }: { projectId: string; discovered
                     <td>
                       <Badge tone="success">definida · v{stored.get(n)!.version}</Badge>
                     </td>
-                    <td className="mono faint">••••••••••••</td>
-                    <td className="small muted">{stored.get(n)?.source === "linked" ? "conexão do PostgreSQL do projeto" : "não encontrada na última análise"}</td>
+                    <td className={platform.get(n) ? "mono small wrap" : "mono faint"}>{platform.get(n)?.value ?? "••••••••••••"}</td>
+                    <td className="small muted">{platform.get(n) ? `Definida pelo Cobogó: ${platform.get(n)!.reason}.` : stored.get(n)?.source === "linked" ? "conexão do serviço do projeto" : "não encontrada na última análise"}</td>
                     <td>
                       <RequiredBox name={n} names={requiredNames} busy={busy === "required"} onChange={setRequired} />
                     </td>

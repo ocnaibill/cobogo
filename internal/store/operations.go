@@ -286,6 +286,13 @@ func (s *Store) DeleteProject(ctx context.Context, projectID, ownerID uuid.UUID,
 	if _, err := tx.Exec(ctx, `UPDATE projects SET deleted_at = now() WHERE id = $1`, projectID); err != nil {
 		return domain.Operation{}, fmt.Errorf("store: marcar projeto excluído: %w", err)
 	}
+	// O projeto (DEC-52) sai junto com a última aplicação, e o nome fica livre.
+	if _, err := tx.Exec(ctx, `
+		UPDATE stacks SET deleted_at = now()
+		WHERE id = (SELECT stack_id FROM projects WHERE id = $1) AND deleted_at IS NULL
+		  AND NOT EXISTS (SELECT 1 FROM projects p WHERE p.stack_id = stacks.id AND p.deleted_at IS NULL)`, projectID); err != nil {
+		return domain.Operation{}, fmt.Errorf("store: marcar projeto excluído: %w", err)
+	}
 	op, err := insertOperationTx(ctx, tx, &projectID, domain.OpDeleteProject, map[string]any{"slug": slug, "delete_data": deleteData}, time.Now().UTC(), &ownerID)
 	if err != nil {
 		return domain.Operation{}, err

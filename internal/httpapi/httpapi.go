@@ -138,6 +138,13 @@ func (s *Server) routes() []route {
 		{"GET /api/v1/auth/me", s.authed(s.handleMe)},
 		{"POST /api/v1/auth/password", s.authed(s.handleChangePassword)},
 		{"POST /api/v1/auth/reauth", s.authed(s.handleReauth)},
+		{"GET /api/v1/stacks", s.authed(s.handleListStacks)},
+		{"POST /api/v1/stacks", s.authed(s.handleCreateStack)},
+		{"GET /api/v1/stacks/{id}", s.authed(s.handleGetStack)},
+		{"DELETE /api/v1/stacks/{id}", s.authed(s.handleDeleteStack)},
+		{"POST /api/v1/stacks/{id}/scan", s.authed(s.handleScanStack)},
+		{"POST /api/v1/stacks/{id}/apps", s.authed(s.handleCreateStackApps)},
+		{"POST /api/v1/stacks/{id}/deployments", s.authed(s.handleDeployStack)},
 		{"GET /api/v1/projects", s.authed(s.handleListProjects)},
 		{"POST /api/v1/projects", s.authed(s.handleCreateProject)},
 		{"GET /api/v1/projects/{id}", s.authed(s.handleGetProject)},
@@ -352,6 +359,10 @@ func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
+	// O que a plataforma sabe vira configuração antes do deploy (DEC-52 parte B).
+	if project.StackID != nil {
+		s.prepareFor(r, user, *project.StackID)
+	}
 	dep, _, err := s.store.CreateDeploymentWithJob(r.Context(), project.ID, req.IdempotencyKey, req.Overrides)
 	if err != nil {
 		s.log.Error("criar deployment", "erro", err)

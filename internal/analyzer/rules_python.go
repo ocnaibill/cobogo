@@ -24,7 +24,7 @@ func PythonCatalog() Catalog {
 			{ID: extractorEnvFiles, Extract: extractEnvFiles},
 			{ID: extractorPySource, Extract: extractPythonSource},
 		},
-		Rules: []Rule{ruleHEU041(), ruleHEU042(), ruleHEU043(), ruleHEU044(), ruleHEU045(), ruleHEU046(), ruleHEU047(), ruleHEU09For("HEU-04.1"), ruleHEU08()},
+		Rules: []Rule{ruleHEU041(), ruleHEU042(), ruleHEU043(), ruleHEU044(), ruleHEU045(), ruleHEU046(), ruleHEU047(), ruleHEU048(), ruleHEU09For("HEU-04.1"), ruleHEU08()},
 		Fields: []FieldSpec{
 			{Name: domain.FieldProfile, Required: true, Overridable: false, Validate: func(v string) error { return nil }},
 			{Name: domain.FieldPackageManager, Required: true, Overridable: true, Validate: validatePyManager},
@@ -38,6 +38,7 @@ func PythonCatalog() Catalog {
 			{Name: domain.FieldDjangoPlatformHosts, Overridable: true, Validate: validateBool},
 			{Name: domain.FieldProcessWorker, Overridable: true, Validate: validateProcess},
 			{Name: domain.FieldProcessScheduler, Overridable: true, Validate: validateProcess},
+			{Name: domain.FieldReleaseCommand, Overridable: true, Validate: validateProcess},
 			{Name: domain.FieldStartCommand, Overridable: true, Validate: validateCommand},
 			{Name: domain.FieldBuildCommand, Overridable: true, Validate: validateCommand},
 			{Name: domain.FieldExecutionMode, Overridable: true, Validate: validateExecutionMode},
@@ -579,7 +580,7 @@ func ruleHEU044() Rule {
 					switch p.Name {
 					case "web":
 					case "release":
-						out.Warnings = append(out.Warnings, finding("", fmt.Sprintf("HEU-04.4: o Procfile tem uma fase release (%q); o Cobogó não a roda no deploy. Rode-a na aba Comandos quando precisar", p.Value), p))
+						// A fase release roda a cada deploy (HEU-04.8).
 					default:
 						// worker e agendador viram processos do projeto (HEU-04.7); o resto não roda.
 						if processKindOf(p.Name) == "" {
@@ -831,6 +832,32 @@ func ruleHEU047() Rule {
 			}
 			if len(in.Of(kindPyRedis)) == 0 && !hasDep(in, "redis", "django-redis") {
 				out.Warnings = append(out.Warnings, finding("", "HEU-07: este projeto usa Celery, mas não achei um sinal de broker (Redis); o worker sobe e não recebe tarefas. Se o broker é outro (RabbitMQ, SQS), o Cobogó ainda não o provê: informe um externo numa variável de ambiente lida pelo código", app))
+			}
+			return out
+		},
+	}
+}
+
+// HEU-04.8: a fase de release (DEC-52 item 4), que roda uma vez por deploy antes de a
+// aplicação nova subir. Declarada pelo `release:` do Procfile, ou, num Django com
+// migrações no repositório, `python manage.py migrate --noinput` (inferência, com a
+// primeira migração achada como evidência). O override troca o comando, e "none" desliga.
+// Rollback da imagem não desfaz uma migração (RN-13).
+func ruleHEU048() Rule {
+	return Rule{
+		Meta: RuleMeta{ID: "HEU-04.8", Version: "0.1", State: RuleProposed, Requires: []string{"HEU-04.1"}, Fields: []string{domain.FieldReleaseCommand}},
+		Apply: func(in RuleInput) RuleOutput {
+			var out RuleOutput
+			propose := func(value string, origin domain.Origin, ev ...domain.Evidence) {
+				out.Proposals = append(out.Proposals, domain.Proposal{Field: domain.FieldReleaseCommand, Value: value, Origin: origin, EvidenceIDs: evidenceIDs(ev)})
+			}
+			if rel := in.Named(kindPyProcfile, "release"); len(rel) > 0 {
+				propose(rel[0].Value, domain.OriginDeclaration, rel[0])
+				return out
+			}
+			mods, migs := in.Of(kindDjangoModule), in.Of(kindDjangoMigration)
+			if len(mods) > 0 && len(migs) > 0 {
+				propose("python manage.py migrate --noinput", domain.OriginInference, mods[0], migs[0])
 			}
 			return out
 		},

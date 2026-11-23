@@ -55,7 +55,12 @@ var accessMatrix = map[string]TableAccess{
 	"users":             {API: tbl("SELECT", "INSERT", "UPDATE")},
 	"sessions":          {API: tbl("SELECT", "INSERT", "UPDATE", "DELETE")},
 	"audit_events":      {API: tbl("SELECT", "INSERT")},
-	"projects":          {API: tbl("SELECT", "INSERT", "UPDATE"), Worker: tbl("SELECT")},
+	// DEC-52: o worker grava só o papel que a análise viu.
+	"projects": {API: tbl("SELECT", "INSERT", "UPDATE"), Worker: Privileges{Table: []string{"SELECT"}, Columns: map[string][]string{"UPDATE": {"role"}}}},
+	// DEC-52 B: a API calcula e grava as variáveis da plataforma; o worker não as usa daqui.
+	"platform_env": {API: tbl("SELECT", "INSERT", "UPDATE", "DELETE")},
+	// DEC-52: a API cria o projeto e pede a leitura; o worker grava a proposta.
+	"stacks":            {API: tbl("SELECT", "INSERT", "UPDATE"), Worker: Privileges{Table: []string{"SELECT"}, Columns: map[string][]string{"UPDATE": {"scan_state", "scan", "scan_error", "scanned_at"}}}},
 	"settings":          {API: tbl("SELECT", "INSERT", "UPDATE", "DELETE"), Worker: tbl("SELECT")},
 	"deployments":       {API: tbl("SELECT", "INSERT", "UPDATE"), Worker: tbl("SELECT", "UPDATE")},
 	"jobs":              {API: tbl("SELECT", "INSERT", "UPDATE"), Worker: tbl("SELECT", "UPDATE")},
@@ -73,8 +78,12 @@ var accessMatrix = map[string]TableAccess{
 	"collector_heartbeat": {API: tbl("SELECT"), Collector: tbl("SELECT", "INSERT", "UPDATE")},
 	// DEC-45: a API cria o pedido e só pode marcar o cancelamento; o worker executa
 	// e grava o desfecho.
+	// DEC-52 C: a API grava os valores só desta execução cifrados e nunca lê o texto cifrado.
 	"project_commands": {
-		API:    Privileges{Table: []string{"SELECT", "INSERT"}, Columns: map[string][]string{"UPDATE": {"cancel_requested"}}},
+		API: Privileges{Table: []string{"INSERT"}, Columns: map[string][]string{
+			"SELECT": {"id", "project_id", "requested_by", "command", "source", "pause_app", "state", "cancel_requested", "timeout_seconds", "exit_code", "output", "output_truncated", "error", "created_at", "started_at", "finished_at", "input_names", "recipe"},
+			"UPDATE": {"cancel_requested"},
+		}},
 		Worker: tbl("SELECT", "UPDATE"),
 	},
 	// DEC-46: o worker captura e apaga o que passa da retenção; a API só lê.

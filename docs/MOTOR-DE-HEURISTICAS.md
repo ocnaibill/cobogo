@@ -290,6 +290,7 @@ Cada ficha abaixo segue o formato do §6: ID, versão/estado, perfis, pré-condi
 - **Conflitos:** nenhum com as demais sub-regras; é ortogonal à escolha de destino
 - **Limite:** nunca inferir ou executar o comando por convenção; rollback de imagem não desfaz migração já aplicada
 - **Pergunta associada:** "qual comando de migração deve rodar, e quando?"
+- **Revisão (DEC-52, 23/11/2026):** no perfil Python, a HEU-04.8 implementa esta regra como o campo `release_command`, com outra política. O comando vem declarado (`release:` do Procfile) ou é inferido com evidência (o Django com `migrations/0001_*.py` dá `python manage.py migrate --noinput`), e roda a cada deploy, antes de a versão nova subir. Ele aparece no plano e desliga com `none`. Prisma, Alembic e Flask-Migrate continuam só por declaração.
 - **Exemplos:** nenhum cenário C01–C16 cobre esta regra hoje — lacuna a registrar ao materializar novos casos (§11.3 do motor)
 
 ### 6.2 Ficha completa de HEU-09 — descoberta de variáveis de configuração

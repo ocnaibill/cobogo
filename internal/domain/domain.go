@@ -27,6 +27,65 @@ type Project struct {
 	// PersistentPaths são os caminhos do contêiner que guardam dados em volume
 	// nomeado (DEC-41). Só o usuário os declara.
 	PersistentPaths []string `json:"persistent_paths"`
+	// StackID é o projeto (repositório) a que esta aplicação pertence (DEC-52), e Role,
+	// o papel dela nele (frontend, backend, fullstack, app), do mapa da análise.
+	StackID *uuid.UUID `json:"stack_id"`
+	Role    string     `json:"role"`
+}
+
+// Stack é o projeto que o painel mostra (DEC-52): um repositório de um dono, com as
+// aplicações dentro. Cada aplicação é um Project (a unidade de deploy de antes).
+type Stack struct {
+	ID            uuid.UUID  `json:"id"`
+	OwnerID       *uuid.UUID `json:"-"`
+	Slug          string     `json:"slug"`
+	RepositoryURL string     `json:"repository_url"`
+	CreatedAt     time.Time  `json:"created_at"`
+	DeletedAt     *time.Time `json:"-"`
+	// ScanState é a leitura do repositório antes de criar as aplicações: none,
+	// scanning, done ou failed; Scan é a proposta.
+	ScanState string           `json:"scan_state"`
+	Scan      *StackScan       `json:"scan"`
+	ScanError string           `json:"scan_error,omitempty"`
+	ScannedAt *time.Time       `json:"scanned_at"`
+	Apps      []ProjectSummary `json:"apps"`
+}
+
+// Estados da leitura do repositório de um projeto.
+const (
+	ScanNone     = "none"
+	ScanScanning = "scanning"
+	ScanDone     = "done"
+	ScanFailed   = "failed"
+)
+
+// StackScan é o que o Cobogó propõe criar num projeto: as aplicações do repositório,
+// cada uma com o papel, a evidência e o que ela pede (serviços e processos).
+type StackScan struct {
+	CommitSHA string         `json:"commit_sha"`
+	Apps      []StackScanApp `json:"apps"`
+}
+
+// StackScanApp é uma aplicação proposta: a pasta ("" é a raiz), o papel, o slug
+// sugerido (o endereço) e as peças que a análise dela achou.
+type StackScanApp struct {
+	RootDirectory string      `json:"root_directory"`
+	Role          string      `json:"role"`
+	Label         string      `json:"label"`
+	Ecosystem     string      `json:"ecosystem,omitempty"`
+	Profile       string      `json:"profile,omitempty"`
+	Slug          string      `json:"slug"`
+	Evidence      []string    `json:"evidence"`
+	Components    []Component `json:"components"`
+	// Questions são as perguntas que a análise dela ainda faria (os campos).
+	Questions []string `json:"questions"`
+	Warnings  int      `json:"warnings"`
+	// O que a plataforma precisa para preparar a aplicação antes do primeiro deploy
+	// (DEC-52 parte B): as variáveis que o código lê, os serviços que ele usa e o
+	// caminho da API que o código usa como padrão, por variável.
+	Variables    []ConfigVariable  `json:"variables,omitempty"`
+	ServiceNeeds []ServiceNeed     `json:"service_needs,omitempty"`
+	APIPaths     map[string]string `json:"api_paths,omitempty"`
 }
 
 // Limits são os tetos de recursos de contêineres de aplicação e de builds
@@ -199,6 +258,10 @@ const (
 	// EnvSourceLinked: o valor é a conexão de um serviço do Cobogó (DEC-42) e não se
 	// edita como as demais; desvincular é uma ação própria.
 	EnvSourceLinked EnvSource = "linked"
+	// EnvSourcePlatform: o valor é calculado pelo Cobogó (DEC-52 item 3), como o
+	// endereço do projeto em ALLOWED_HOSTS, e acompanha o domínio. Editar à mão o
+	// torna do usuário.
+	EnvSourcePlatform EnvSource = "platform"
 )
 
 // EnvVariable são os metadados de uma variável de ambiente do projeto. O
@@ -270,6 +333,8 @@ const (
 	OpDeleteVolume OperationKind = "delete_volume"
 	// DEC-42: apagar o PostgreSQL gerenciado de um projeto, com os dados.
 	OpDeleteService OperationKind = "delete_service"
+	// DEC-52: ler o repositório de um projeto e propor as aplicações, antes de criá-las.
+	OpScanStack OperationKind = "scan_stack"
 )
 
 // Estados da aplicação de um projeto (DEC-40): sem release ativa, no ar ou
@@ -421,7 +486,14 @@ type Command struct {
 	CreatedAt       time.Time  `json:"created_at"`
 	StartedAt       *time.Time `json:"started_at"`
 	FinishedAt      *time.Time `json:"finished_at"`
+	// InputNames são os nomes dos valores só desta execução (DEC-52); os valores
+	// nunca voltam. Recipe é a receita de onde o comando veio, se veio de uma.
+	InputNames []string `json:"input_names"`
+	Recipe     string   `json:"recipe,omitempty"`
 }
+
+// CommandRecipe é a origem de um comando que veio de uma receita (DEC-52 C).
+const CommandRecipe = "recipe"
 
 // Active diz se o comando ainda ocupa a vaga do projeto.
 func (c Command) Active() bool { return c.State == CommandQueued || c.State == CommandRunning }

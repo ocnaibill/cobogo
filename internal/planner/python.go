@@ -51,6 +51,8 @@ type PythonPlanInput struct {
 	PlatformHosts bool
 	// Processes são os processos além do web (worker e agendador, DEC-51).
 	Processes []domain.PlanProcess
+	// Release é a fase de release (DEC-52 item 4).
+	Release string
 	// SrcLayout põe /app/src no PYTHONPATH.
 	SrcLayout bool
 	// SystemPackages são os pacotes de execução do catálogo que as dependências pedem.
@@ -87,7 +89,12 @@ func pythonFromAnalysis(res domain.AnalysisResult, port int, portOrigin, mode st
 			processes = append(processes, domain.PlanProcess{Name: p.kind, Kind: p.kind, Command: cmd})
 		}
 	}
+	release := f(domain.FieldReleaseCommand)
+	if release == domain.ProcessNone {
+		release = ""
+	}
 	in := PythonPlanInput{
+		Release:       release,
 		Processes:     processes,
 		PlatformHosts: platformHosts,
 		Version:       version, Manager: manager, AppTarget: target,
@@ -217,6 +224,7 @@ func BuildPythonPlan(in PythonPlanInput) domain.Plan {
 
 		Processes:           in.Processes,
 		DjangoPlatformHosts: in.PlatformHosts && in.DjangoSettings != "",
+		ReleaseCommand:      in.Release,
 	}
 }
 

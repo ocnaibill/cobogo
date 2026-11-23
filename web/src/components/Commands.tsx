@@ -41,6 +41,9 @@ export function CommandsTab({ projectId }: { projectId: string }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [opened, setOpened] = useState<string | null>(null);
+  // Valores só desta execução (DEC-52): do comando livre e de cada receita.
+  const [extra, setExtra] = useState<{ name: string; value: string }[]>([]);
+  const [recipeValues, setRecipeValues] = useState<Record<string, Record<string, string>>>({});
 
   // Um relógio de 1 s só para a contagem da janela da senha.
   useEffect(() => {
@@ -55,13 +58,15 @@ export function CommandsTab({ projectId }: { projectId: string }) {
   const unlocked = left > 0;
   const running = view.commands.find(isActive);
 
-  async function run(body: { script?: string; command?: string }, key: string) {
+  async function run(body: { script?: string; command?: string; recipe?: string; inputs?: Record<string, string> }, key: string) {
     setBusy(key);
     setError(null);
     try {
       const c = await unwrap(api.POST("/projects/{id}/commands", { params: { path: { id: projectId } }, body: { ...body, pause_app: pause, timeout_seconds: timeout ?? undefined } }));
       setOpened(c.id);
       setCustom("");
+      setExtra([]);
+      if (body.recipe) setRecipeValues((cur) => ({ ...cur, [body.recipe!]: {} }));
       await qc.invalidateQueries({ queryKey: ["commands", projectId] });
     } catch (e) {
       // A janela fechou entre o clique e o pedido: volta a pedir a senha.
@@ -127,18 +132,86 @@ export function CommandsTab({ projectId }: { projectId: string }) {
               )}
             </div>
 
+            {view.recipes.length > 0 && (
+              <div className="stack-sm">
+                <span className="label">Ações do projeto</span>
+                {view.recipes.map((r) => {
+                  const values = recipeValues[r.id] ?? {};
+                  const complete = r.inputs.every((i) => !i.required || (values[i.name] ?? "").trim() !== "");
+                  return (
+                    <form
+                      key={r.id}
+                      className="inset stack"
+                      onSubmit={(ev: FormEvent) => {
+                        ev.preventDefault();
+                        if (complete) run({ recipe: r.id, inputs: values }, r.id);
+                      }}
+                    >
+                      <div className="stack-sm">
+                        <span className="strong">{r.title}</span>
+                        <span className="small muted">{r.description}</span>
+                        <span className="small faint mono">
+                          {r.command} · {r.evidence.join(" · ")}
+                        </span>
+                      </div>
+                      <div className="grid-2">
+                        {r.inputs.map((i) => (
+                          <Field key={i.name} label={i.label} htmlFor={`rc-${r.id}-${i.name}`} hint={<span className="mono">{i.name}</span>}>
+                            <input
+                              id={`rc-${r.id}-${i.name}`}
+                              type={i.secret ? "password" : "text"}
+                              autoComplete={i.secret ? "new-password" : "off"}
+                              value={values[i.name] ?? ""}
+                              onChange={(e) => setRecipeValues((cur) => ({ ...cur, [r.id]: { ...(cur[r.id] ?? {}), [i.name]: e.target.value } }))}
+                              required={i.required}
+                            />
+                          </Field>
+                        ))}
+                      </div>
+                      <div className="row-end">
+                        <Button type="submit" variant="primary" icon="terminal" busy={busy === r.id} disabled={busy !== null || !!running || !complete}>
+                          {r.title}
+                        </Button>
+                      </div>
+                    </form>
+                  );
+                })}
+              </div>
+            )}
+
             <details>
               <summary className="small">Outro comando</summary>
               <form
                 className="stack card-text"
                 onSubmit={(ev: FormEvent) => {
                   ev.preventDefault();
-                  if (custom.trim()) run({ command: custom.trim() }, "custom");
+                  const inputs = Object.fromEntries(extra.filter((x) => x.name.trim()).map((x) => [x.name.trim(), x.value]));
+                  if (custom.trim()) run({ command: custom.trim(), inputs: Object.keys(inputs).length ? inputs : undefined }, "custom");
                 }}
               >
                 <Field label="Comando" htmlFor="cmd-custom" hint="Executado por sh -c, na pasta da aplicação. Sem teclado interativo: o comando não pode pedir resposta.">
                   <textarea id="cmd-custom" className="mono" rows={2} value={custom} onChange={(e) => setCustom(e.target.value)} spellCheck={false} autoComplete="off" maxLength={2000} placeholder="ls -la /app/data" />
                 </Field>
+                <div className="stack-sm">
+                  <span className="label">Valores só desta execução</span>
+                  <span className="small muted">Variáveis que só este comando recebe (uma senha, um token de uso único). Vão cifradas, não viram variável do projeto, saem da saída gravada e são apagadas ao terminar.</span>
+                  {extra.map((x, i) => (
+                    <div key={i} className="row">
+                      <input className="mono" placeholder="NOME" value={x.name} aria-label="Nome do valor" onChange={(e) => setExtra(extra.map((y, j) => (j === i ? { ...y, name: e.target.value.toUpperCase() } : y)))} style={{ maxWidth: 220 }} spellCheck={false} />
+                      <input type="password" placeholder="valor" value={x.value} aria-label={`Valor de ${x.name || "variável"}`} autoComplete="new-password" onChange={(e) => setExtra(extra.map((y, j) => (j === i ? { ...y, value: e.target.value } : y)))} />
+                      <Button variant="ghost" icon="x" onClick={() => setExtra(extra.filter((_, j) => j !== i))}>
+                        Tirar
+                      </Button>
+                    </div>
+                  ))}
+                  {extra.length < 10 && (
+                    <div>
+                      <Button variant="ghost" icon="plus" onClick={() => setExtra([...extra, { name: "", value: "" }])}>
+                        Adicionar valor
+                      </Button>
+                    </div>
+                  )}
+                </div>
                 <div className="row-end">
                   <Button type="submit" variant="primary" icon="terminal" busy={busy === "custom"} disabled={busy !== null || !!running || !custom.trim()}>
                     Rodar comando
@@ -219,6 +292,7 @@ function CommandRow({ projectId, command, open, onToggle }: { projectId: string;
       <div className="row-between">
         <button type="button" className="linklike stack-sm" onClick={onToggle} aria-expanded={open}>
           <span className="mono strong wrap">{command.command}</span>
+          {command.input_names.length > 0 && <span className="small faint">com valores só desta execução: <span className="mono">{command.input_names.join(", ")}</span></span>}
           <span className="small muted">
             <When iso={command.created_at} />
             {command.finished_at && command.started_at ? ` · ${duration(command.started_at, command.finished_at)}` : ""}

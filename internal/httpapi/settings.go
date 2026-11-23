@@ -72,6 +72,7 @@ func (s *Server) handlePutSetting(w http.ResponseWriter, r *http.Request, user d
 		return
 	}
 	s.audit(r, &user, "setting.update", key, "ok")
+	s.afterRoutingChange(r, user, key)
 	s.writeSetting(w, r, key)
 }
 
@@ -88,6 +89,7 @@ func (s *Server) handleResetSetting(w http.ResponseWriter, r *http.Request, user
 		return
 	}
 	s.audit(r, &user, "setting.reset", key, "ok")
+	s.afterRoutingChange(r, user, key)
 	s.writeSetting(w, r, key)
 }
 
