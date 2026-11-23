@@ -219,3 +219,70 @@ func TestChooseDatabaseInPartsLinksEveryRole(t *testing.T) {
 		}
 	}
 }
+
+// Um banco gerenciado ainda não criado pode ser escolhido de novo com outros nomes de variável (o caso em que
+// o formulário trouxe nomes que o código não lê, ou as variáveis foram apagadas): as ligações antigas saem, as
+// novas entram e a senha é nova. Já criado, a senha vive no volume e os nomes não mudam.
+func TestChooseManagedAgainRelinksAPendingServiceButNotACreatedOne(t *testing.T) {
+	st := storetest.New(t)
+	own := owner(t, st)
+	p := newProject(t, st)
+	pg := map[string]string{"host": "POSTGRES_HOST", "password": "POSTGRES_PASSWORD"}
+	db := map[string]string{"host": "DB_HOST", "password": "DB_PASSWORD"}
+
+	first, err := st.ChooseDatabaseFor(ctx, domain.ServiceMySQL, p.ID, own.ID, domain.ServiceManaged, pg, map[string]string{"host": "h1", "password": "senha-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Os mesmos nomes, tudo ligado: não muda nada, nem a senha.
+	if again, err := st.ChooseDatabaseFor(ctx, domain.ServiceMySQL, p.ID, own.ID, domain.ServiceManaged, pg, map[string]string{"host": "h2", "password": "senha-2"}); err != nil || again.ID != first.ID {
+		t.Fatalf("mesmos nomes: %+v %v", again, err)
+	}
+	if vals, _, _ := st.RevealEnvValues(ctx, p.ID); vals["POSTGRES_PASSWORD"] != "senha-1" {
+		t.Error("a senha foi trocada sem necessidade")
+	}
+	// Outros nomes (os que o código lê): religa, com a senha nova, e solta os antigos.
+	sv, err := st.ChooseDatabaseFor(ctx, domain.ServiceMySQL, p.ID, own.ID, domain.ServiceManaged, db, map[string]string{"host": "h3", "password": "senha-3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sv.Variables["host"] != "DB_HOST" || sv.Variable != "DB_PASSWORD" {
+		t.Errorf("serviço = %+v", sv)
+	}
+	vals, _, _ := st.RevealEnvValues(ctx, p.ID)
+	if vals["DB_HOST"] != "h3" || vals["DB_PASSWORD"] != "senha-3" {
+		t.Errorf("variáveis novas = %v", vals)
+	}
+	if _, old := vals["POSTGRES_HOST"]; old {
+		t.Error("a ligação antiga ficou")
+	}
+	// Variáveis apagadas à mão: escolher de novo as religa.
+	if err := st.DeleteEnvVariable(ctx, p.ID, "DB_HOST"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ChooseDatabaseFor(ctx, domain.ServiceMySQL, p.ID, own.ID, domain.ServiceManaged, db, map[string]string{"host": "h4", "password": "senha-4"}); err != nil {
+		t.Fatal(err)
+	}
+	if vals, _, _ := st.RevealEnvValues(ctx, p.ID); vals["DB_HOST"] != "h4" || vals["DB_PASSWORD"] != "senha-4" {
+		t.Errorf("depois de apagar: %v", vals)
+	}
+	// Um valor que o usuário digitou nunca é sobrescrito.
+	if _, err := st.PutEnvVariable(ctx, p.ID, "OUTRO_HOST", "meu", domain.EnvSourceUser); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ChooseDatabaseFor(ctx, domain.ServiceMySQL, p.ID, own.ID, domain.ServiceManaged, map[string]string{"host": "OUTRO_HOST", "password": "DB_PASSWORD"}, map[string]string{"host": "x", "password": "y"}); !errors.Is(err, store.ErrVariableDefined) {
+		t.Errorf("sobrescrever o que o usuário definiu: %v", err)
+	}
+
+	// Já criado (o worker marcou como pronto): a senha vive no volume, então os nomes não mudam.
+	cur, _ := st.GetDatabaseService(ctx, p.ID)
+	if err := st.SetServiceStatus(ctx, cur.ID, domain.ServiceReady, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ChooseDatabaseFor(ctx, domain.ServiceMySQL, p.ID, own.ID, domain.ServiceManaged, pg, map[string]string{"host": "h5", "password": "senha-5"}); !errors.Is(err, store.ErrManagedExists) {
+		t.Errorf("outros nomes num serviço criado = %v, want ErrManagedExists", err)
+	}
+	if again, err := st.ChooseDatabaseFor(ctx, domain.ServiceMySQL, p.ID, own.ID, domain.ServiceManaged, cur.Variables, map[string]string{"host": "h6", "password": "senha-6"}); err != nil || again.ID != cur.ID {
+		t.Errorf("os mesmos nomes num serviço criado: %+v %v", again, err)
+	}
+}

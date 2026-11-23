@@ -83,6 +83,10 @@ func (w *Worker) serviceFinding(ctx context.Context, project domain.Project, res
 		target, how = connectionNames(need), "os dados de conexão"
 	}
 	message := fmt.Sprintf("O código usa %s (%s) e a conexão não está definida (%s). Onde está %s?", label, firstEvidence(need.Evidence), target, noun)
+	if err == nil && svc.Mode == domain.ServiceManaged {
+		// Escolhido, mas ligado a outros nomes: nada define o que o código lê.
+		message = fmt.Sprintf("Você escolheu criar um %s do Cobogó, mas ele foi ligado a variáveis que o código não lê (%s). O código lê %s. Escolha de novo, com esses nomes, ou informe a conexão na aba Variáveis.", label, linkedNames(svc), target)
+	}
 	if err == nil && svc.Mode == domain.ServiceExternal {
 		message = fmt.Sprintf("Você escolheu usar um serviço que já tem, mas a conexão não está definida (%s). Informe %s na aba Variáveis, ou escolha outra opção.", target, how)
 	}
@@ -102,6 +106,20 @@ func (w *Worker) serviceFinding(ctx context.Context, project domain.Project, res
 			{Value: domain.ServiceNone, Note: "O projeto não precisa dele; o deploy segue sem perguntar de novo."},
 		},
 	}, nil
+}
+
+// linkedNames lista as variáveis a que um serviço gerenciado foi ligado.
+func linkedNames(svc domain.Service) string {
+	var names []string
+	for _, role := range []string{domain.RoleURL, domain.RoleHost, domain.RolePort, domain.RoleUser, domain.RolePassword, domain.RoleDatabase} {
+		if n := svc.Variables[role]; n != "" {
+			names = append(names, n)
+		}
+	}
+	if len(names) == 0 && svc.Variable != "" {
+		names = append(names, svc.Variable)
+	}
+	return strings.Join(names, ", ")
 }
 
 func firstEvidence(ev []string) string {

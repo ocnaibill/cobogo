@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/google/uuid"
@@ -63,6 +64,33 @@ func (s *Store) GetDatabaseService(ctx context.Context, projectID uuid.UUID) (do
 		WHERE project_id = $1 AND engine = ANY($2) AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1`, projectID, domain.RelationalEngines))
 }
 
+// deployInFlight diz se há um deploy do projeto entre o provisionamento e a verificação: nesse intervalo o
+// serviço pode estar sendo criado com a senha que já está nas variáveis.
+func (s *Store) deployInFlight(ctx context.Context, projectID uuid.UUID) bool {
+	var busy bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM deployments WHERE project_id = $1 AND state = ANY($2))`,
+		projectID, []string{string(domain.DeploymentProvisioning), string(domain.DeploymentBuilding), string(domain.DeploymentStarting), string(domain.DeploymentVerifying)}).Scan(&busy)
+	return err != nil || busy
+}
+
+// linkedVariablesPresent diz se todas as variáveis que o serviço entrega (menos a CA, que não é gravada) existem.
+func (s *Store) linkedVariablesPresent(ctx context.Context, projectID uuid.UUID, sv domain.Service) bool {
+	vars, err := s.ListEnvVariables(ctx, projectID)
+	if err != nil {
+		return true // sem poder ler, não religa (a senha ficaria trocada sem necessidade)
+	}
+	have := make(map[string]bool, len(vars))
+	for _, v := range vars {
+		have[v.Name] = true
+	}
+	for role, name := range sv.Variables {
+		if role != domain.RoleCA && !have[name] {
+			return false
+		}
+	}
+	return true
+}
+
 // GetManagedService devolve o serviço vigente de uma engine provida: o banco relacional do projeto
 // (qualquer das engines relacionais) ou o Redis (DEC-50).
 func (s *Store) GetManagedService(ctx context.Context, projectID uuid.UUID, engine string) (domain.Service, error) {
@@ -95,12 +123,33 @@ func (s *Store) ChooseDatabaseFor(ctx context.Context, engine string, projectID,
 		if mode != domain.ServiceManaged {
 			return domain.Service{}, ErrManagedExists
 		}
-		// Escolher o gerenciado de novo, da mesma engine, não muda nada e a senha não é trocada;
-		// de outra engine, o banco que existe ficaria órfão.
+		// De outra engine, o banco que existe ficaria órfão.
 		if current.Engine != engine {
 			return domain.Service{}, ErrManagedExists
 		}
-		return current, nil
+		// Ainda sem o serviço criado (pendente) e sem deploy em andamento, escolher de novo religa as
+		// variáveis, com os nomes pedidos e uma senha nova: era o caminho para consertar nomes que o
+		// código não lê. Já criado, a senha vive no volume do serviço e não se troca; escolher de novo
+		// com os mesmos nomes não muda nada, e com outros nomes é recusado (apague e crie de novo).
+		if current.Status == domain.ServicePending && !s.deployInFlight(ctx, projectID) {
+			// As mesmas variáveis, todas ainda ligadas: nada a religar, e a senha não é trocada.
+			if maps.Equal(current.Variables, variables) && s.linkedVariablesPresent(ctx, projectID, current) {
+				return current, nil
+			}
+			old := make([]string, 0, len(current.Variables)+1)
+			old = append(old, current.Variable)
+			for _, name := range current.Variables {
+				old = append(old, name)
+			}
+			if _, err := s.pool.Exec(ctx, `DELETE FROM env_variables WHERE project_id = $1 AND name = ANY($2) AND source = 'linked'`, projectID, old); err != nil {
+				return domain.Service{}, fmt.Errorf("store: soltar as variáveis vinculadas antigas: %w", err)
+			}
+		} else {
+			if !maps.Equal(current.Variables, variables) {
+				return domain.Service{}, ErrManagedExists
+			}
+			return current, nil
+		}
 	} else if err != nil && !errors.Is(err, ErrNotFound) {
 		return domain.Service{}, err
 	}

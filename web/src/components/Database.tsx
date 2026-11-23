@@ -58,14 +58,27 @@ const ROLES: Record<Style, { role: string; label: string; required: boolean; hin
   ],
 };
 
-const PARTS_DEFAULT: Record<string, string> = { host: "POSTGRES_HOST", port: "POSTGRES_PORT", user: "POSTGRES_USER", password: "POSTGRES_PASSWORD", database: "POSTGRES_DB", ca: "" };
+/** Os nomes padrão do estilo em partes, pelo prefixo da engine (POSTGRES_HOST, MYSQL_HOST). */
+function partsDefault(engine: string): Record<string, string> {
+  const p = engine === "mysql" ? "MYSQL" : engine === "redis" ? "REDIS" : "POSTGRES";
+  return { host: `${p}_HOST`, port: `${p}_PORT`, user: `${p}_USER`, password: `${p}_PASSWORD`, database: engine === "mysql" ? "MYSQL_DATABASE" : `${p}_DB`, ca: "" };
+}
 
-/** Os nomes de variável por papel de um estado inicial: o que a análise leu, o vínculo atual ou o padrão. */
+function urlDefault(view: DatabaseView): string {
+  return view.need?.variables?.url || (view.engine === "redis" ? "REDIS_URL" : "DATABASE_URL");
+}
+
+/**
+ * Os nomes de variável por papel de um estado inicial. O que o código lê (a análise) vale mais do que um
+ * vínculo ainda não criado: um serviço pendente guarda os nomes do pedido anterior, que podem ser os errados.
+ */
 function initialNames(view: DatabaseView): { style: Style; names: Record<string, string> } {
-  const vars = view.service?.variables ?? view.need?.variables ?? {};
+  const needVars = view.need?.variables ?? {};
+  const pending = !view.service || view.service.status === "pending";
+  const vars = pending && Object.keys(needVars).length > 0 ? needVars : (view.service?.variables ?? needVars);
   const style: Style = view.need?.style === "parts" || ("host" in vars && "password" in vars) ? "parts" : "url";
   if (Object.keys(vars).length > 0) return { style, names: { ...vars } };
-  return { style, names: style === "parts" ? { ...PARTS_DEFAULT } : { url: view.variable || "DATABASE_URL" } };
+  return { style, names: style === "parts" ? partsDefault(view.engine) : { url: view.variable || urlDefault(view) } };
 }
 
 /** Os nomes de variável de uma conexão, em ordem de leitura (sem o certificado). */
@@ -94,12 +107,22 @@ export function DatabaseChoice({ projectId, view, onChosen }: { projectId: strin
   };
   const complete = roles.every(({ role, required }) => !required || (names[role] ?? "").trim() !== "");
 
+  // Os papéis em que o nome do formulário difere do que a análise leu no código (só vale no mesmo estilo).
+  const mismatch: { want: string; have: string }[] =
+    view.need?.style === style
+      ? roles.flatMap(({ role }) => {
+          const want = view.need?.variables?.[role] ?? "";
+          const have = (names[role] ?? "").trim();
+          return want && want !== have ? [{ want, have }] : [];
+        })
+      : [];
+
   function changeStyle(next: Style) {
     setStyle(next);
     setNames((cur): Record<string, string> => {
       const ca = cur.ca ?? "";
-      if (next === "parts") return Object.assign({}, PARTS_DEFAULT, { ca });
-      return { url: view.need?.variables?.url ?? "DATABASE_URL", ca };
+      if (next === "parts") return Object.assign({}, view.need?.style === "parts" ? view.need.variables : partsDefault(view.engine), { ca });
+      return { url: urlDefault(view), ca };
     });
   }
 
@@ -146,6 +169,11 @@ export function DatabaseChoice({ projectId, view, onChosen }: { projectId: strin
           </Field>
         ))}
       </div>
+      {mismatch.length > 0 && (
+        <Notice tone="warning" title="Estes nomes não são os que o código lê">
+          O código lê {mismatch.map((m) => m.want).join(", ")}, mas o formulário tem {mismatch.map((m) => m.have || "(vazio)").join(", ")}. Com nomes diferentes o serviço é criado, mas o código não encontra a conexão.
+        </Notice>
+      )}
       <div className="options" role="group" aria-label="Destino do banco">
         {(Object.keys(CHOICE_TEXT(view.engine)) as Choice[]).map((c) => (
           <div key={c} className="option row-between">
