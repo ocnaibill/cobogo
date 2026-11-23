@@ -690,7 +690,11 @@ func ruleHEU045() Rule {
 			if len(setting("SQLITE")) > 0 {
 				warn("o settings usa SQLite: o arquivo some a cada deploy se não estiver num volume (aba Dados), e o padrão (db.sqlite3 na raiz) fica na pasta da aplicação, que não pode ser volume. Mova o arquivo para uma pasta (por exemplo data/) ou use o PostgreSQL do Cobogó (aba Banco)")
 			}
-			warn("o Cobogó não roda migrações: depois do primeiro deploy (e de cada um que traga migrações), rode `python manage.py migrate` na aba Comandos")
+			// Com a fase de release ativa (HEU-04.8), o Cobogó roda as migrações a cada deploy:
+			// o aviso só vale quando ela não vai rodar.
+			if !releaseWillRun(in) {
+				warn("nenhum comando de migração roda nos deploys deste projeto: depois do primeiro deploy (e de cada um que traga migrações), rode `python manage.py migrate` na aba Comandos")
+			}
 			return out
 		},
 	}
@@ -831,7 +835,7 @@ func ruleHEU047() Rule {
 				propose(domain.FieldProcessScheduler, cmd, domain.OriginInference, celeryBeat[0])
 			}
 			if len(in.Of(kindPyRedis)) == 0 && !hasDep(in, "redis", "django-redis") {
-				out.Warnings = append(out.Warnings, finding("", "HEU-07: este projeto usa Celery, mas não achei um sinal de broker (Redis); o worker sobe e não recebe tarefas. Se o broker é outro (RabbitMQ, SQS), o Cobogó ainda não o provê: informe um externo numa variável de ambiente lida pelo código", app))
+				out.Warnings = append(out.Warnings, finding("", "HEU-04.7: este projeto usa Celery, mas não achei um sinal de broker (Redis); o worker sobe e não recebe tarefas. Se o broker é outro (RabbitMQ, SQS), o Cobogó ainda não o provê: informe um externo numa variável de ambiente lida pelo código", app))
 			}
 			return out
 		},
@@ -862,6 +866,18 @@ func ruleHEU048() Rule {
 			return out
 		},
 	}
+}
+
+// releaseWillRun diz se a HEU-04.8 vai ter um comando de release: o override (que não seja
+// "none"), o `release:` do Procfile ou o `migrate` inferido de um Django com migrações.
+func releaseWillRun(in RuleInput) bool {
+	if o, ok := in.Overrides[domain.FieldReleaseCommand]; ok {
+		return o != "" && o != domain.ProcessNone
+	}
+	if len(in.Named(kindPyProcfile, "release")) > 0 {
+		return true
+	}
+	return len(in.Of(kindDjangoModule)) > 0 && len(in.Of(kindDjangoMigration)) > 0
 }
 
 // shellQuoteArg põe aspas simples num alvo com caracteres de shell (um alvo `pacote.modulo:app` não precisa).

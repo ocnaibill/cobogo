@@ -39,6 +39,40 @@ func TestReleaseCommand(t *testing.T) {
 	}
 }
 
+// O aviso de que nenhuma migração roda só vale quando a fase de release não vai rodar.
+func TestMigrationNoticeFollowsRelease(t *testing.T) {
+	withMigrations := map[string]string{"events/__init__.py": "", "events/migrations/__init__.py": "", "events/migrations/0001_initial.py": "from django.db import migrations\n"}
+	has := func(files map[string]string, overrides map[string]string) bool {
+		res, err := Analyze(toFS(files), Input{Overrides: overrides})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, w := range res.Warnings {
+			if strings.Contains(w.Message, "nenhum comando de migração roda") {
+				return true
+			}
+		}
+		return false
+	}
+	if has(djangoRepo(withMigrations), nil) {
+		t.Error("com migrações no repositório a release roda `migrate`: o aviso não cabe")
+	}
+	if !has(djangoRepo(withMigrations), map[string]string{domain.FieldReleaseCommand: "none"}) {
+		t.Error("com a release desligada o aviso volta")
+	}
+	if has(djangoRepo(withMigrations), map[string]string{domain.FieldReleaseCommand: "python manage.py migrate && python manage.py seed"}) {
+		t.Error("com um comando de release trocado o aviso não cabe")
+	}
+	if !has(djangoRepo(nil), nil) {
+		t.Error("sem migrações nem Procfile com release, nada roda e o aviso fica")
+	}
+	procfile := djangoRepo(nil)
+	procfile["Procfile"] = "web: gunicorn mysite.wsgi\nrelease: python manage.py migrate\n"
+	if has(procfile, nil) {
+		t.Error("o release: do Procfile cobre as migrações")
+	}
+}
+
 // O modelo de usuário próprio do Django: o campo de login e os obrigatórios.
 func TestDjangoUserModelEvidence(t *testing.T) {
 	files := djangoRepo(map[string]string{
