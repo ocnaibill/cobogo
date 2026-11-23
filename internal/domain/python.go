@@ -21,6 +21,10 @@ const (
 	// FieldDjangoPlatformHosts: a plataforma acrescenta o endereço do projeto a
 	// ALLOWED_HOSTS e CSRF_TRUSTED_ORIGINS, num módulo gerado na imagem (DEC-49 item 6).
 	FieldDjangoPlatformHosts = "django_platform_hosts"
+	// FieldProcessWorker e FieldProcessScheduler são o comando do processo worker e do agendador
+	// do projeto (DEC-51); "none" os desliga.
+	FieldProcessWorker    = "process_worker"
+	FieldProcessScheduler = "process_scheduler"
 )
 
 // Ecossistemas.
@@ -85,3 +89,12 @@ func OldGunicorn(spec string) bool {
 	major, err := strconv.Atoi(m[1])
 	return err == nil && major < 22
 }
+
+// ProcessNone desliga um processo proposto pela análise (override de process_worker ou process_scheduler).
+const ProcessNone = "none"
+
+// Tipos de processo de um projeto além do web (DEC-51).
+const (
+	ProcessWorker    = "worker"
+	ProcessScheduler = "scheduler"
+)

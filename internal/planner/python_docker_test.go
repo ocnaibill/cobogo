@@ -375,3 +375,129 @@ main();
 		t.Errorf("GET / = %d %q", code, body)
 	}
 }
+
+// O caminho inteiro da DEC-51: um Django com Celery, a análise propondo o worker (com a evidência), o
+// Redis gerenciado como broker, o web e o worker da mesma imagem, e uma tarefa enfileirada pelo web e
+// executada de verdade pelo worker.
+func TestPythonCeleryWorkerWithManagedRedis(t *testing.T) {
+	rt := requireDocker(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+	settings := `import os
+SECRET_KEY = os.environ["SECRET_KEY"]
+DEBUG = False
+ALLOWED_HOSTS = ["*"]
+INSTALLED_APPS = ["django.contrib.contenttypes", "notas"]
+MIDDLEWARE = []
+ROOT_URLCONF = "mysite.urls"
+WSGI_APPLICATION = "mysite.wsgi.application"
+DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}}
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+STATIC_URL = "static/"
+CELERY_BROKER_URL = os.environ["REDIS_URL"]
+CELERY_RESULT_BACKEND = os.environ["REDIS_URL"]
+`
+	dir := writePyProject(t, map[string]string{
+		"requirements.txt":   "Django==5.2.8\ncelery==5.5.3\nredis==6.2.0\n",
+		"manage.py":          "import os, sys\nif __name__ == '__main__':\n    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'mysite.settings')\n    from django.core.management import execute_from_command_line\n    execute_from_command_line(sys.argv)\n",
+		"mysite/__init__.py": "from .celery import app as celery_app\n\n__all__ = ('celery_app',)\n",
+		"mysite/celery.py":   "import os\nfrom celery import Celery\n\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'mysite.settings')\napp = Celery('mysite')\napp.config_from_object('django.conf:settings', namespace='CELERY')\napp.autodiscover_tasks()\n",
+		"mysite/settings.py": settings,
+		"mysite/urls.py":     "from celery.result import AsyncResult\nfrom django.http import HttpResponse\nfrom django.urls import path\nfrom notas.tasks import dobra\n\ndef enqueue(request):\n    return HttpResponse(dobra.delay(21).id)\n\ndef result(request, task_id):\n    r = AsyncResult(task_id)\n    return HttpResponse('%s:%s' % (r.state, r.result if r.successful() else ''))\n\nurlpatterns = [path('enqueue', enqueue), path('result/<task_id>', result)]\n",
+		"mysite/wsgi.py":     "import os\nfrom django.core.wsgi import get_wsgi_application\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'mysite.settings')\napplication = get_wsgi_application()\n",
+		"notas/__init__.py":  "",
+		"notas/tasks.py":     "from celery import shared_task\n\n@shared_task\ndef dobra(x):\n    return x * 2\n",
+	})
+	res, err := analyzer.Analyze(os.DirFS(dir), analyzer.Input{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := res.Fields[domain.FieldProcessWorker]
+	if worker.Value != "celery -A mysite worker -l info --concurrency=2" || worker.Origin != domain.OriginInference || len(worker.EvidenceIDs) == 0 {
+		t.Fatalf("a análise não propôs o worker do Celery com evidência: %+v", worker)
+	}
+	var redis *domain.ServiceNeed
+	for i := range res.ServiceNeeds {
+		if res.ServiceNeeds[i].Engine == domain.ServiceRedis {
+			redis = &res.ServiceNeeds[i]
+		}
+	}
+	if redis == nil || redis.Level != domain.NeedRequired || redis.Variable != "REDIS_URL" || len(redis.FixedAt) != 0 {
+		t.Fatalf("a análise não viu o Redis lido de REDIS_URL: %+v", res.ServiceNeeds)
+	}
+	plan, err := planner.FromAnalysis(res)
+	if err != nil {
+		t.Fatalf("plan: %v (outcome %s, pending %+v)", err, res.Outcome, res.Pending)
+	}
+	if len(plan.Processes) != 1 || plan.Processes[0].Kind != domain.ProcessWorker {
+		t.Fatalf("processos do plano = %+v", plan.Processes)
+	}
+	name := "cobogo-test-celery"
+	tag := "cobogo-test/planner:" + name
+	if _, err := rt.Build(ctx, dir, plan.Dockerfile, tag, plan.Runtime, func(string) {}); err != nil {
+		t.Fatalf("build: %v\nDockerfile:\n%s", err, plan.Dockerfile)
+	}
+	t.Cleanup(func() { _ = exec.Command("docker", "rmi", "-f", tag).Run() })
+	netName := name + "-net"
+	if err := rt.EnsureNetwork(ctx, netName, map[string]string{dockerrt.LabelProject: "celery-test"}); err != nil {
+		t.Fatal(err)
+	}
+	const dbHost, dbPass, dep = "cobogo-redis-celerytest", "senha-celery-redis-99", "dep-celery-test"
+	if _, err := rt.EnsureService(ctx, dockerrt.ServiceSpec{Engine: domain.ServiceRedis, ProjectID: "celery-test", Container: dbHost, Network: netName, Volume: name + "-vol", Password: dbPass}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = rt.RemoveByDeployment(context.Background(), dep)
+		_ = exec.Command("docker", "rm", "-f", name).Run()
+		_ = rt.RemoveService(context.Background(), "celery-test", dbHost, name+"-vol")
+		_ = exec.Command("docker", "network", "rm", netName).Run()
+	})
+	if err := rt.WaitHealthy(ctx, dbHost, 2*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	envMap := map[string]string{"SECRET_KEY": "x", "REDIS_URL": "redis://:" + dbPass + "@" + dbHost + ":6379/0", "PORT": "8080"}
+	run := []string{"run", "-d", "--name", name, "--network", netName, "-p", "127.0.0.1::8080"}
+	for k, v := range envMap {
+		run = append(run, "-e", k+"="+v)
+	}
+	if out, err := exec.Command("docker", append(run, tag)...).CombinedOutput(); err != nil {
+		t.Fatalf("run web: %v\n%s", err, out)
+	}
+	// O worker, como o pipeline o inicia: a mesma imagem, o mesmo ambiente, só na rede do projeto.
+	wid, err := rt.RunProcess(ctx, tag, name+"-worker", planner.ShellStart(plan.Processes[0].Command), envMap, dep, "worker", dockerrt.WithNetwork(netName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.WaitStable(ctx, wid, 12*time.Second); err != nil {
+		logs, _ := exec.Command("docker", "logs", wid).CombinedOutput()
+		t.Fatalf("o worker não ficou de pé: %v\n%s", err, logs)
+	}
+	portOut, err := exec.Command("docker", "port", name, "8080/tcp").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hostPort int
+	if _, err := fmt.Sscanf(strings.TrimSpace(strings.SplitN(string(portOut), "\n", 2)[0]), "127.0.0.1:%d", &hostPort); err != nil {
+		t.Fatalf("porta: %q", portOut)
+	}
+	if _, err := dockerrt.ProbeReady(ctx, hostPort, "/result/x", time.Minute, nil); err != nil {
+		logs, _ := exec.Command("docker", "logs", name).CombinedOutput()
+		t.Fatalf("probe: %v\n%s", err, logs)
+	}
+	code, id := getPath(t, hostPort, "/enqueue", "")
+	if code != 200 || len(id) < 10 {
+		t.Fatalf("enqueue = %d %q", code, id)
+	}
+	var last string
+	for i := 0; i < 30; i++ {
+		_, last = getPath(t, hostPort, "/result/"+id, "")
+		if last == "SUCCESS:42" {
+			break
+		}
+		time.Sleep(time.Second)
+	}
+	if last != "SUCCESS:42" {
+		logs, _ := exec.Command("docker", "logs", wid).CombinedOutput()
+		t.Fatalf("a tarefa não foi executada pelo worker: %q\nlog do worker:\n%s", last, logs)
+	}
+}

@@ -1,6 +1,6 @@
 # DEC-50 — Serviços de dados por engine: MySQL e Redis dentro do Cobogó
 
-> **Estado:** direção aprovada pelo autor em 22/11/2026 (MySQL oficial na versão LTS, primeira versão sem TLS); **partes A (a especificação por engine) e B (MySQL gerenciado) implementadas**; parte C (Redis) aberta.
+> **Estado:** direção aprovada pelo autor em 22/11/2026 (MySQL oficial na versão LTS, primeira versão sem TLS); **partes A (a especificação por engine), B (MySQL gerenciado) e C (Redis gerenciado) implementadas**.
 >
 > **Escopo:** generalizar o serviço gerenciado (hoje só PostgreSQL, DEC-42/44/47) para uma especificação por engine e entregar MySQL e Redis sobre ela: detectar, perguntar, provisionar, ligar às variáveis do projeto, fazer backup e restaurar.
 >
@@ -91,4 +91,12 @@ Cada parte é um commit e uma subida na VM.
 - **Backup e restauração:** o item `mysql` (`database.sql`, versão `8.4` no manifest); a restauração recusa um dump de outra engine ou versão antes de tocar em qualquer coisa. Logs: origem `mysql`, e o filtro "Banco" do painel reúne as origens de banco.
 - **Painel:** a aba Banco diz a engine, os textos e o aviso "sem TLS" são os da engine, e a escolha envia a engine.
 - **Verificação:** testes do analisador, da API e do store; o **MySQL gerenciado de verdade** (provisão, usuário `app` por `mysql_native_password`, `utf8mb4`, root fechado para a senha da aplicação, backup, restauração com a tabela posterior sumindo e acentos preservados, dump truncado recusado sem mexer no banco); um **Django com `mysqlclient` e um Node com `mysql2`**, construídos pelo planner, com `migrate` e leitura e escrita com acentos no MySQL gerenciado; o `fec` na pilha local completa: pergunta com a evidência (`backend/settings.py:105`), escolha pelo painel, MySQL no ar, `DB_*` vinculadas ao app, `manage.py check --database default` conectando de verdade, release `healthy` e os logs do banco com origem `mysql`.
+
+## Implementação da parte C (23/11/2026)
+
+- **A engine (`redisEngine`):** `redis:8-alpine` fixada por digest; senha obrigatória (por ambiente, nunca na linha de comando visível do servidor: o script lê `$REDIS_PASSWORD`); persistência AOF (`everysec`) no volume `/data`; `--maxmemory 160mb` com `noeviction` (um broker nunca descarta uma tarefa para abrir espaço: a memória cheia vira erro de escrita); 256 MiB; sem TLS; o servidor inicia pelo entrypoint da imagem, que larga o root. **Sem dump:** a persistência é o volume, filas e caches são transitórios, e o backup do projeto não inclui o Redis (dito no painel; uma restauração por dump de Redis é recusada).
+- **O Redis convive com o banco relacional:** é um serviço independente do mesmo projeto (`GetManagedService` por engine; o banco relacional segue sendo um só). A pergunta de destino é própria (`redis`), a API usa `engine` (`GET /database?engine=redis`, `POST` e `DELETE` com `engine`), a conexão sai como URL com só a senha (`redis://:senha@host:6379/0`) ou em partes (host, porta, senha). A migração 0019 estende as restrições de engine e de origem de log.
+- **Heurística (HEU-06 para Redis, `internal/analyzer/redis.go`):** evidência forte (o import do cliente, o backend de cache do Django, o endereço `redis://` escrito no código, o **Celery com o cliente do Redis nas dependências**, achada pelo teste real), só a dependência é sugestão, o Celery sozinho não é Redis. **Diz como o código chega ao serviço:** lendo uma variável (o Cobogó liga a do Redis gerenciado) ou com o endereço escrito no código (`FixedAt`, com arquivo e linha; a pergunta avisa que o serviço do Cobogó só será usado se o código passar a ler uma variável). Nunca guarda nem mostra uma senha escrita no código.
+- **Painel:** a aba Serviços mostra o Redis ao lado do banco; a pergunta do deploy tem o cartão do Redis; os logs do banco e dos serviços compartilham o filtro "Serviços".
+- **Verificação:** testes do analisador (JS e Python, endereço fixo sem senha, partes `REDIS_*`, Celery), da API e o **Redis gerenciado de verdade** (sem senha: `NOAUTH`; senha errada: `WRONGPASS`; AOF ligado; `noeviction`; sem porta publicada; os dados sobrevivem a um reinício do contêiner).
 

@@ -999,6 +999,13 @@ paths:
       operationId: getDatabase
       parameters:
         - $ref: '#/components/parameters/Id'
+        - name: engine
+          in: query
+          required: false
+          description: '`redis` devolve a visão do Redis do projeto (DEC-50 C); sem o parâmetro, a do banco relacional.'
+          schema:
+            type: string
+            enum: [redis]
       responses:
         '200':
           description: O estado do banco.
@@ -1040,8 +1047,8 @@ paths:
                   enum: [managed, external, none]
                 engine:
                   type: string
-                  enum: [postgres, mysql]
-                  description: A engine do banco. Vazio vale a da necessidade que a análise achou, ou `postgres` (DEC-50).
+                  enum: [postgres, mysql, redis]
+                  description: A engine do serviço. Vazio vale a da necessidade que a análise achou, ou `postgres` (DEC-50).
                 variable:
                   type: string
                   description: A variável da URL de conexão (forma curta). Padrão `DATABASE_URL`.
@@ -1102,6 +1109,10 @@ paths:
               properties:
                 confirm_slug:
                   type: string
+                engine:
+                  type: string
+                  enum: [postgres, mysql, redis]
+                  description: O serviço a apagar. Vazio vale o banco relacional (DEC-50).
       responses:
         '202':
           description: A operação foi enfileirada.
@@ -1333,7 +1344,7 @@ paths:
           description: Só uma origem. `database` reúne os bancos gerenciados de qualquer engine. Sem o parâmetro, todas.
           schema:
             type: string
-            enum: [app, database, postgres, mysql]
+            enum: [app, database, postgres, mysql, redis]
         - name: after
           in: query
           required: false
@@ -2481,7 +2492,9 @@ components:
         `asgi`), `python_framework`, `django_settings` e `django_platform_hosts`
         (`true` ou `false`: a plataforma acrescenta o endereço do projeto a
         `ALLOWED_HOSTS` e `CSRF_TRUSTED_ORIGINS` num módulo gerado na imagem, sem
-        mudar o repositório; é a resposta à pergunta da HEU-04.6; DEC-49).
+        mudar o repositório; é a resposta à pergunta da HEU-04.6; DEC-49),
+        `process_worker` e `process_scheduler` (o comando do worker e do agendador,
+        ou `none` para desligar; DEC-51).
         Valores de variáveis de ambiente nunca passam por aqui.
       additionalProperties:
         type: string
@@ -3074,7 +3087,7 @@ components:
           nullable: true
         origin:
           type: string
-          enum: [app, postgres, mysql]
+          enum: [app, postgres, mysql, redis]
         stream:
           type: string
           enum: [stdout, stderr, system]
@@ -3356,7 +3369,7 @@ components:
       properties:
         engine:
           type: string
-          enum: [postgres, mysql]
+          enum: [postgres, mysql, redis]
         level:
           type: string
           enum: [required, possible]
@@ -3384,6 +3397,11 @@ components:
           type: array
           items:
             type: string
+        fixed_at:
+          type: array
+          items:
+            type: string
+          description: Onde o código escreve o endereço do serviço (arquivo:linha) em vez de lê-lo de uma variável de ambiente; o serviço do Cobogó só será usado se o código mudar.
     Service:
       type: object
       required: [id, project_id, engine, mode, variable, variables, tls, status, created_at, updated_at]
@@ -3396,7 +3414,7 @@ components:
           format: uuid
         engine:
           type: string
-          enum: [postgres, mysql]
+          enum: [postgres, mysql, redis]
         mode:
           type: string
           enum: [managed, external, none]
@@ -3431,8 +3449,8 @@ components:
       properties:
         engine:
           type: string
-          enum: [postgres, mysql]
-          description: 'A engine do banco do projeto (DEC-50): a do serviço, a da necessidade que a análise achou ou PostgreSQL.'
+          enum: [postgres, mysql, redis]
+          description: 'A engine do serviço (DEC-50): a do serviço, a da necessidade que a análise achou ou PostgreSQL.'
         need:
           allOf:
             - $ref: '#/components/schemas/ServiceNeed'
@@ -3516,6 +3534,20 @@ components:
           type: string
           enum: [wsgi, asgi]
           description: Interface do alvo; só no perfil P-PY (gunicorn para wsgi, uvicorn para asgi).
+        processes:
+          type: array
+          description: Os processos além do web (DEC-51), da mesma imagem, sem porta nem rota; só no perfil P-PY.
+          items:
+            type: object
+            required: [name, kind, command]
+            properties:
+              name:
+                type: string
+              kind:
+                type: string
+                enum: [worker, scheduler]
+              command:
+                type: string
         django_platform_hosts:
           type: boolean
           description: A imagem usa o módulo de ajuste do Django que acrescenta o endereço do projeto às listas de hosts e de origens; só no perfil P-PY (DEC-49).

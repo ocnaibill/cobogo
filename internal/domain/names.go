@@ -31,8 +31,8 @@ const PostgresDataPath = "/var/lib/postgresql/data"
 // nome do contêiner e o diretório de dados, que decide o nome do volume. O que o runtime
 // precisa a mais (imagem, porta, saúde, dump) está em dockerrt.Engine.
 var (
-	engineCode     = map[string]string{ServicePostgres: "pg", ServiceMySQL: "mysql"}
-	engineDataPath = map[string]string{ServicePostgres: PostgresDataPath, ServiceMySQL: MySQLDataPath}
+	engineCode     = map[string]string{ServicePostgres: "pg", ServiceMySQL: "mysql", ServiceRedis: "redis"}
+	engineDataPath = map[string]string{ServicePostgres: PostgresDataPath, ServiceMySQL: MySQLDataPath, ServiceRedis: RedisDataPath}
 )
 
 // EngineDataPath devolve o diretório de dados de uma engine, ou "" se não é provida.
@@ -48,6 +48,9 @@ func ServiceContainerNameFor(projectID, engine string) string {
 func ServiceVolumeNameFor(projectID, engine string) string {
 	return VolumeName(projectID, engineDataPath[engine])
 }
+
+// RedisDataPath é onde a imagem do Redis guarda os dados (o AOF).
+const RedisDataPath = "/data"
 
 // MySQLDataPath é onde a imagem do MySQL guarda os dados.
 const MySQLDataPath = "/var/lib/mysql"

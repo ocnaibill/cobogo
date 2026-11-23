@@ -2,7 +2,7 @@
 import type { Schemas } from "../api/client";
 
 export type LogLine = Schemas["LogLine"];
-export type LogOrigin = "" | "app" | "database" | "postgres" | "mysql";
+export type LogOrigin = "" | "app" | "database" | "postgres" | "mysql" | "redis";
 
 /** Quantas linhas o painel guarda em memória; as mais antigas saem quando passa. */
 export const MAX_IN_MEMORY = 4000;

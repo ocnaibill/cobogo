@@ -42,7 +42,7 @@ func (s *Server) handleRuntimeLogs(w http.ResponseWriter, r *http.Request, user 
 	}
 	origin := r.URL.Query().Get("origin")
 	switch origin {
-	case "", domain.LogOriginApp, domain.LogOriginPostgres, domain.LogOriginMySQL, "database":
+	case "", domain.LogOriginApp, domain.LogOriginPostgres, domain.LogOriginMySQL, domain.LogOriginRedis, "database":
 	default:
 		writeError(w, http.StatusBadRequest, "origin deve ser app, database, postgres ou mysql")
 		return

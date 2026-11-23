@@ -13,22 +13,28 @@ export type DatabaseView = Schemas["DatabaseView"];
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-export function useDatabase(projectId: string) {
-  return useQuery({ queryKey: ["database", projectId], queryFn: () => unwrap(api.GET("/projects/{id}/database", { params: { path: { id: projectId } } })) });
+/** O banco relacional do projeto (sem engine) ou o Redis (`redis`, DEC-50 C). */
+export function useDatabase(projectId: string, engine?: "redis") {
+  return useQuery({
+    queryKey: ["database", projectId, engine ?? ""],
+    queryFn: () => unwrap(api.GET("/projects/{id}/database", { params: { path: { id: projectId }, query: engine ? { engine } : {} } })),
+  });
 }
 
 type Choice = "managed" | "external" | "none";
 
-const ENGINE_LABEL: Record<string, string> = { postgres: "PostgreSQL", mysql: "MySQL" };
+const ENGINE_LABEL: Record<string, string> = { postgres: "PostgreSQL", mysql: "MySQL", redis: "Redis" };
 const engineLabel = (engine?: string) => ENGINE_LABEL[engine ?? "postgres"] ?? "banco";
 
 const CHOICE_TEXT = (engine?: string): Record<Choice, { title: string; text: string }> => ({
   managed: {
     title: `Criar um ${engineLabel(engine)} do Cobogó e conectar`,
     text:
-      engine === "mysql"
-        ? "Um banco só deste projeto, na rede privada dele e sem TLS (o TLS do MySQL entra depois), com os dados em volume, ligado às variáveis acima. Começa vazio."
-        : "Um banco só deste projeto, com TLS e os dados em volume, ligado às variáveis acima. Começa vazio.",
+      engine === "redis"
+        ? "Um Redis só deste projeto, na rede privada dele, com senha, sem TLS e com a persistência em volume (AOF), ligado às variáveis acima. Começa vazio."
+        : engine === "mysql"
+          ? "Um banco só deste projeto, na rede privada dele e sem TLS (o TLS do MySQL entra depois), com os dados em volume, ligado às variáveis acima. Começa vazio."
+          : "Um banco só deste projeto, com TLS e os dados em volume, ligado às variáveis acima. Começa vazio.",
   },
   external: { title: "Usar um banco que já tenho", text: "Você informa os dados do seu banco, como segredo, na aba Variáveis." },
   none: { title: "Não preciso de banco", text: "O deploy segue sem perguntar de novo." },
@@ -178,8 +184,8 @@ const STATUS_BADGE: Record<string, { tone: "success" | "warning" | "danger" | "n
 };
 
 /** Aba "Banco": o que a análise achou, a escolha e o banco gerenciado. */
-export function DatabaseTab({ projectId, slug }: { projectId: string; slug: string }) {
-  const q = useDatabase(projectId);
+export function DatabaseTab({ projectId, slug, engine }: { projectId: string; slug: string; engine?: "redis" }) {
+  const q = useDatabase(projectId, engine);
   if (q.isLoading) return <Loading />;
   if (q.isError) return <ErrorBox error={q.error} onRetry={() => q.refetch()} />;
   const v = q.data!;
@@ -187,7 +193,7 @@ export function DatabaseTab({ projectId, slug }: { projectId: string; slug: stri
 
   return (
     <div className="stack">
-      <Notice tone="info" icon="shield" title="O banco é uma escolha sua">
+      <Notice tone="info" icon="shield" title={engine === "redis" ? "O Redis é uma escolha sua" : "O banco é uma escolha sua"}>
         <span>
           O Cobogó nunca cria um banco só porque o código usa um driver. Quando a evidência é forte, o deploy para <strong>antes do build</strong> e pergunta; você escolhe criar um banco do Cobogó, usar um que já tem ou dizer que não precisa. A senha de um banco do Cobogó é gerada e nunca é mostrada.
         </span>
@@ -203,7 +209,7 @@ export function DatabaseTab({ projectId, slug }: { projectId: string; slug: stri
       )}
 
       {!svc && (
-        <Card title={v.need ? "Onde está o banco?" : "Criar um banco"} icon="server">
+        <Card title={engine === "redis" ? (v.need ? "Onde está o Redis?" : "Criar um Redis") : v.need ? "Onde está o banco?" : "Criar um banco"} icon="server">
           {!v.need && <p className="small muted card-text">A análise não achou uso de {engineLabel(v.engine)} neste projeto. Se ele usa um, você pode criar o banco aqui mesmo.</p>}
           <DatabaseChoice projectId={projectId} view={v} />
         </Card>
@@ -253,7 +259,7 @@ function ManagedDatabase({ projectId, slug, view }: { projectId: string; slug: s
     setBusy(true);
     setError(null);
     try {
-      await unwrap(api.DELETE("/projects/{id}/database", { params: { path: { id: projectId } }, body: { confirm_slug: typed } }));
+      await unwrap(api.DELETE("/projects/{id}/database", { params: { path: { id: projectId } }, body: { confirm_slug: typed, engine: svc.engine } }));
       setDone(true);
       setOpen(false);
       setTyped("");
@@ -278,9 +284,9 @@ function ManagedDatabase({ projectId, slug, view }: { projectId: string; slug: s
             <span className="small muted">
               Ligada à aplicação como <Badge tone="info">vinculada</Badge>. A senha e a URL nunca aparecem no painel.
             </span>
-            {svc.engine === "mysql" ? (
+            {svc.engine !== "postgres" ? (
               <span className="small muted">
-                <Badge tone="neutral">sem TLS</Badge> O banco só existe na rede privada do projeto, sem porta pública. O TLS do MySQL entra numa próxima versão.
+                <Badge tone="neutral">sem TLS</Badge> O serviço só existe na rede privada do projeto, sem porta pública. O TLS entra numa próxima versão.
               </span>
             ) : svc.tls ? (
               <span className="small muted">
@@ -302,12 +308,14 @@ function ManagedDatabase({ projectId, slug, view }: { projectId: string; slug: s
             <span className="label">Dados</span>
             <span className="strong">{view.volume ? bytes(view.volume.size_bytes) : "—"}</span>
             <span className="small muted">
-              {svc.engine === "mysql" ? "MySQL 8.4 (LTS), 512 MiB" : "PostgreSQL 16, 256 MiB"}, só na rede do projeto, sem porta pública. Os dados entram no backup do projeto.
+              {svc.engine === "redis" ? "Redis 8, 256 MiB, persistência AOF" : svc.engine === "mysql" ? "MySQL 8.4 (LTS), 512 MiB" : "PostgreSQL 16, 256 MiB"}, só na rede do projeto, sem porta pública.{" "}
+              {svc.engine === "redis" ? "Filas e caches são transitórios: o backup do projeto não inclui o Redis." : "Os dados entram no backup do projeto."}
             </span>
           </div>
         </div>
         <div className="small muted">
-          <Icon name="alert" size={14} /> O banco nasce vazio. O Cobogó não roda migrações: a aplicação precisa criar as tabelas ao subir.
+          <Icon name="alert" size={14} />{" "}
+          {svc.engine === "redis" ? "O Redis nasce vazio e só aceita conexões com a senha, que o Cobogó entrega à aplicação nas variáveis acima." : "O banco nasce vazio. O Cobogó não roda migrações: a aplicação precisa criar as tabelas ao subir."}
         </div>
         {!open ? (
           <div className="action-bar">
@@ -338,3 +346,16 @@ function ManagedDatabase({ projectId, slug, view }: { projectId: string; slug: s
     </Card>
   );
 }
+
+/** A aba de serviços: o banco relacional e, se o projeto usa ou tem, o Redis (DEC-50). */
+export function ServicesTab({ projectId, slug }: { projectId: string; slug: string }) {
+  const redis = useDatabase(projectId, "redis");
+  const hasRedis = !!(redis.data?.need || redis.data?.service);
+  return (
+    <div className="stack">
+      <DatabaseTab projectId={projectId} slug={slug} />
+      {hasRedis && <DatabaseTab projectId={projectId} slug={slug} engine="redis" />}
+    </div>
+  );
+}
+

@@ -45,7 +45,55 @@ var (
 // por engine relacional que o código usa (PostgreSQL e MySQL, DEC-50).
 func detectServiceNeeds(fsys fs.FS, vars []domain.ConfigVariable) []domain.ServiceNeed {
 	needs := detectPostgresNeeds(fsys, vars)
-	return append(needs, detectMySQLNeeds(fsys, vars)...)
+	needs = append(needs, detectMySQLNeeds(fsys, vars)...)
+	return append(needs, detectJSRedisNeeds(fsys, vars)...)
+}
+
+// detectJSRedisNeeds é a HEU-06 para Redis no JavaScript: o import do cliente ou o endereço
+// `redis://` escrito no código (forte); o cliente só nas dependências (possível).
+func detectJSRedisNeeds(fsys fs.FS, vars []domain.ConfigVariable) []domain.ServiceNeed {
+	dep := ""
+	for _, d := range dependencies(fsys) {
+		if jsRedisDeps[d] && dep == "" {
+			dep = d
+		}
+	}
+	var strong, fixed []string
+	_ = fs.WalkDir(fsys, ".", func(name string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if d != nil && d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			if skippedDirs[d.Name()] {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !sourceExtensions[strings.ToLower(path.Ext(name))] || d.Type()&fs.ModeSymlink != 0 || !d.Type().IsRegular() || classifyScope(name) != domain.ScopeRuntime || isToolingPath(name) {
+			return nil
+		}
+		data, state, rerr := readSmallFile(fsys, name)
+		if rerr != nil || state != fileOK {
+			return nil
+		}
+		if loc := jsRedisImport.FindIndex(data); loc != nil && len(strong) < 3 {
+			strong = append(strong, fmt.Sprintf("%s:%d", name, lineAt(data, loc[0])))
+		}
+		for _, m := range redisURLLiteral.FindAllSubmatchIndex(data, -1) {
+			if _, _, ok := redisAddress(string(data[m[2]:m[3]])); ok && len(fixed) < 3 {
+				ref := fmt.Sprintf("%s:%d", name, lineAt(data, m[0]))
+				fixed = append(fixed, ref)
+				if len(strong) < 3 {
+					strong = append(strong, ref)
+				}
+			}
+		}
+		return nil
+	})
+	return buildRedisNeed(strong, dep, "package.json", fixed, vars)
 }
 
 // detectMySQLNeeds é a HEU-06 para MySQL e MariaDB: o driver, o adaptador ou o schema do Prisma.
@@ -237,8 +285,11 @@ func connectionStyle(prismaVar string, vars []domain.ConfigVariable) (style, fam
 // partes mudam (MYSQL_*, JAWSDB_URL…), a lógica é a mesma. O MySQL não tem CA por variável.
 func connectionStyleFor(engine, prismaVar string, vars []domain.ConfigVariable) (style, family string, variables map[string]string) {
 	urlNames, parts, order := pgVariables, partName, familyOrder
-	if engine == domain.ServiceMySQL {
+	switch engine {
+	case domain.ServiceMySQL:
 		urlNames, parts, order = mysqlVariables, mysqlPartName, mysqlFamilyOrder
+	case domain.ServiceRedis:
+		urlNames, parts, order = redisVariables, redisPartName, redisFamilyOrder
 	}
 	known := map[string]bool{}
 	for _, v := range vars {
@@ -286,6 +337,10 @@ func connectionStyleFor(engine, prismaVar string, vars []domain.ConfigVariable) 
 		return domain.StyleURL, "", map[string]string{domain.RoleURL: urlNames[0]}
 	}
 	out := byFamily[best]
+	if engine == domain.ServiceRedis {
+		delete(out, domain.RoleUser)
+		delete(out, domain.RoleDatabase)
+	}
 	if engine == domain.ServicePostgres {
 		for _, n := range caNames {
 			if known[n] {

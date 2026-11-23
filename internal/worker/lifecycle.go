@@ -44,6 +44,10 @@ func retirable(c dockerrt.ManagedContainer, f store.ContainerFact, now time.Time
 	if c.ID == f.ActiveContainer {
 		return false, ""
 	}
+	// Os processos (worker, agendador) da release ativa saem com ela, nunca antes (DEC-51).
+	if f.ActiveDeployment != uuid.Nil && c.DeploymentID == f.ActiveDeployment.String() {
+		return false, ""
+	}
 	if !f.DeploymentState.IsTerminal() {
 		return false, ""
 	}
@@ -341,6 +345,14 @@ func (w *Worker) applyLimits(ctx context.Context, op *domain.Operation) (map[str
 	}
 	result["after"] = after
 	result["changed"] = before != after
+	// Os processos da release têm os mesmos limites do web.
+	if procs, perr := w.runtime.ListProcesses(ctx, active.DeploymentID.String()); perr == nil {
+		for _, c := range procs {
+			if _, _, uerr := w.runtime.UpdateLimits(ctx, c.ID, limits); uerr != nil {
+				w.log.Warn("aplicar limites ao processo", "processo", c.Process, "erro", uerr)
+			}
+		}
+	}
 	if err := w.store.AppendEvent(ctx, active.DeploymentID, "lifecycle", "limits_applied", map[string]any{"before": before, "after": after}); err != nil {
 		w.log.Warn("registrar os limites no histórico do deploy", "deploy", active.DeploymentID, "erro", err)
 	}

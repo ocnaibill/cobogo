@@ -138,6 +138,14 @@ export function eventToLines(e: DeploymentEvent): LogLine[] {
     }
     case "probe":
       return [{ ...base, kind: p.healthy ? "step" : "warning", text: `✓ verificação: ${str(p.path)} respondeu ${str(p.status)}${p.warning ? ` — ${str(p.warning)}` : ""}${p.cause ? ` ${str(p.cause)}` : ""}` }];
+    case "postgres":
+    case "mysql":
+    case "redis":
+      return [{ ...base, kind: "step", text: `✓ serviço ${e.event_type === "postgres" ? "PostgreSQL" : e.event_type === "mysql" ? "MySQL" : "Redis"}: ${p.created ? "criado" : "já existia"} (${str(p.container)})` }];
+    case "process":
+      return [{ ...base, kind: "step", text: `▸ processo ${str(p.name)} iniciado (${str(p.container)}): \`${str(p.command)}\`` }];
+    case "processes":
+      return [{ ...base, kind: "step", text: `✓ ${str(p.count)} processo(s) de pé por ${str(p.stable_seconds)} s, sem sair` }];
     case "promoted":
       return [{ ...base, kind: "success", text: `✓ roteamento: publicado em ${str(p.url)}` }];
     case "succeeded":
@@ -196,6 +204,8 @@ export const FIELD_LABEL: Record<string, string> = {
   python_framework: "Framework",
   django_settings: "Settings do Django",
   django_platform_hosts: "Ajuste de hosts do Django",
+  process_worker: "Comando do worker",
+  process_scheduler: "Comando do agendador",
   output_dir: "Diretório servido",
   spa_fallback: "Fallback de SPA",
   health_path: "Caminho da verificação",

@@ -29,6 +29,9 @@ const (
 	// campo do plano e não se responde por overrides: a escolha vai em
 	// POST /projects/{id}/database.
 	FieldDatabase = "database"
+	// FieldRedis é a pendência de destino do Redis (HEU-06.6 para Redis, DEC-50): a escolha vai
+	// em POST /projects/{id}/database com engine `redis`.
+	FieldRedis = "redis"
 )
 
 // Perfis e gerenciadores do catálogo JavaScript (DEC-25, DEC-36).
@@ -312,6 +315,9 @@ type ServiceNeed struct {
 	Variables map[string]string `json:"variables"`
 	Reason    string            `json:"reason"`
 	Evidence  []string          `json:"evidence"`
+	// FixedAt são os lugares (arquivo:linha) onde o código escreve o endereço do serviço em vez de
+	// lê-lo de uma variável de ambiente: o serviço do Cobogó só será usado se o código mudar.
+	FixedAt []string `json:"fixed_at,omitempty"`
 }
 
 // Papéis das peças do repositório (DEC-49 item 1).

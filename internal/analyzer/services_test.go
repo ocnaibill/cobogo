@@ -178,3 +178,39 @@ func TestDetectMySQLNeeds(t *testing.T) {
 		t.Errorf("prisma: %+v", got)
 	}
 }
+
+// Redis (DEC-50 C): evidência forte, só a dependência, o endereço escrito no código (que nunca
+// guarda a senha) e como o código chega ao serviço.
+func TestDetectRedisNeeds(t *testing.T) {
+	got := needs(map[string]string{"package.json": `{"dependencies":{"ioredis":"5"}}`, "src/q.js": "const Redis = require('ioredis')\nconst r = new Redis(process.env.REDIS_URL)\n"}, "REDIS_URL")
+	if len(got) != 1 || got[0].Engine != domain.ServiceRedis || got[0].Level != domain.NeedRequired || got[0].Variable != "REDIS_URL" || len(got[0].FixedAt) != 0 {
+		t.Fatalf("ioredis lendo REDIS_URL: %+v", got)
+	}
+	// Só a dependência: sugestão.
+	got = needs(map[string]string{"package.json": `{"dependencies":{"bullmq":"5"}}`})
+	if len(got) != 1 || got[0].Level != domain.NeedPossible {
+		t.Errorf("só a dependência: %+v", got)
+	}
+	// O endereço escrito no código: forte, com o lugar, e sem a senha.
+	got = needs(map[string]string{"src/q.js": "const c = createClient({ url: 'redis://:segredo123@cache.interno:6380/2' })\n"})
+	if len(got) != 1 || got[0].Level != domain.NeedRequired || len(got[0].FixedAt) != 1 || got[0].FixedAt[0] != "src/q.js:1" {
+		t.Fatalf("endereço escrito no código: %+v", got)
+	}
+	if strings.Contains(strings.Join(got[0].Evidence, " ")+strings.Join(got[0].FixedAt, " ")+got[0].Reason, "segredo123") {
+		t.Error("a senha escrita no código apareceu na análise")
+	}
+	// Partes REDIS_*: host e senha, sem usuário nem banco.
+	got = needs(map[string]string{"a.js": "require('redis')"}, "REDIS_HOST", "REDIS_PORT", "REDIS_PASSWORD", "REDIS_DB")
+	if len(got) != 1 || got[0].Style != domain.StyleParts || got[0].Family != "REDIS" || got[0].Variables[domain.RoleDatabase] != "" || got[0].Variables[domain.RoleUser] != "" || got[0].Variables[domain.RolePassword] != "REDIS_PASSWORD" {
+		t.Errorf("partes REDIS_: %+v", got)
+	}
+	// O broker do Celery como variável.
+	got = needs(map[string]string{"a.js": "require('bull')"}, "CELERY_BROKER_URL")
+	if len(got) != 1 || got[0].Variable != "CELERY_BROKER_URL" {
+		t.Errorf("CELERY_BROKER_URL: %+v", got)
+	}
+	// Nada: um servidor que só cita a palavra.
+	if got := needs(map[string]string{"a.js": "const help = 'use redis for cache'"}); len(got) != 0 {
+		t.Errorf("menção em texto: %+v", got)
+	}
+}

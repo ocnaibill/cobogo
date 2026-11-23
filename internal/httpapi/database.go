@@ -36,7 +36,15 @@ type databaseView struct {
 }
 
 func (s *Server) databaseView(w http.ResponseWriter, r *http.Request, p domain.Project, user domain.User) (databaseView, bool) {
+	return s.serviceView(w, r, p, user, "")
+}
+
+// serviceView é a visão do banco relacional do projeto (engine vazia) ou do Redis (DEC-50 C).
+func (s *Server) serviceView(w http.ResponseWriter, r *http.Request, p domain.Project, user domain.User, only string) (databaseView, bool) {
 	view := databaseView{Variable: "DATABASE_URL", Engine: domain.ServicePostgres}
+	if only == domain.ServiceRedis {
+		view = databaseView{Variable: "REDIS_URL", Engine: domain.ServiceRedis}
+	}
 	var needs []domain.ServiceNeed
 	if analysis, err := s.store.LatestAnalysis(r.Context(), p.ID); err == nil {
 		needs = analysis.Result.ServiceNeeds
@@ -45,11 +53,17 @@ func (s *Server) databaseView(w http.ResponseWriter, r *http.Request, p domain.P
 		writeError(w, http.StatusInternalServerError, "erro interno")
 		return databaseView{}, false
 	}
-	svc, err := s.store.GetDatabaseService(r.Context(), p.ID)
-	if err == nil {
-		view.Engine = svc.Engine
-	} else if n := primaryNeed(needs); n != nil {
-		view.Engine = n.Engine
+	var svc domain.Service
+	var err error
+	if only == domain.ServiceRedis {
+		svc, err = s.store.GetService(r.Context(), p.ID, domain.ServiceRedis)
+	} else {
+		svc, err = s.store.GetDatabaseService(r.Context(), p.ID)
+		if err == nil {
+			view.Engine = svc.Engine
+		} else if n := primaryNeed(needs); n != nil {
+			view.Engine = n.Engine
+		}
 	}
 	for i := range needs {
 		if needs[i].Engine == view.Engine {
@@ -101,7 +115,15 @@ func (s *Server) handleGetDatabase(w http.ResponseWriter, r *http.Request, user 
 	if !ok {
 		return
 	}
-	if v, ok := s.databaseView(w, r, p, user); ok {
+	only := ""
+	switch e := r.URL.Query().Get("engine"); e {
+	case "", domain.ServiceRedis:
+		only = e
+	default:
+		writeError(w, http.StatusBadRequest, "engine deve ser redis, ou ausente para o banco relacional")
+		return
+	}
+	if v, ok := s.serviceView(w, r, p, user, only); ok {
 		writeJSON(w, http.StatusOK, v)
 	}
 }
@@ -124,7 +146,7 @@ var connectionRoles = map[string]bool{
 // connectionVariables valida os nomes por papel e devolve o mapa final. Estilo
 // URL: o papel `url` (e opcionalmente `ca`). Estilo partes: ao menos host e
 // senha, sem `url`.
-func connectionVariables(req chooseDatabaseRequest) (map[string]string, string) {
+func connectionVariables(req chooseDatabaseRequest, engine string) (map[string]string, string) {
 	vars := map[string]string{}
 	for role, name := range req.Variables {
 		if !connectionRoles[role] {
@@ -138,6 +160,9 @@ func connectionVariables(req chooseDatabaseRequest) (map[string]string, string) 
 		name := req.Variable
 		if name == "" {
 			name = "DATABASE_URL"
+			if engine == domain.ServiceRedis {
+				name = "REDIS_URL"
+			}
 		}
 		vars[domain.RoleURL] = name
 	}
@@ -171,6 +196,15 @@ func connectionVariables(req chooseDatabaseRequest) (map[string]string, string) 
 func connectionValues(engine string, vars map[string]string, host, pass string) map[string]string {
 	values := map[string]string{}
 	conn := domain.ConnectionOf(engine)
+	if engine == domain.ServiceRedis {
+		// O Redis não tem usuário nem banco nomeado: a senha vai sozinha, e o banco é o 0.
+		if _, isURL := vars[domain.RoleURL]; isURL {
+			values[domain.RoleURL] = conn.Scheme + "://:" + pass + "@" + host + ":" + conn.Port + "/0"
+			return values
+		}
+		values[domain.RoleHost], values[domain.RolePort], values[domain.RolePassword] = host, conn.Port, pass
+		return values
+	}
 	if _, isURL := vars[domain.RoleURL]; isURL {
 		values[domain.RoleURL] = conn.Scheme + "://" + domain.DBUser + ":" + pass + "@" + host + ":" + conn.Port + "/" + domain.DBName
 		return values
@@ -207,11 +241,6 @@ func (s *Server) handleChooseDatabase(w http.ResponseWriter, r *http.Request, us
 		writeError(w, http.StatusBadRequest, "choice deve ser managed, external ou none")
 		return
 	}
-	vars, problem := connectionVariables(req)
-	if problem != "" {
-		writeError(w, http.StatusBadRequest, problem)
-		return
-	}
 	engine := req.Engine
 	if engine == "" {
 		engine = domain.ServicePostgres
@@ -221,8 +250,13 @@ func (s *Server) handleChooseDatabase(w http.ResponseWriter, r *http.Request, us
 			}
 		}
 	}
-	if !domain.IsRelationalEngine(engine) {
-		writeError(w, http.StatusBadRequest, "engine deve ser postgres ou mysql")
+	if !domain.IsManagedEngine(engine) {
+		writeError(w, http.StatusBadRequest, "engine deve ser postgres, mysql ou redis")
+		return
+	}
+	vars, problem := connectionVariables(req, engine)
+	if problem != "" {
+		writeError(w, http.StatusBadRequest, problem)
 		return
 	}
 
@@ -272,7 +306,11 @@ func (s *Server) handleChooseDatabase(w http.ResponseWriter, r *http.Request, us
 			requeued++
 		}
 	}
-	view, ok := s.databaseView(w, r, p, user)
+	only := ""
+	if engine == domain.ServiceRedis {
+		only = engine
+	}
+	view, ok := s.serviceView(w, r, p, user, only)
 	if !ok {
 		return
 	}
@@ -281,6 +319,8 @@ func (s *Server) handleChooseDatabase(w http.ResponseWriter, r *http.Request, us
 
 type deleteDatabaseRequest struct {
 	ConfirmSlug string `json:"confirm_slug"`
+	// Engine escolhe o serviço a apagar; vazio vale o banco relacional (DEC-50).
+	Engine string `json:"engine"`
 }
 
 // handleDeleteDatabase pede ao worker que apague o PostgreSQL gerenciado e os
@@ -294,7 +334,11 @@ func (s *Server) handleDeleteDatabase(w http.ResponseWriter, r *http.Request, us
 	if !readJSON(w, r, &req, 0) {
 		return
 	}
-	op, err := s.store.RequestDeleteService(r.Context(), p.ID, user.ID, req.ConfirmSlug)
+	if req.Engine != "" && !domain.IsManagedEngine(req.Engine) {
+		writeError(w, http.StatusBadRequest, "engine deve ser postgres, mysql ou redis")
+		return
+	}
+	op, err := s.store.RequestDeleteServiceFor(r.Context(), req.Engine, p.ID, user.ID, req.ConfirmSlug)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, "projeto não encontrado")

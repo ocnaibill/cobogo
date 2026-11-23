@@ -257,13 +257,11 @@ var serviceSignatures = []struct {
 }{
 	{domain.CompDatabase, "MongoDB", "o Cobogó ainda não provê MongoDB: use um banco externo",
 		[]string{"pymongo", "motor"}, []string{"mongoose", "mongodb"}},
-	{domain.CompCache, "Redis", "o Cobogó ainda não provê Redis (DEC-50): use um Redis externo",
-		[]string{"redis", "django-redis"}, []string{"ioredis", "redis"}},
-	{domain.CompWorker, "Celery", "processos de worker ainda não são suportados (DEC-51)",
+	{domain.CompWorker, "Celery", "",
 		[]string{"celery"}, nil},
-	{domain.CompWorker, "RQ", "processos de worker ainda não são suportados (DEC-51)",
+	{domain.CompWorker, "RQ", "o Cobogó roda o worker se o comando estiver no Procfile (worker: rq worker)",
 		[]string{"rq"}, nil},
-	{domain.CompWorker, "BullMQ", "processos de worker ainda não são suportados (DEC-51)",
+	{domain.CompWorker, "BullMQ", "o Cobogó roda o worker se o comando estiver no Procfile (worker: node worker.js)",
 		nil, []string{"bullmq", "bull"}},
 }
 
@@ -297,6 +295,20 @@ func buildComponents(fsys fs.FS, res domain.AnalysisResult) []domain.Component {
 			}
 		}
 	}
+	// O Redis que o código usa, com o papel de fila se há um worker (Celery, RQ, BullMQ) e de cache nos outros casos.
+	for _, need := range res.ServiceNeeds {
+		if need.Engine == domain.ServiceRedis && need.Level == domain.NeedRequired {
+			role, label := domain.CompCache, "Redis"
+			if queue {
+				role = domain.CompQueue
+			}
+			note := ""
+			if len(need.FixedAt) > 0 {
+				note = "o endereço está escrito no código (" + need.FixedAt[0] + "): o Redis do Cobogó só será usado se o código ler a URL de uma variável de ambiente"
+			}
+			out = append(out, domain.Component{Dir: ".", Role: role, Label: label, Supported: true, Note: note, Evidence: need.Evidence})
+		}
+	}
 	for _, s := range serviceSignatures {
 		deps := s.pyDeps
 		if d.ecosystem == domain.EcosystemJavaScript {
@@ -307,11 +319,17 @@ func buildComponents(fsys fs.FS, res domain.AnalysisResult) []domain.Component {
 			continue
 		}
 		role := s.role
-		if role == domain.CompCache && queue {
-			role = domain.CompQueue
+		supported, note := false, s.note
+		if s.label == "Celery" {
+			// O worker do Celery é um processo do projeto (DEC-51) quando a análise o propôs.
+			if cmd := res.Fields[domain.FieldProcessWorker].Value; cmd != "" && cmd != domain.ProcessNone {
+				supported, note = true, "processo worker do projeto: "+cmd
+			} else {
+				note = "o Cobogó não achou o app do Celery para montar o comando do worker; informe-o em process_worker ou num Procfile"
+			}
 		}
 		out = append(out, domain.Component{
-			Dir: ".", Role: role, Label: s.label, Supported: false, Note: s.note,
+			Dir: ".", Role: role, Label: s.label, Supported: supported, Note: note,
 			Evidence: []string{fmt.Sprintf("%s: %s", map[bool]string{true: "package.json", false: "requirements"}[d.ecosystem == domain.EcosystemJavaScript], dep)},
 		})
 	}

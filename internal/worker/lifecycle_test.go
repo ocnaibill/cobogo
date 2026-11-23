@@ -60,3 +60,27 @@ func TestRetireEligibleIgnoresWhatTheDatabaseDoesNotKnow(t *testing.T) {
 		t.Errorf("gone = %v, ids = %v, err = %v; want nothing removed", gone, ids, err)
 	}
 }
+
+// DEC-51: o worker e o agendador da release ativa saem com ela, nunca antes; os de uma release substituída
+// saem com ela, depois da espera.
+func TestRetirableKeepsTheProcessesOfTheActiveRelease(t *testing.T) {
+	now := time.Now()
+	grace := 30 * time.Second
+	ago := func(d time.Duration) *time.Time { t := now.Add(-d); return &t }
+	active := uuid.New()
+	old := uuid.New()
+	process := func(dep uuid.UUID) dockerrt.ManagedContainer {
+		return dockerrt.ManagedContainer{ID: "worker-container", DeploymentID: dep.String(), Process: "worker"}
+	}
+	fact := store.ContainerFact{DeploymentState: domain.DeploymentSucceeded, ActiveContainer: "web-active", ActiveDeployment: active, ActiveSince: ago(time.Hour)}
+	if ok, why := retirable(process(active), fact, now, grace); ok {
+		t.Errorf("o worker da release ativa foi removido: %s", why)
+	}
+	fact.DeploymentState = domain.DeploymentSucceeded
+	if ok, _ := retirable(process(old), fact, now, grace); !ok {
+		t.Error("o worker de uma release substituída deveria sair depois da espera")
+	}
+	if ok, _ := retirable(process(old), store.ContainerFact{DeploymentState: domain.DeploymentSucceeded, ActiveContainer: "web-active", ActiveDeployment: active, ActiveSince: ago(5 * time.Second)}, now, grace); ok {
+		t.Error("o worker de uma release substituída ficou menos que a espera")
+	}
+}

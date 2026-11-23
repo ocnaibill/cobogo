@@ -67,7 +67,7 @@ func TestRuntimeLogsAPIReadsByCursorAndValidates(t *testing.T) {
 	}
 
 	for name, query := range map[string]string{
-		"bad origin":  "?origin=redis",
+		"bad origin":  "?origin=oracle",
 		"bad after":   "?after=abc",
 		"negative":    "?before=-1",
 		"both":        "?after=1&before=5",

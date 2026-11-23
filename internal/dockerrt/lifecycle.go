@@ -34,7 +34,9 @@ type ManagedContainer struct {
 	// volume, certificado); vazio nas aplicações e nos bancos.
 	Role string
 	// Service é a engine de um banco gerenciado (label cobogo.service); vazio nas aplicações.
-	Service   string
+	Service string
+	// Process é o nome de um processo além do web (label cobogo.process, DEC-51); vazio no web.
+	Process   string
 	Created   time.Time
 	Running   bool
 	InIngress bool
@@ -50,7 +52,7 @@ func toManaged(c types.Container) ManagedContainer {
 	}
 	_, inIngress := c.NetworkSettings.Networks[IngressNetwork]
 	return ManagedContainer{
-		ID: c.ID, Name: name, DeploymentID: c.Labels[LabelDeployment], ProjectID: c.Labels[LabelProject], Role: c.Labels[LabelRole], Service: c.Labels[LabelService],
+		ID: c.ID, Name: name, DeploymentID: c.Labels[LabelDeployment], ProjectID: c.Labels[LabelProject], Role: c.Labels[LabelRole], Service: c.Labels[LabelService], Process: c.Labels[LabelProcess],
 		Created: time.Unix(c.Created, 0).UTC(), Running: c.State == "running", InIngress: inIngress,
 	}
 }

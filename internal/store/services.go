@@ -63,6 +63,15 @@ func (s *Store) GetDatabaseService(ctx context.Context, projectID uuid.UUID) (do
 		WHERE project_id = $1 AND engine = ANY($2) AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1`, projectID, domain.RelationalEngines))
 }
 
+// GetManagedService devolve o serviço vigente de uma engine provida: o banco relacional do projeto
+// (qualquer das engines relacionais) ou o Redis (DEC-50).
+func (s *Store) GetManagedService(ctx context.Context, projectID uuid.UUID, engine string) (domain.Service, error) {
+	if domain.IsRelationalEngine(engine) {
+		return s.GetDatabaseService(ctx, projectID)
+	}
+	return s.GetService(ctx, projectID, engine)
+}
+
 // ChooseDatabase registra a escolha sobre o banco PostgreSQL do projeto; ChooseDatabaseFor, de qualquer engine.
 func (s *Store) ChooseDatabase(ctx context.Context, projectID, ownerID uuid.UUID, mode string, variables, values map[string]string) (domain.Service, error) {
 	return s.ChooseDatabaseFor(ctx, domain.ServicePostgres, projectID, ownerID, mode, variables, values)
@@ -76,13 +85,13 @@ func (s *Store) ChooseDatabase(ctx context.Context, projectID, ownerID uuid.UUID
 // iniciar o app e nunca é gravado, mas o nome dele também não pode colidir.
 // Troca de uma escolha anterior vale: a intenção vigente é uma só.
 func (s *Store) ChooseDatabaseFor(ctx context.Context, engine string, projectID, ownerID uuid.UUID, mode string, variables, values map[string]string) (domain.Service, error) {
-	if !domain.IsRelationalEngine(engine) {
+	if !domain.IsManagedEngine(engine) {
 		return domain.Service{}, fmt.Errorf("store: a engine %q não é provida", engine)
 	}
 	if _, err := s.GetProjectFor(ctx, projectID, ownerID); err != nil {
 		return domain.Service{}, err
 	}
-	if current, err := s.GetDatabaseService(ctx, projectID); err == nil && current.Mode == domain.ServiceManaged && current.Status != domain.ServiceDeleting {
+	if current, err := s.GetManagedService(ctx, projectID, engine); err == nil && current.Mode == domain.ServiceManaged && current.Status != domain.ServiceDeleting {
 		if mode != domain.ServiceManaged {
 			return domain.Service{}, ErrManagedExists
 		}
@@ -153,6 +162,11 @@ func (s *Store) SetServiceStatus(ctx context.Context, id uuid.UUID, status, deta
 // serviço e dos dados (DEC-42 item 6). Irreversível; a confirmação é o nome do
 // projeto. A variável de conexão vinculada sai junto.
 func (s *Store) RequestDeleteService(ctx context.Context, projectID, ownerID uuid.UUID, confirmSlug string) (domain.Operation, error) {
+	return s.RequestDeleteServiceFor(ctx, "", projectID, ownerID, confirmSlug)
+}
+
+// RequestDeleteServiceFor é RequestDeleteService para uma engine; vazia vale o banco relacional.
+func (s *Store) RequestDeleteServiceFor(ctx context.Context, engine string, projectID, ownerID uuid.UUID, confirmSlug string) (domain.Operation, error) {
 	p, err := s.GetProjectFor(ctx, projectID, ownerID)
 	if err != nil {
 		return domain.Operation{}, err
@@ -160,7 +174,12 @@ func (s *Store) RequestDeleteService(ctx context.Context, projectID, ownerID uui
 	if confirmSlug != p.Slug {
 		return domain.Operation{}, ErrConfirmationMismatch
 	}
-	sv, err := s.GetDatabaseService(ctx, projectID)
+	var sv domain.Service
+	if engine == "" {
+		sv, err = s.GetDatabaseService(ctx, projectID)
+	} else {
+		sv, err = s.GetManagedService(ctx, projectID, engine)
+	}
 	if err != nil || sv.Mode != domain.ServiceManaged {
 		return domain.Operation{}, ErrNoManagedService
 	}
@@ -245,7 +264,7 @@ func (s *Store) WaitingForDatabase(ctx context.Context, projectID uuid.UUID) ([]
 			continue
 		}
 		for _, f := range a.Result.Pending {
-			if f.Field == domain.FieldDatabase {
+			if f.Field == domain.FieldDatabase || f.Field == domain.FieldRedis {
 				ids = append(ids, r.id)
 				break
 			}

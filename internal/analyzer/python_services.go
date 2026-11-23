@@ -25,7 +25,48 @@ func evidenceRef(e domain.Evidence) string {
 }
 
 func detectPythonServiceNeeds(fsys fs.FS, ev []domain.Evidence, vars []domain.ConfigVariable) []domain.ServiceNeed {
-	return append(detectPythonPostgresNeeds(fsys, ev, vars), detectPythonMySQLNeeds(ev, vars)...)
+	needs := append(detectPythonPostgresNeeds(fsys, ev, vars), detectPythonMySQLNeeds(ev, vars)...)
+	return append(needs, detectPythonRedisNeeds(ev, vars)...)
+}
+
+// detectPythonRedisNeeds é a HEU-06 para Redis no Python: o import do cliente, o backend de cache
+// do Django ou o endereço `redis://` escrito no código (forte, com arquivo e linha); só o cliente nas
+// dependências (possível). O Celery sozinho não é Redis: o broker pode ser outro.
+func detectPythonRedisNeeds(ev []domain.Evidence, vars []domain.ConfigVariable) []domain.ServiceNeed {
+	var strong, fixed []string
+	for _, e := range ev {
+		switch {
+		case e.Kind == kindPyRedis && e.Scope == domain.ScopeRuntime:
+			if len(strong) < 3 {
+				strong = append(strong, evidenceRef(e))
+			}
+			if e.Name == "url" && len(fixed) < 3 {
+				fixed = append(fixed, evidenceRef(e))
+			}
+		case e.Kind == kindDjangoSet && e.Name == "REDIS_CACHE" && len(strong) < 3:
+			strong = append(strong, evidenceRef(e))
+		}
+	}
+	dep, celeryDep := "", false
+	for _, e := range ev {
+		if e.Kind == kindPyDependency && dep == "" && slices.Contains(pyRedisDeps, e.Name) {
+			dep = e.Name
+		}
+		if e.Kind == kindPyDependency && e.Name == "celery" {
+			celeryDep = true
+		}
+	}
+	// O Celery com o cliente do Redis nas dependências usa o Redis como broker, ainda que o código só leia
+	// a URL de uma variável de ambiente (o caso comum: CELERY_BROKER_URL = os.environ[...]).
+	if len(strong) == 0 && celeryDep && dep != "" {
+		for _, e := range ev {
+			if e.Kind == kindPyCelery && e.Name == "worker" {
+				strong = append(strong, evidenceRef(e))
+				break
+			}
+		}
+	}
+	return buildRedisNeed(strong, dep, "requirements", fixed, vars)
 }
 
 // pyMySQLDeps: pacotes Python que falam com MySQL e MariaDB.

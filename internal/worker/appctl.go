@@ -60,6 +60,11 @@ func (w *Worker) stopApp(ctx context.Context, op *domain.Operation) (map[string]
 		}
 		return nil, err
 	}
+	// Os workers e o agendador da release param junto: sem o web ouvindo, ninguém deve consumir tarefas.
+	if err := w.stopProcesses(ctx, active); err != nil {
+		w.log.Warn("parar os processos da release", "release", active.ID, "erro", err)
+		return nil, err
+	}
 	w.event(ctx, active, "stopped")
 	return map[string]any{"container": shortContainer(active.ContainerID), "state": domain.AppStopped}, nil
 }
@@ -82,6 +87,14 @@ func (w *Worker) startApp(ctx context.Context, op *domain.Operation) (map[string
 		// Não deixa a aplicação meio no ar: o projeto continua parado.
 		if serr := w.runtime.StopContainer(context.WithoutCancel(ctx), active.ContainerID); serr != nil {
 			w.log.Warn("parar a aplicação que não ficou pronta", "release", active.ID, "erro", serr)
+		}
+		w.event(ctx, active, "start_failed")
+		return map[string]any{"container": shortContainer(active.ContainerID), "state": domain.AppStopped}, fmt.Errorf("%w: %v", errStartNotReady, err)
+	}
+	if err := w.startProcesses(ctx, active); err != nil {
+		_ = w.stopProcesses(context.WithoutCancel(ctx), active)
+		if serr := w.runtime.StopContainer(context.WithoutCancel(ctx), active.ContainerID); serr != nil {
+			w.log.Warn("parar a aplicação cujo processo não subiu", "release", active.ID, "erro", serr)
 		}
 		w.event(ctx, active, "start_failed")
 		return map[string]any{"container": shortContainer(active.ContainerID), "state": domain.AppStopped}, fmt.Errorf("%w: %v", errStartNotReady, err)

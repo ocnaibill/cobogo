@@ -25,7 +25,7 @@ func componentSummary(cs []domain.Component) []string {
 func TestComponentsMapOfADjangoWithReactSibling(t *testing.T) {
 	files := djangoRepo(map[string]string{
 		"requirements.txt":      "Django==5.1.4\ndjangorestframework==3.16.0\nmysqlclient==2.2.7\ncelery==5.5.3\nredis==6.2.0\nwhitenoise==6.8.2\n",
-		"mysite/settings.py":    strings.Replace(djangoSettings, "django.db.backends.postgresql", "django.db.backends.mysql", 1),
+		"mysite/settings.py":    strings.Replace(djangoSettings, "django.db.backends.postgresql", "django.db.backends.mysql", 1) + "CELERY_BROKER_URL = 'redis://localhost:6379/0'\n",
 		"frontend/package.json": `{"scripts":{"build":"vite build"},"dependencies":{"react":"19.0.0","axios":"1.9.0"},"devDependencies":{"vite":"6.0.0"}}`,
 		"docs/package.json":     `{"scripts":{"build":"vite build"},"dependencies":{"react":"19.0.0"}}`,
 		"media/leia-me.txt":     "x",
@@ -49,7 +49,7 @@ func TestComponentsMapOfADjangoWithReactSibling(t *testing.T) {
 		t.Errorf("pasta que não é aplicação entrou no mapa:\n%s", got)
 	}
 	// Com Celery, o Redis é fila, não cache.
-	if !strings.Contains(got, ".|queue|Redis|fora") {
+	if !strings.Contains(got, ".|queue|Redis") || strings.Contains(got, ".|queue|Redis|fora") {
 		t.Errorf("Redis com Celery deveria ser fila:\n%s", got)
 	}
 	for _, c := range res.Components {

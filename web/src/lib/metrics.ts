@@ -95,7 +95,7 @@ export function healthOf(c: Pick<ContainerMetrics, "state" | "health" | "stale" 
 
 /** O papel de um contêiner na página: aplicação ativa, anterior, ou o banco. */
 export function roleLabel(c: Pick<ContainerMetrics, "role" | "release_state" | "service">): string {
-  if (c.role === "service") return c.service === "postgres" ? "PostgreSQL" : c.service === "mysql" ? "MySQL" : "serviço";
+  if (c.role === "service") return c.service === "postgres" ? "PostgreSQL" : c.service === "mysql" ? "MySQL" : c.service === "redis" ? "Redis" : "serviço";
   switch (c.release_state) {
     case "active":
       return "aplicação ativa";

@@ -335,6 +335,8 @@ type ContainerFact struct {
 	ProjectID       uuid.UUID
 	ProjectDeleted  bool
 	ActiveContainer string
+	// ActiveDeployment é o deploy da release ativa: os processos além do web dele (DEC-51) pertencem a ela.
+	ActiveDeployment uuid.UUID
 	// ActiveSince é desde quando a release ativa do projeto está ativa; nulo
 	// sem release ativa. O período de espera conta a partir daí.
 	ActiveSince      *time.Time
@@ -346,10 +348,10 @@ type ContainerFact struct {
 // da release ativa do projeto. Deploys que não existem ficam de fora.
 func (s *Store) ContainerFacts(ctx context.Context, deploymentIDs []uuid.UUID) (map[uuid.UUID]ContainerFact, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT d.id, d.state, d.updated_at, p.id, p.slug, p.deleted_at IS NOT NULL, COALESCE(a.container_id, ''), a.created_at
+		SELECT d.id, d.state, d.updated_at, p.id, p.slug, p.deleted_at IS NOT NULL, COALESCE(a.container_id, ''), COALESCE(a.deployment_id, '00000000-0000-0000-0000-000000000000'::uuid), a.created_at
 		FROM deployments d JOIN projects p ON p.id = d.project_id
 		LEFT JOIN LATERAL (
-			SELECT r.container_id, r.created_at FROM releases r JOIN deployments dd ON dd.id = r.deployment_id
+			SELECT r.container_id, r.deployment_id, r.created_at FROM releases r JOIN deployments dd ON dd.id = r.deployment_id
 			WHERE dd.project_id = p.id AND r.operational_state = 'active'
 			ORDER BY r.created_at DESC LIMIT 1
 		) a ON true
@@ -361,7 +363,7 @@ func (s *Store) ContainerFacts(ctx context.Context, deploymentIDs []uuid.UUID) (
 	out := map[uuid.UUID]ContainerFact{}
 	for rows.Next() {
 		var f ContainerFact
-		if err := rows.Scan(&f.DeploymentID, &f.DeploymentState, &f.DeploymentUpdate, &f.ProjectID, &f.ProjectSlug, &f.ProjectDeleted, &f.ActiveContainer, &f.ActiveSince); err != nil {
+		if err := rows.Scan(&f.DeploymentID, &f.DeploymentState, &f.DeploymentUpdate, &f.ProjectID, &f.ProjectSlug, &f.ProjectDeleted, &f.ActiveContainer, &f.ActiveDeployment, &f.ActiveSince); err != nil {
 			return nil, fmt.Errorf("store: ler fato do contêiner: %w", err)
 		}
 		out[f.DeploymentID] = f

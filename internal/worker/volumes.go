@@ -75,6 +75,9 @@ func (w *Worker) pauseActive(ctx context.Context, project domain.Project) (*paus
 	if err := w.runtime.StopContainer(ctx, active.ContainerID); err != nil {
 		return nil, fmt.Errorf("parar a release anterior antes de usar o volume: %w", err)
 	}
+	if err := w.stopProcesses(ctx, active); err != nil {
+		return nil, fmt.Errorf("parar os processos da release anterior antes de usar o volume: %w", err)
+	}
 	return &pausedRelease{release: active}, nil
 }
 
@@ -82,8 +85,10 @@ func (w *Worker) pauseActive(ctx context.Context, project domain.Project) (*paus
 // subiu. Melhor esforço: o deploy já falhou e o motivo é o dele.
 func (w *Worker) resumeActive(ctx context.Context, p *pausedRelease) error {
 	port, _ := w.portAndHealthOf(ctx, p.release)
-	_, err := w.runtime.StartContainer(ctx, p.release.ContainerID, port)
-	return err
+	if _, err := w.runtime.StartContainer(ctx, p.release.ContainerID, port); err != nil {
+		return err
+	}
+	return w.startProcesses(ctx, p.release)
 }
 
 // deleteProjectData apaga os volumes de um projeto excluído, se o usuário pediu

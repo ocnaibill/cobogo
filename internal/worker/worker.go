@@ -440,11 +440,13 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 	}
 	// Banco de dados (DEC-42): evidência forte sem escolha vira pendência, antes de
 	// gastar o build. Nada é criado aqui.
-	if finding, err := w.databaseFinding(ctx, project, result); err != nil {
-		return at("ANALYZING", err)
-	} else if finding != nil && result.Outcome != domain.AnalysisUnsupported {
-		result.Pending = append(result.Pending, *finding)
-		result.Outcome = domain.AnalysisNeedsInput
+	for _, ask := range []func(context.Context, domain.Project, domain.AnalysisResult) (*domain.Finding, error){w.databaseFinding, w.redisFinding} {
+		if finding, err := ask(ctx, project, result); err != nil {
+			return at("ANALYZING", err)
+		} else if finding != nil && result.Outcome != domain.AnalysisUnsupported {
+			result.Pending = append(result.Pending, *finding)
+			result.Outcome = domain.AnalysisNeedsInput
+		}
 	}
 	if _, err := o.SaveAnalysis(ctx, dep.ID, dep.ProjectID, ws.CommitSHA, result); err != nil {
 		return at("ANALYZING", err)
@@ -494,6 +496,7 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 		"install_command": plan.InstallCommand,
 		"build_command":   plan.BuildCommand,
 		"start_command":   plan.StartCommand,
+		"processes":       plan.Processes,
 		"execution_mode":  plan.ExecutionMode,
 		"port":            plan.Port,
 		"port_origin":     plan.PortOrigin,
@@ -566,6 +569,17 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 		services = append(services, svc.Engine)
 		managedDB = &svc
 		if err := w.emit(ctx, o, dep.ID, "provisioning", svc.Engine, map[string]any{"container": svc.ContainerName, "created": created, "variable": svc.Variable}); err != nil {
+			return err
+		}
+	}
+	// O Redis gerenciado (DEC-50 C): sobe antes da aplicação, como o banco.
+	if rs, rerr := w.store.GetService(ctx, project.ID, domain.ServiceRedis); rerr == nil && rs.Mode == domain.ServiceManaged && rs.Status != domain.ServiceDeleting {
+		created, err := w.provisionService(ctx, rt, project, rs)
+		if err != nil {
+			return at("PROVISIONING", err)
+		}
+		services = append(services, rs.Engine)
+		if err := w.emit(ctx, o, dep.ID, "provisioning", rs.Engine, map[string]any{"container": rs.ContainerName, "created": created, "variable": rs.Variable}); err != nil {
 			return err
 		}
 	}
@@ -736,6 +750,34 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 		return err
 	}
 
+	// Os processos além do web (DEC-51): worker e agendador, da mesma imagem, com as mesmas variáveis,
+	// volumes e serviços, sem porta nem rota. Qualquer saída sem sucesso os remove junto com a candidata.
+	var processIDs []string
+	for _, pr := range plan.Processes {
+		id, perr := rt.RunProcess(ctx, imageTag, containerName+"-"+pr.Name, processCommand(pr), envValues, dep.ID.String(), pr.Name, runOpts...)
+		if id != "" {
+			processIDs = append(processIDs, id)
+			defer func(id string) {
+				if !succeeded {
+					cleanup, done := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
+					defer done()
+					if err := w.runtime.Remove(cleanup, id); err != nil {
+						w.log.Warn("remover processo da candidata", "deployment", dep.ID, "erro", err)
+					}
+				}
+			}(id)
+		}
+		if perr != nil {
+			if id != "" && ctx.Err() == nil {
+				perr = &detailedError{err: perr, detail: w.investigate(ctx, rt, limits, id, perr, projectValues, result.ConfigVariables, have)}
+			}
+			return at("STARTING", perr)
+		}
+		if err := w.emit(ctx, o, dep.ID, "starting", "process", map[string]any{"name": pr.Name, "container": shortContainer(id), "command": pr.Command}); err != nil {
+			return err
+		}
+	}
+
 	// --- VERIFYING ---
 	if err := o.Transition(ctx, dep.ID, domain.DeploymentVerifying, ""); err != nil {
 		return at("VERIFYING", err)
@@ -786,6 +828,23 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 	}
 	if err := w.emit(ctx, o, dep.ID, "verifying", "probe", probePayload); err != nil {
 		return err
+	}
+
+	// Um processo sem porta não tem o que sondar: ficar de pé pela janela de estabilidade é o sinal. Se um
+	// sai, o deploy falha com o log dele, e a release anterior segue no ar.
+	for i, id := range processIDs {
+		if err := rt.WaitStable(ctx, id, processStableWindow); err != nil {
+			err = fmt.Errorf("o processo %s não ficou de pé: %w", plan.Processes[i].Name, err)
+			if ctx.Err() == nil {
+				err = &detailedError{err: err, detail: w.investigate(ctx, rt, limits, id, err, projectValues, result.ConfigVariables, have)}
+			}
+			return at("VERIFYING", err)
+		}
+	}
+	if len(processIDs) > 0 {
+		if err := w.emit(ctx, o, dep.ID, "verifying", "processes", map[string]any{"count": len(processIDs), "stable_seconds": int(processStableWindow.Seconds())}); err != nil {
+			return err
+		}
 	}
 
 	// Promoção (DEC-31 item 10): a candidata entra no ingress; depois, numa só

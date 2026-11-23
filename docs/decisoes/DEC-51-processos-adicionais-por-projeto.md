@@ -1,6 +1,6 @@
 # DEC-51 — Processos adicionais por projeto: worker e agendador
 
-> **Estado:** direção aprovada pelo autor em 22/11/2026 (processos dentro do projeto, e não projetos separados); **o texto abaixo aguarda a leitura do autor antes de implementar**.
+> **Estado:** direção aprovada pelo autor em 22/11/2026 (processos dentro do projeto, e não projetos separados); **implementada** (ver "Implementação") para o perfil Python.
 >
 > **Escopo:** um projeto passa a ter, além do processo `web`, outros processos da **mesma imagem** (worker de fila, agendador), sem porta nem rota, com as mesmas variáveis e os mesmos serviços. Cobre a descoberta (o `Procfile` e o Celery), o ciclo de deploy, os logs, as métricas e o painel.
 >
@@ -70,3 +70,14 @@ Cada parte é um commit e uma subida na VM. Pré-requisito da parte B: Redis ger
 
 1. **Processos dentro do projeto**, e não projetos separados.
 2. Pendentes na leitura: a verificação do worker por estabilidade e a ordem A, B.
+
+## Implementação (23/11/2026)
+
+- **O modelo, como campos do plano:** `process_worker` e `process_scheduler` (o comando, ou `none` para desligar), com origem e evidência como qualquer campo, em vez de uma lista solta: o resolvedor, os overrides e o painel já sabiam lidar com eles. O plano ganha `processes` (`name`, `kind`, `command`). Só o perfil Python por enquanto; o Node entra pelo mesmo caminho quando houver o que detectar.
+- **A heurística (HEU-04.7, a parte "estrela"):** do **`Procfile`** (declaração: `worker`, `workers`, `celery` e nomes terminados em `worker` são worker; `beat`, `clock`, `scheduler` e terminados em `beat` são agendador; qualquer outro nome é dito como ignorado) e do **Celery** (inferência, com arquivo e linha): o app `app = Celery(...)` de módulo; em `<pacote>/celery.py` vira `celery -A <pacote> worker -l info --concurrency=2` (a concorrência é um padrão sensato para o limite de memória), em outro arquivo `-A modulo:atributo`; o beat por `CELERY_BEAT_SCHEDULE`, `beat_schedule` ou `django_celery_beat` (que usa o agendador do banco). O Procfile vence a inferência. Celery sem sinal de broker ganha um aviso. A proposta não pergunta: é um campo com evidência que o override troca ou desliga.
+- **O pipeline:** os processos sobem depois do web, da **mesma imagem**, com as mesmas variáveis, volumes e serviços, só na rede do projeto (sem porta, sem ingress); a verificação é a **estabilidade** (`processStableWindow`, 10 s de pé; se sai, o deploy falha com o log e o código de saída, e a release anterior segue no ar); qualquer saída sem sucesso remove os processos junto com a candidata. A promoção move só o web para o ingress.
+- **O ciclo de vida:** parar e iniciar (DEC-40), a pausa da release anterior por causa de um volume (DEC-41) e os limites (DEC-30) valem para o web **e** os processos; `retirable` protege os processos da release ativa e os remove com a release substituída, depois da espera (`ContainerFact.ActiveDeployment`). Logs e métricas usam o rótulo do contêiner (`cobogo.process`); no painel, o plano mostra o worker e o agendador e a linha do tempo, os eventos `process` e `processes`.
+- **Mapa do repositório (DEC-49):** o Celery aparece como provido (com o comando) quando a análise o propôs; RQ e BullMQ dizem que rodam pelo `Procfile`.
+- **Verificação:** testes do analisador (Procfile, Celery em `pacote/celery.py` e em `tasks.py`, beat, override `none`, comando de várias linhas recusado, aviso de broker), da aposentadoria e dos contêineres reais (de pé, sai com o código, sem porta, para e inicia); o **caminho inteiro com Docker**: um Django com Celery, a análise propondo o worker, o Redis gerenciado como broker, web e worker da mesma imagem, e uma tarefa enfileirada pelo web e **executada de verdade pelo worker**; e o `fec` na pilha local completa: as três perguntas (hosts do Django, MySQL, Redis, com o aviso do endereço escrito no código), MySQL, Redis, web e worker no ar, parar e iniciar levando os dois, e uma segunda release trocando web e worker e aposentando os da anterior.
+- **Limites desta versão:** o worker não tem sonda de saúde além de estar de pé; a sobreposição de versões do worker na troca de release dura a espera da aposentadoria; uma réplica por processo; sem Node ainda.
+

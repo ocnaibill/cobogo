@@ -12,7 +12,7 @@ const POLL_MS = 2000;
 const ORIGINS: [LogOrigin, string][] = [
   ["", "Tudo"],
   ["app", "Aplicação"],
-  ["database", "Banco"],
+  ["database", "Serviços"],
 ];
 
 /** Aba "Logs". */

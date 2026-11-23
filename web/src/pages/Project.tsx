@@ -12,7 +12,7 @@ import { AppButtons, ApplyLimits, DangerZone, OperationsTab, useAppControl } fro
 import { profileLabel } from "../lib/deploy";
 import { EnvHistory, ImportEnv, Suggestions } from "../components/Secrets";
 import { DataTab, usePersistent, withPath } from "../components/Data";
-import { DatabaseTab, useDatabase } from "../components/Database";
+import { ServicesTab, useDatabase } from "../components/Database";
 import { CommandsTab } from "../components/Commands";
 import { LogsTab } from "../components/Logs";
 import { ResourcesTab } from "../components/Resources";
@@ -343,7 +343,7 @@ export function ProjectPage() {
       {tab === "variaveis" && <VariablesTab projectId={id} discovered={(analysis.data?.result.config_variables ?? []).filter((v) => v.class !== "platform")} />}
       {tab === "recursos" && <ResourcesTab projectId={id} />}
       {tab === "logs" && <LogsTab projectId={id} />}
-      {tab === "banco" && <DatabaseTab projectId={id} slug={p.slug} />}
+      {tab === "banco" && <ServicesTab projectId={id} slug={p.slug} />}
       {tab === "dados" && <DataTab projectId={id} slug={p.slug} />}
       {tab === "comandos" && <CommandsTab projectId={id} />}
       {tab === "limites" && <LimitsTab projectId={id} />}

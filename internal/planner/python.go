@@ -49,6 +49,8 @@ type PythonPlanInput struct {
 	// PlatformHosts gera, na imagem, o módulo que acrescenta o endereço do projeto às
 	// listas de hosts e de origens do Django (DEC-49 item 6).
 	PlatformHosts bool
+	// Processes são os processos além do web (worker e agendador, DEC-51).
+	Processes []domain.PlanProcess
 	// SrcLayout põe /app/src no PYTHONPATH.
 	SrcLayout bool
 	// SystemPackages são os pacotes de execução do catálogo que as dependências pedem.
@@ -79,7 +81,14 @@ func pythonFromAnalysis(res domain.AnalysisResult, port int, portOrigin, mode st
 		return domain.Plan{}, fmt.Errorf("planner: P-PY sem alvo nem comando de início")
 	}
 	platformHosts := f(domain.FieldDjangoPlatformHosts) == "true" && f(domain.FieldPythonFramework) == domain.FrameworkDjango && f(domain.FieldDjangoSettings) != ""
+	var processes []domain.PlanProcess
+	for _, p := range []struct{ kind, field string }{{domain.ProcessWorker, domain.FieldProcessWorker}, {domain.ProcessScheduler, domain.FieldProcessScheduler}} {
+		if cmd := f(p.field); cmd != "" && cmd != domain.ProcessNone {
+			processes = append(processes, domain.PlanProcess{Name: p.kind, Kind: p.kind, Command: cmd})
+		}
+	}
 	in := PythonPlanInput{
+		Processes:     processes,
 		PlatformHosts: platformHosts,
 		Version:       version, Manager: manager, AppTarget: target,
 		Interface: f(domain.FieldPythonInterface), Framework: f(domain.FieldPythonFramework),
@@ -206,6 +215,7 @@ func BuildPythonPlan(in PythonPlanInput) domain.Plan {
 		SystemPackages: in.SystemPackages,
 		Dockerfile:     renderPythonDockerfile(in, install, start),
 
+		Processes:           in.Processes,
 		DjangoPlatformHosts: in.PlatformHosts && in.DjangoSettings != "",
 	}
 }

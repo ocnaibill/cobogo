@@ -150,6 +150,9 @@ func (r *Runtime) DumpService(ctx context.Context, engine, projectID, backupID, 
 	if err != nil {
 		return err
 	}
+	if eng.DumpCommand == nil {
+		return fmt.Errorf("dockerrt: %s não tem dump no backup", eng.Label)
+	}
 	return r.RunCopy(ctx, CopySpec{
 		ProjectID: projectID, BackupID: backupID, Image: eng.Image,
 		Command:      eng.DumpCommand(host, file),
@@ -194,6 +197,9 @@ func (r *Runtime) RestoreService(ctx context.Context, engine, projectID, backupI
 	eng, err := EngineFor(engine)
 	if err != nil {
 		return err
+	}
+	if eng.RestoreScript == "" {
+		return fmt.Errorf("dockerrt: %s não tem restauração por dump", eng.Label)
 	}
 	return r.RunCopy(ctx, CopySpec{
 		ProjectID: projectID, BackupID: backupID, Image: eng.Image,

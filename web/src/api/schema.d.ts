@@ -1331,7 +1331,9 @@ export interface components {
          *     `asgi`), `python_framework`, `django_settings` e `django_platform_hosts`
          *     (`true` ou `false`: a plataforma acrescenta o endereço do projeto a
          *     `ALLOWED_HOSTS` e `CSRF_TRUSTED_ORIGINS` num módulo gerado na imagem, sem
-         *     mudar o repositório; é a resposta à pergunta da HEU-04.6; DEC-49).
+         *     mudar o repositório; é a resposta à pergunta da HEU-04.6; DEC-49),
+         *     `process_worker` e `process_scheduler` (o comando do worker e do agendador,
+         *     ou `none` para desligar; DEC-51).
          *     Valores de variáveis de ambiente nunca passam por aqui.
          */
         Overrides: {
@@ -1662,7 +1664,7 @@ export interface components {
             /** Format: uuid */
             deployment_id: string | null;
             /** @enum {string} */
-            origin: "app" | "postgres" | "mysql";
+            origin: "app" | "postgres" | "mysql" | "redis";
             /**
              * @description `system` são avisos do Cobogó no meio do log (linhas descartadas pelo limite de taxa).
              * @enum {string}
@@ -1813,7 +1815,7 @@ export interface components {
         };
         ServiceNeed: {
             /** @enum {string} */
-            engine: "postgres" | "mysql";
+            engine: "postgres" | "mysql" | "redis";
             /**
              * @description `required`: código de runtime usa a engine (a pergunta bloqueia o
              *     deploy antes do build). `possible`: só a dependência (vira sugestão).
@@ -1835,6 +1837,8 @@ export interface components {
             };
             reason: string;
             evidence: string[];
+            /** @description Onde o código escreve o endereço do serviço (arquivo:linha) em vez de lê-lo de uma variável de ambiente; o serviço do Cobogó só será usado se o código mudar. */
+            fixed_at?: string[];
         };
         Service: {
             /** Format: uuid */
@@ -1842,7 +1846,7 @@ export interface components {
             /** Format: uuid */
             project_id: string;
             /** @enum {string} */
-            engine: "postgres" | "mysql";
+            engine: "postgres" | "mysql" | "redis";
             /** @enum {string} */
             mode: "managed" | "external" | "none";
             variable: string;
@@ -1864,10 +1868,10 @@ export interface components {
         };
         DatabaseView: {
             /**
-             * @description A engine do banco do projeto (DEC-50): a do serviço, a da necessidade que a análise achou ou PostgreSQL.
+             * @description A engine do serviço (DEC-50): a do serviço, a da necessidade que a análise achou ou PostgreSQL.
              * @enum {string}
              */
-            engine: "postgres" | "mysql";
+            engine: "postgres" | "mysql" | "redis";
             need: components["schemas"]["ServiceNeed"] | null;
             service: components["schemas"]["Service"] | null;
             variable: string;
@@ -1914,6 +1918,13 @@ export interface components {
              * @enum {string}
              */
             interface?: "wsgi" | "asgi";
+            /** @description Os processos além do web (DEC-51), da mesma imagem, sem porta nem rota; só no perfil P-PY. */
+            processes?: {
+                name: string;
+                /** @enum {string} */
+                kind: "worker" | "scheduler";
+                command: string;
+            }[];
             /** @description A imagem usa o módulo de ajuste do Django que acrescenta o endereço do projeto às listas de hosts e de origens; só no perfil P-PY (DEC-49). */
             django_platform_hosts?: boolean;
             /** @description Pacotes de sistema do catálogo fechado instalados na execução; só no perfil P-PY. */
@@ -3127,7 +3138,10 @@ export interface operations {
     };
     getDatabase: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description `redis` devolve a visão do Redis do projeto (DEC-50 C); sem o parâmetro, a do banco relacional. */
+                engine?: "redis";
+            };
             header?: never;
             path: {
                 id: components["parameters"]["Id"];
@@ -3165,10 +3179,10 @@ export interface operations {
                     /** @enum {string} */
                     choice: "managed" | "external" | "none";
                     /**
-                     * @description A engine do banco. Vazio vale a da necessidade que a análise achou, ou `postgres` (DEC-50).
+                     * @description A engine do serviço. Vazio vale a da necessidade que a análise achou, ou `postgres` (DEC-50).
                      * @enum {string}
                      */
-                    engine?: "postgres" | "mysql";
+                    engine?: "postgres" | "mysql" | "redis";
                     /** @description A variável da URL de conexão (forma curta). Padrão `DATABASE_URL`. */
                     variable?: string;
                     /**
@@ -3225,6 +3239,11 @@ export interface operations {
             content: {
                 "application/json": {
                     confirm_slug: string;
+                    /**
+                     * @description O serviço a apagar. Vazio vale o banco relacional (DEC-50).
+                     * @enum {string}
+                     */
+                    engine?: "postgres" | "mysql" | "redis";
                 };
             };
         };
@@ -3437,7 +3456,7 @@ export interface operations {
         parameters: {
             query?: {
                 /** @description Só uma origem. `database` reúne os bancos gerenciados de qualquer engine. Sem o parâmetro, todas. */
-                origin?: "app" | "database" | "postgres" | "mysql";
+                origin?: "app" | "database" | "postgres" | "mysql" | "redis";
                 /** @description Devolve as linhas com `id` maior que este. */
                 after?: number;
                 /** @description Devolve as linhas imediatamente anteriores a este `id`. Não se combina com `after`. */

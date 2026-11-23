@@ -459,7 +459,8 @@ function PendingPanel({ deploymentId, projectId, onAnswered }: { deploymentId: s
   const allPending = (analysis.data?.result.pending ?? []).filter((f): f is Finding & { field: string } => !!f.field);
   // A pergunta do banco (DEC-42) não se responde por overrides: tem o próprio painel.
   const databaseQuestion = allPending.find((f) => f.field === "database");
-  const pending = allPending.filter((f) => f.field !== "database");
+  const redisQuestion = allPending.find((f) => f.field === "redis");
+  const pending = allPending.filter((f) => f.field !== "database" && f.field !== "redis");
   const open = pending.filter((f) => !(values[f.field] ?? "").trim());
 
   async function submit(evt: FormEvent) {
@@ -483,11 +484,12 @@ function PendingPanel({ deploymentId, projectId, onAnswered }: { deploymentId: s
 
   if (analysis.isLoading) return <Loading label="Carregando as pendências…" />;
   if (analysis.isError) return <ErrorBox error={analysis.error} onRetry={() => analysis.refetch()} />;
-  if (databaseQuestion && projectId) {
+  if ((databaseQuestion || redisQuestion) && projectId) {
     return (
       <div className="stack">
-        <DatabaseQuestion projectId={projectId} message={databaseQuestion.message} onChosen={onAnswered} />
-        {pending.length > 0 && <Notice tone="info">Há outras pendências; elas aparecem depois que você escolher o banco.</Notice>}
+        {databaseQuestion && <DatabaseQuestion projectId={projectId} message={databaseQuestion.message} onChosen={onAnswered} />}
+        {redisQuestion && <DatabaseQuestion projectId={projectId} message={redisQuestion.message} onChosen={onAnswered} engine="redis" />}
+        {pending.length > 0 && <Notice tone="info">Há outras pendências; elas aparecem depois que você escolher os serviços.</Notice>}
       </div>
     );
   }
@@ -784,6 +786,7 @@ function PlanView({ deploymentId, hasAnalysis }: { deploymentId: string; hasAnal
       ? ([
           ["Alvo", p.app_target ? `${p.app_target} (${p.interface === "asgi" ? "ASGI, uvicorn" : "WSGI, gunicorn"})` : "—"],
           ["Pacotes de sistema", p.system_packages?.length ? p.system_packages.join(", ") : "nenhum"],
+          ...(p.processes ?? []).map((pr) => [pr.kind === "scheduler" ? "Agendador" : "Worker", pr.command] as [string, string]),
           ...(p.django_platform_hosts
             ? ([["Ajuste do Django", "acrescenta o endereço do projeto a ALLOWED_HOSTS e CSRF_TRUSTED_ORIGINS (módulo gerado na imagem)"]] as [string, string][])
             : []),
@@ -935,13 +938,13 @@ export function AnalysisDetail({ analysis }: { analysis: Analysis }) {
 }
 
 /** A pergunta do banco antes do build (HEU-06.6, DEC-42). */
-function DatabaseQuestion({ projectId, message, onChosen }: { projectId: string; message: string; onChosen: () => void }) {
-  const db = useDatabase(projectId);
+function DatabaseQuestion({ projectId, message, onChosen, engine }: { projectId: string; message: string; onChosen: () => void; engine?: "redis" }) {
+  const db = useDatabase(projectId, engine);
   return (
-    <Card title="Onde está o banco?" icon="server" className="card-warning" actions={<Tag tone="warning">antes do build</Tag>}>
+    <Card title={engine === "redis" ? "Onde está o Redis?" : "Onde está o banco?"} icon="server" className="card-warning" actions={<Tag tone="warning">antes do build</Tag>}>
       <div className="stack">
         <p>{message}</p>
-        <p className="small muted">O deploy espera a sua escolha, no mesmo commit, e nada foi construído ainda. O Cobogó só cria um banco se você escolher criar.</p>
+        <p className="small muted">O deploy espera a sua escolha, no mesmo commit, e nada foi construído ainda. O Cobogó só cria o serviço se você escolher criar.</p>
         {db.isLoading && <Loading />}
         {db.isError && <ErrorBox error={db.error} onRetry={() => db.refetch()} />}
         {db.data && <DatabaseChoice projectId={projectId} view={db.data} onChosen={onChosen} />}

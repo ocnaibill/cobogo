@@ -175,6 +175,8 @@ func (c *logCapture) follow(ctx context.Context, m dockerrt.ManagedContainer) {
 		origin = domain.LogOriginPostgres
 	case domain.ServiceMySQL:
 		origin = domain.LogOriginMySQL
+	case domain.ServiceRedis:
+		origin = domain.LogOriginRedis
 	}
 	var deployment *uuid.UUID
 	if id, err := uuid.Parse(m.DeploymentID); err == nil {

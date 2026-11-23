@@ -309,6 +309,7 @@ type Operation struct {
 const (
 	ServicePostgres = "postgres"
 	ServiceMySQL    = "mysql"
+	ServiceRedis    = "redis"
 
 	ServiceManaged  = "managed"  // o Cobogó cria e mantém o banco
 	ServiceExternal = "external" // o usuário informa a conexão de um banco que já tem
@@ -430,6 +431,7 @@ const (
 	LogOriginApp      = "app"
 	LogOriginPostgres = "postgres"
 	LogOriginMySQL    = "mysql"
+	LogOriginRedis    = "redis"
 
 	LogStdout = "stdout"
 	LogStderr = "stderr"
@@ -575,6 +577,7 @@ type EngineConnection struct{ Scheme, Port string }
 var engineConnection = map[string]EngineConnection{
 	ServicePostgres: {"postgres", DBPort},
 	ServiceMySQL:    {"mysql", "3306"},
+	ServiceRedis:    {"redis", "6379"},
 }
 
 // ConnectionOf devolve a conexão de uma engine; cai no PostgreSQL para uma engine desconhecida.
@@ -583,6 +586,20 @@ func ConnectionOf(engine string) EngineConnection {
 		return c
 	}
 	return engineConnection[ServicePostgres]
+}
+
+// ManagedEngines são todas as engines que o Cobogó provê como serviço gerenciado: os bancos
+// relacionais e o Redis (DEC-50).
+var ManagedEngines = []string{ServicePostgres, ServiceMySQL, ServiceRedis}
+
+// IsManagedEngine diz se o Cobogó provê a engine como serviço gerenciado.
+func IsManagedEngine(engine string) bool {
+	for _, e := range ManagedEngines {
+		if e == engine {
+			return true
+		}
+	}
+	return false
 }
 
 // IsRelationalEngine diz se o Cobogó provê a engine como banco relacional.

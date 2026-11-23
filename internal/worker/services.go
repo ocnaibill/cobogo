@@ -18,21 +18,36 @@ import (
 
 const databaseReadyTimeout = 3 * time.Minute
 
-// databaseFinding devolve a pendência do destino do banco (HEU-06.6) quando o
-// código usa PostgreSQL com evidência forte, o projeto não escolheu e a variável
-// de conexão ainda não tem valor. Quem já definiu a variável conectou o banco por
-// conta própria: não há pergunta. Nada é criado aqui.
+// databaseFinding devolve a pendência do destino do banco relacional (HEU-06.6) e redisFinding a
+// do Redis (DEC-50 C), quando o código usa a engine com evidência forte, o projeto não escolheu e a
+// variável de conexão ainda não tem valor. Quem já definiu a variável conectou o serviço por conta
+// própria: não há pergunta. Nada é criado aqui.
 func (w *Worker) databaseFinding(ctx context.Context, project domain.Project, result domain.AnalysisResult) (*domain.Finding, error) {
-	// O banco é o da engine que a análise mais sustenta; um projeto com o serviço já escolhido
-	// segue a engine dele (DEC-50).
+	return w.serviceFinding(ctx, project, result, false)
+}
+
+func (w *Worker) redisFinding(ctx context.Context, project domain.Project, result domain.AnalysisResult) (*domain.Finding, error) {
+	return w.serviceFinding(ctx, project, result, true)
+}
+
+var engineLabel = map[string]string{domain.ServicePostgres: "PostgreSQL", domain.ServiceMySQL: "MySQL", domain.ServiceRedis: "Redis"}
+
+func (w *Worker) serviceFinding(ctx context.Context, project domain.Project, result domain.AnalysisResult, redis bool) (*domain.Finding, error) {
+	field, noun := domain.FieldDatabase, "o banco"
+	current := func() (domain.Service, error) { return w.store.GetDatabaseService(ctx, project.ID) }
+	if redis {
+		field, noun = domain.FieldRedis, "o Redis"
+		current = func() (domain.Service, error) { return w.store.GetService(ctx, project.ID, domain.ServiceRedis) }
+	}
+	// A engine é a que a análise mais sustenta; um projeto com o serviço já escolhido segue a engine dele (DEC-50).
 	var need *domain.ServiceNeed
-	chosen, cerr := w.store.GetDatabaseService(ctx, project.ID)
+	chosen, cerr := current()
 	if cerr != nil && !errors.Is(cerr, store.ErrNotFound) {
 		return nil, cerr
 	}
 	for i := range result.ServiceNeeds {
 		n := result.ServiceNeeds[i]
-		if n.Level != domain.NeedRequired || !domain.IsRelationalEngine(n.Engine) {
+		if n.Level != domain.NeedRequired || (n.Engine == domain.ServiceRedis) != redis || !domain.IsManagedEngine(n.Engine) {
 			continue
 		}
 		if need == nil || (cerr == nil && n.Engine == chosen.Engine) {
@@ -42,7 +57,7 @@ func (w *Worker) databaseFinding(ctx context.Context, project domain.Project, re
 	if need == nil {
 		return nil, nil
 	}
-	label := map[string]string{domain.ServicePostgres: "PostgreSQL", domain.ServiceMySQL: "MySQL"}[need.Engine]
+	label := engineLabel[need.Engine]
 	vars, err := w.store.ListEnvVariables(ctx, project.ID)
 	if err != nil {
 		return nil, err
@@ -52,7 +67,7 @@ func (w *Worker) databaseFinding(ctx context.Context, project domain.Project, re
 			return nil, nil
 		}
 	}
-	svc, err := w.store.GetDatabaseService(ctx, project.ID)
+	svc, err := current()
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return nil, err
 	}
@@ -67,16 +82,24 @@ func (w *Worker) databaseFinding(ctx context.Context, project domain.Project, re
 	if need.Style == domain.StyleParts {
 		target, how = connectionNames(need), "os dados de conexão"
 	}
-	message := fmt.Sprintf("O código usa %s (%s) e a conexão não está definida (%s). Onde está o banco?", label, firstEvidence(need.Evidence), target)
+	message := fmt.Sprintf("O código usa %s (%s) e a conexão não está definida (%s). Onde está %s?", label, firstEvidence(need.Evidence), target, noun)
 	if err == nil && svc.Mode == domain.ServiceExternal {
-		message = fmt.Sprintf("Você escolheu usar um banco que já tem, mas a conexão não está definida (%s). Informe %s na aba Variáveis, ou escolha outra opção.", target, how)
+		message = fmt.Sprintf("Você escolheu usar um serviço que já tem, mas a conexão não está definida (%s). Informe %s na aba Variáveis, ou escolha outra opção.", target, how)
+	}
+	// O endereço escrito no código: o serviço do Cobogó, noutro contêiner, só será usado se o código o ler de uma variável.
+	if len(need.FixedAt) > 0 {
+		message += fmt.Sprintf(" Atenção: o código escreve o endereço no próprio arquivo (%s). O serviço do Cobogó vive noutro contêiner e só será usado se o código passar a ler a URL de uma variável de ambiente (%s).", need.FixedAt[0], target)
+	}
+	managedNote := "O Cobogó cria um " + label + " só deste projeto, com os dados em volume, e liga " + target + " a ele."
+	if redis {
+		managedNote = "O Cobogó cria um Redis só deste projeto, com a persistência em volume e senha, e liga " + target + " a ele."
 	}
 	return &domain.Finding{
-		Rule: "HEU-06.6", Field: domain.FieldDatabase, Message: message,
+		Rule: "HEU-06.6", Field: field, Message: message,
 		Options: []domain.Option{
-			{Value: domain.ServiceManaged, Note: "O Cobogó cria um " + label + " só deste projeto, com os dados em volume, e liga " + target + " a ele."},
-			{Value: domain.ServiceExternal, Note: "Você informa " + how + " de um banco que já tem, como segredo, em " + target + "."},
-			{Value: domain.ServiceNone, Note: "O projeto não precisa de banco; o deploy segue sem perguntar de novo."},
+			{Value: domain.ServiceManaged, Note: managedNote},
+			{Value: domain.ServiceExternal, Note: "Você informa " + how + " de um " + label + " que já tem, como segredo, em " + target + "."},
+			{Value: domain.ServiceNone, Note: "O projeto não precisa dele; o deploy segue sem perguntar de novo."},
 		},
 	}, nil
 }
@@ -134,7 +157,15 @@ func (w *Worker) deleteService(ctx context.Context, op *domain.Operation) (map[s
 	if err != nil {
 		return nil, err
 	}
-	svc, err := w.store.GetDatabaseServiceForWorker(ctx, projectID)
+	var svc domain.Service
+	if engine, _ := op.Params["engine"].(string); engine != "" && domain.IsManagedEngine(engine) {
+		svc, err = w.store.GetServiceForWorker(ctx, projectID, engine)
+		if domain.IsRelationalEngine(engine) {
+			svc, err = w.store.GetDatabaseServiceForWorker(ctx, projectID)
+		}
+	} else {
+		svc, err = w.store.GetDatabaseServiceForWorker(ctx, projectID)
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		return map[string]any{"already_gone": true}, nil
 	}

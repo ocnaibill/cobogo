@@ -30,6 +30,9 @@ type Plan struct {
 	AppTarget      string   `json:"app_target,omitempty"`
 	Interface      string   `json:"interface,omitempty"`
 	SystemPackages []string `json:"system_packages,omitempty"`
+	// Processes são os processos além do web (DEC-51): worker e agendador, da mesma imagem, sem
+	// porta nem rota, com as mesmas variáveis, volumes e serviços.
+	Processes []PlanProcess `json:"processes,omitempty"`
 	// DjangoPlatformHosts: a imagem usa o módulo de ajuste que acrescenta o endereço
 	// do projeto a ALLOWED_HOSTS e CSRF_TRUSTED_ORIGINS (DEC-49 item 6).
 	DjangoPlatformHosts bool `json:"django_platform_hosts,omitempty"`
@@ -62,4 +65,12 @@ func GitHookOnly(command string) bool {
 		found = true
 	}
 	return found
+}
+
+// PlanProcess é um processo do projeto além do web (DEC-51).
+type PlanProcess struct {
+	// Name e Kind: `worker` ou `scheduler`.
+	Name    string `json:"name"`
+	Kind    string `json:"kind"`
+	Command string `json:"command"`
 }

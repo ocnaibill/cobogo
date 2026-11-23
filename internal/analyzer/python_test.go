@@ -252,9 +252,10 @@ func TestPythonAnalysis(t *testing.T) {
 		},
 		{
 			name: "procfile com script que não diz a porta", outcome: domain.AnalysisNeedsInput,
-			files:    map[string]string{"requirements.txt": "flask==3.1.0\n", "Procfile": "web: python app.py\nworker: python jobs.py\n", "app.py": flask["app.py"]},
-			pending:  []string{domain.FieldPort},
-			warnings: []string{`o processo "worker" do Procfile é ignorado`},
+			files:      map[string]string{"requirements.txt": "flask==3.1.0\n", "Procfile": "web: python app.py\nworker: python jobs.py\n", "app.py": flask["app.py"]},
+			pending:    []string{domain.FieldPort},
+			fields:     map[string]string{domain.FieldProcessWorker: "python jobs.py"},
+			noWarnings: []string{"é ignorado", "não é um worker"},
 		},
 		{
 			name: "procfile com script que lê PORT", outcome: domain.AnalysisReady,
@@ -441,5 +442,169 @@ func TestPythonMySQLNeeds(t *testing.T) {
 	res, err = Analyze(toFS(map[string]string{"requirements.txt": "flask==3.1.0\npymysql==1.1.1\n", "app.py": "import pymysql\nfrom flask import Flask\napp = Flask(__name__)\n"}), Input{})
 	if err != nil || len(res.ServiceNeeds) != 1 || res.ServiceNeeds[0].Level != domain.NeedRequired {
 		t.Errorf("import do driver: %v %+v", err, res.ServiceNeeds)
+	}
+}
+
+func TestPythonRedisNeeds(t *testing.T) {
+	flaskApp := "from flask import Flask\napp = Flask(__name__)\n"
+	// O import do cliente lendo a URL de uma variável: forte, sem endereço escrito no código.
+	res, err := Analyze(toFS(map[string]string{"requirements.txt": "flask==3.1.0\nredis==6.2.0\n", "app.py": "import os\nimport redis\n" + flaskApp + "r = redis.from_url(os.environ['REDIS_URL'])\n"}), Input{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var redisNeed *domain.ServiceNeed
+	for i := range res.ServiceNeeds {
+		if res.ServiceNeeds[i].Engine == domain.ServiceRedis {
+			redisNeed = &res.ServiceNeeds[i]
+		}
+	}
+	if redisNeed == nil || redisNeed.Level != domain.NeedRequired || redisNeed.Variable != "REDIS_URL" || len(redisNeed.FixedAt) != 0 {
+		t.Fatalf("import com variável: %+v", res.ServiceNeeds)
+	}
+	// O broker do Celery escrito no settings (o caso do fec): forte e fixo no código, sem a senha.
+	files := djangoRepo(map[string]string{
+		"requirements.txt":   "Django==5.1.4\ncelery==5.5.3\nredis==6.2.0\n",
+		"mysite/settings.py": djangoSettings + "CELERY_BROKER_URL = 'redis://:s3nh4@localhost:6379/0'\n",
+	})
+	res, err = Analyze(toFS(files), Input{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	redisNeed = nil
+	for i := range res.ServiceNeeds {
+		if res.ServiceNeeds[i].Engine == domain.ServiceRedis {
+			redisNeed = &res.ServiceNeeds[i]
+		}
+	}
+	if redisNeed == nil || redisNeed.Level != domain.NeedRequired || len(redisNeed.FixedAt) != 1 || !strings.HasPrefix(redisNeed.FixedAt[0], "mysite/settings.py:") {
+		t.Fatalf("broker escrito no código: %+v", res.ServiceNeeds)
+	}
+	for _, e := range res.Evidences {
+		if e.Kind == kindPyRedis && strings.Contains(e.Value, "s3nh4") {
+			t.Fatalf("a senha do endereço escrito no código foi guardada: %+v", e)
+		}
+	}
+	// O cache do Django por django-redis.
+	res, err = Analyze(toFS(djangoRepo(map[string]string{
+		"requirements.txt":   "Django==5.1.4\ndjango-redis==5.4.0\n",
+		"mysite/settings.py": djangoSettings + "CACHES = {'default': {'BACKEND': 'django_redis.cache.RedisCache', 'LOCATION': os.environ['REDIS_URL']}}\n",
+	})), Input{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, n := range res.ServiceNeeds {
+		found = found || (n.Engine == domain.ServiceRedis && n.Level == domain.NeedRequired)
+	}
+	if !found {
+		t.Errorf("cache do Django: %+v", res.ServiceNeeds)
+	}
+	// O Celery com o cliente do Redis nas dependências usa o Redis como broker, ainda que o código só leia
+	// a URL de uma variável: evidência forte, com o arquivo do app do Celery.
+	res, err = Analyze(toFS(djangoRepo(map[string]string{
+		"requirements.txt":   "Django==5.1.4\ncelery==5.5.3\nredis==6.2.0\n",
+		"mysite/__init__.py": "from .celery import app as celery_app\n",
+		"mysite/celery.py":   "from celery import Celery\napp = Celery('mysite')\napp.config_from_object('django.conf:settings', namespace='CELERY')\n",
+		"mysite/settings.py": djangoSettings + "CELERY_BROKER_URL = os.environ['REDIS_URL']\n",
+	})), Input{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found = false
+	for _, n := range res.ServiceNeeds {
+		found = found || (n.Engine == domain.ServiceRedis && n.Level == domain.NeedRequired && len(n.FixedAt) == 0 && n.Variable == "REDIS_URL" && strings.HasPrefix(n.Evidence[0], "mysite/celery.py:"))
+	}
+	if !found {
+		t.Errorf("celery com redis nas dependências: %+v", res.ServiceNeeds)
+	}
+	// Só a dependência: sugestão; o Celery sozinho não é Redis.
+	res, err = Analyze(toFS(map[string]string{"requirements.txt": "flask==3.1.0\nredis==6.2.0\n", "app.py": flaskApp}), Input{})
+	if err != nil || len(res.ServiceNeeds) != 1 || res.ServiceNeeds[0].Level != domain.NeedPossible {
+		t.Errorf("só a dependência: %v %+v", err, res.ServiceNeeds)
+	}
+	res, err = Analyze(toFS(map[string]string{"requirements.txt": "flask==3.1.0\ncelery==5.5.3\n", "app.py": flaskApp}), Input{})
+	if err != nil || len(res.ServiceNeeds) != 0 {
+		t.Errorf("celery sozinho: %v %+v", err, res.ServiceNeeds)
+	}
+}
+
+// DEC-51: o worker e o agendador, do Procfile (declaração) ou do Celery (inferência com evidência).
+func TestPythonProcesses(t *testing.T) {
+	celeryRepo := func(extra map[string]string) map[string]string {
+		return djangoRepo(map[string]string{
+			"requirements.txt":   "Django==5.1.4\ncelery==5.5.3\nredis==6.2.0\n",
+			"mysite/__init__.py": "from .celery import app as celery_app\n",
+			"mysite/celery.py":   "import os\nfrom celery import Celery\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'mysite.settings')\napp = Celery('mysite')\napp.config_from_object('django.conf:settings', namespace='CELERY')\napp.autodiscover_tasks()\n",
+		})
+	}
+	files := celeryRepo(nil)
+	res, err := Analyze(toFS(files), Input{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Fields[domain.FieldProcessWorker]; got.Value != "celery -A mysite worker -l info --concurrency=2" || got.Origin != domain.OriginInference || len(got.EvidenceIDs) == 0 {
+		t.Errorf("worker = %+v", got)
+	}
+	if _, ok := res.Fields[domain.FieldProcessScheduler]; ok {
+		t.Errorf("agendador sem sinal de beat: %+v", res.Fields[domain.FieldProcessScheduler])
+	}
+	// O beat por django-celery-beat usa o agendador do banco.
+	files = celeryRepo(nil)
+	files["requirements.txt"] += "django-celery-beat==2.7.0\n"
+	files["mysite/settings.py"] += "INSTALLED_APPS += ['django_celery_beat']\n"
+	res, _ = Analyze(toFS(files), Input{})
+	if got := res.Fields[domain.FieldProcessScheduler].Value; !strings.HasPrefix(got, "celery -A mysite beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler") {
+		t.Errorf("scheduler = %q", got)
+	}
+	// O Procfile vence o Celery (declaração).
+	files = celeryRepo(nil)
+	files["Procfile"] = "web: gunicorn mysite.wsgi\nworker: celery -A mysite worker -l warning\nclock: celery -A mysite beat\nflower: celery flower\n"
+	res, _ = Analyze(toFS(files), Input{})
+	if got := res.Fields[domain.FieldProcessWorker]; got.Value != "celery -A mysite worker -l warning" || got.Origin != domain.OriginDeclaration {
+		t.Errorf("worker do Procfile = %+v", got)
+	}
+	if got := res.Fields[domain.FieldProcessScheduler].Value; got != "celery -A mysite beat" {
+		t.Errorf("scheduler do Procfile = %q", got)
+	}
+	warned := false
+	for _, w := range res.Warnings {
+		warned = warned || strings.Contains(w.Message, `"flower"`)
+	}
+	if !warned {
+		t.Error("um processo que não é worker nem agendador deveria ser dito como ignorado")
+	}
+	// O override desliga, e um comando o troca.
+	res, _ = Analyze(toFS(celeryRepo(nil)), Input{Overrides: map[string]string{domain.FieldProcessWorker: "none"}})
+	if res.Fields[domain.FieldProcessWorker].Value != "none" || res.Fields[domain.FieldProcessWorker].Origin != domain.OriginOverride {
+		t.Errorf("override none: %+v", res.Fields[domain.FieldProcessWorker])
+	}
+	if err := CheckOverrides(map[string]string{domain.FieldProcessWorker: "celery -A x worker\nrm -rf /"}); err == nil {
+		t.Error("um comando de várias linhas foi aceito")
+	}
+	// Um app Celery fora de <pacote>/celery.py usa modulo:atributo.
+	res, _ = Analyze(toFS(map[string]string{
+		"requirements.txt": "flask==3.1.0\ncelery==5.5.3\nredis==6.2.0\n",
+		"app.py":           "from flask import Flask\napp = Flask(__name__)\n",
+		"tasks.py":         "from celery import Celery\nqueue = Celery('tasks', broker='redis://x')\n",
+	}), Input{})
+	if got := res.Fields[domain.FieldProcessWorker].Value; got != "celery -A tasks:queue worker -l info --concurrency=2" {
+		t.Errorf("app em tasks.py = %q", got)
+	}
+	// Sem Celery, nada; sem broker, o aviso.
+	res, _ = Analyze(toFS(map[string]string{"requirements.txt": "flask==3.1.0\n", "app.py": "from flask import Flask\napp = Flask(__name__)\n"}), Input{})
+	if _, ok := res.Fields[domain.FieldProcessWorker]; ok {
+		t.Errorf("worker sem Celery: %+v", res.Fields[domain.FieldProcessWorker])
+	}
+	res, _ = Analyze(toFS(map[string]string{
+		"requirements.txt": "flask==3.1.0\ncelery==5.5.3\n",
+		"app.py":           "from flask import Flask\napp = Flask(__name__)\n",
+		"tasks.py":         "from celery import Celery\nqueue = Celery('tasks', broker='amqp://rabbit')\n",
+	}), Input{})
+	noBroker := false
+	for _, w := range res.Warnings {
+		noBroker = noBroker || strings.Contains(w.Message, "sinal de broker")
+	}
+	if !noBroker {
+		t.Error("Celery sem Redis deveria avisar do broker")
 	}
 }

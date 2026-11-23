@@ -41,6 +41,8 @@ const (
 	kindDjangoSet    = "django.setting"            // Name = configuração; Value = o que se leu
 	kindPyPostgres   = "py.postgres"               // Name = driver importado em código de runtime
 	kindPyMySQL      = "py.mysql"                  // Name = driver MySQL importado em código de runtime
+	kindPyCelery     = "py.celery"                 // Name = worker|beat|beat_setting; Value = o alvo do -A do Celery
+	kindPyRedis      = "py.redis"                  // Name = import|url; Value = o endereço redis:// sem credenciais
 )
 
 // Pastas que não são código da aplicação.
@@ -58,11 +60,15 @@ var (
 	procfileLine = regexp.MustCompile(`^([A-Za-z0-9_-]+)\s*:\s*(.+?)\s*$`)
 
 	// Atribuição de nível de módulo de uma aplicação (DEC-48 item 5).
-	pyAppAssign   = regexp.MustCompile(`(?m)^([A-Za-z_]\w*)\s*(?::\s*[\w.\[\], ]+)?=\s*((?:[A-Za-z_]\w*\.)*)(Flask|FastAPI|Starlette|Quart|Litestar|Sanic|App)\s*\(`)
-	pyFactory     = regexp.MustCompile(`(?m)^(?:async\s+)?def\s+(create_app|make_app|app_factory|get_app|build_app)\s*\(`)
-	pyMySQLImport = regexp.MustCompile(`(?m)^\s*(?:import|from)\s+(MySQLdb|pymysql|mysql\.connector|aiomysql|asyncmy)\b`)
-	pyPgImport    = regexp.MustCompile(`(?m)^\s*(?:import|from)\s+(psycopg2|psycopg|asyncpg|pg8000)\b`)
-	pyRunTarget   = regexp.MustCompile(`uvicorn\.run\(\s*["']([A-Za-z_][\w.]*:[A-Za-z_]\w*)["']`)
+	pyAppAssign      = regexp.MustCompile(`(?m)^([A-Za-z_]\w*)\s*(?::\s*[\w.\[\], ]+)?=\s*((?:[A-Za-z_]\w*\.)*)(Flask|FastAPI|Starlette|Quart|Litestar|Sanic|App)\s*\(`)
+	pyFactory        = regexp.MustCompile(`(?m)^(?:async\s+)?def\s+(create_app|make_app|app_factory|get_app|build_app)\s*\(`)
+	pyCeleryApp      = regexp.MustCompile(`(?m)^([A-Za-z_]\w*)\s*=\s*(?:celery\.)?Celery\s*\(`)
+	pyCeleryBeat     = regexp.MustCompile(`CELERY_BEAT_SCHEDULE|\bbeat_schedule\b|django_celery_beat`)
+	pyRedisImport    = regexp.MustCompile(`(?m)^\s*(?:import|from)\s+(redis|aioredis|django_redis|rq|channels_redis)\b`)
+	djangoRedisCache = regexp.MustCompile(`django_redis|backends\.redis\.RedisCache`)
+	pyMySQLImport    = regexp.MustCompile(`(?m)^\s*(?:import|from)\s+(MySQLdb|pymysql|mysql\.connector|aiomysql|asyncmy)\b`)
+	pyPgImport       = regexp.MustCompile(`(?m)^\s*(?:import|from)\s+(psycopg2|psycopg|asyncpg|pg8000)\b`)
+	pyRunTarget      = regexp.MustCompile(`uvicorn\.run\(\s*["']([A-Za-z_][\w.]*:[A-Za-z_]\w*)["']`)
 
 	pyImport = map[string]*regexp.Regexp{
 		domain.FrameworkFlask:     regexp.MustCompile(`(?m)^\s*(?:from\s+flask\b|import\s+flask\b)`),
@@ -411,6 +417,29 @@ func extractPythonSource(fsys fs.FS, x *Extraction) error {
 				}
 			}
 		}
+		// O Celery (DEC-51): o app de módulo (`app = Celery(...)`). Em `<pacote>/celery.py` o `-A <pacote>` basta
+		// (o Celery procura `<pacote>.celery:app`); em outro arquivo, o alvo é modulo:atributo.
+		if m := pyCeleryApp.FindSubmatchIndex(data); m != nil && strings.Contains(string(data), "celery") {
+			attr := string(data[m[2]:m[3]])
+			target := mod + ":" + attr
+			if path.Base(name) == "celery.py" && attr == "app" {
+				target = strings.TrimSuffix(mod, ".celery")
+			}
+			x.emit(extractorPySource, domain.Evidence{Kind: kindPyCelery, Name: "worker", Value: target, Source: name, Line: lineAt(data, m[0]), Scope: scope})
+			if loc := pyCeleryBeat.FindIndex(data); loc != nil {
+				x.emit(extractorPySource, domain.Evidence{Kind: kindPyCelery, Name: "beat", Value: target, Source: name, Line: lineAt(data, loc[0]), Scope: scope})
+			}
+		} else if loc := pyCeleryBeat.FindIndex(data); loc != nil && strings.Contains(name, "settings") {
+			x.emit(extractorPySource, domain.Evidence{Kind: kindPyCelery, Name: "beat_setting", Source: name, Line: lineAt(data, loc[0]), Scope: scope})
+		}
+		if m := pyRedisImport.FindSubmatchIndex(data); m != nil {
+			x.emit(extractorPySource, domain.Evidence{Kind: kindPyRedis, Name: "import", Value: string(data[m[2]:m[3]]), Source: name, Line: lineAt(data, m[0]), Scope: scope})
+		}
+		for _, m := range redisURLLiteral.FindAllSubmatchIndex(data, -1) {
+			if display, _, ok := redisAddress(string(data[m[2]:m[3]])); ok {
+				x.emit(extractorPySource, domain.Evidence{Kind: kindPyRedis, Name: "url", Value: display, Source: name, Line: lineAt(data, m[0]), Scope: scope})
+			}
+		}
 		if m := pyMySQLImport.FindSubmatchIndex(data); m != nil {
 			x.emit(extractorPySource, domain.Evidence{Kind: kindPyMySQL, Name: string(data[m[2]:m[3]]), Source: name, Line: lineAt(data, m[0]), Scope: scope})
 		}
@@ -515,7 +544,7 @@ func extractDjango(fsys fs.FS, x *Extraction, srcLayout bool) {
 		if m := djangoASGI.FindSubmatchIndex(data); m != nil {
 			x.emit(extractorPySource, domain.Evidence{Kind: kindDjangoApp, Name: domain.InterfaceASGI, Value: string(data[m[2]:m[3]]) + ":" + string(data[m[4]:m[5]]), Source: file, Line: lineAt(data, m[0]), Scope: domain.ScopeRuntime})
 		}
-		for name, re := range map[string]*regexp.Regexp{"STATIC_ROOT": djangoStaticRoot, "DEBUG_TRUE": djangoDebugTrue, "SECRET_KEY_LITERAL": djangoSecretLiteral, "WHITENOISE": djangoWhitenoise, "CSRF_TRUSTED_ORIGINS": djangoCSRF, "SQLITE": djangoSQLite, "POSTGRES": djangoPostgres, "MYSQL": djangoMySQL, "MEDIA_ROOT": djangoMediaRoot, "ALLOWED_HOSTS_EXTENDED": djangoHostsExtended} {
+		for name, re := range map[string]*regexp.Regexp{"STATIC_ROOT": djangoStaticRoot, "DEBUG_TRUE": djangoDebugTrue, "SECRET_KEY_LITERAL": djangoSecretLiteral, "WHITENOISE": djangoWhitenoise, "CSRF_TRUSTED_ORIGINS": djangoCSRF, "SQLITE": djangoSQLite, "POSTGRES": djangoPostgres, "MYSQL": djangoMySQL, "REDIS_CACHE": djangoRedisCache, "MEDIA_ROOT": djangoMediaRoot, "ALLOWED_HOSTS_EXTENDED": djangoHostsExtended} {
 			if loc := re.FindIndex(data); loc != nil {
 				value := ""
 				if m := djangoMediaDir.FindSubmatch(data); name == "MEDIA_ROOT" && m != nil {

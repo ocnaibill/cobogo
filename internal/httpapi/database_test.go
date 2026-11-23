@@ -262,3 +262,59 @@ func TestChooseMySQLDatabaseThroughTheAPI(t *testing.T) {
 		t.Errorf("MYSQL_URL = %q", u)
 	}
 }
+
+// DEC-50 C: o Redis gerenciado convive com o banco relacional do projeto. A conexão sai como URL com
+// só a senha (`redis://:senha@host:6379/0`) ou em partes (host, porta, senha), e a visão e a exclusão
+// têm a engine.
+func TestChooseRedisThroughTheAPI(t *testing.T) {
+	h := newHarness(t)
+	h.login()
+	p := h.createProject("com-redis")
+	base := "/api/v1/projects/" + p.ID.String() + "/database"
+
+	// O banco relacional e o Redis são serviços independentes do mesmo projeto.
+	if rec := h.do("POST", base, `{"choice":"managed","engine":"postgres"}`); rec.Code != http.StatusOK {
+		t.Fatalf("banco: %d %s", rec.Code, rec.Body)
+	}
+	if rec := h.do("GET", base+"?engine=redis", ""); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"engine":"redis"`) || !strings.Contains(rec.Body.String(), `"service":null`) {
+		t.Fatalf("visão do Redis sem serviço: %d %s", rec.Code, rec.Body)
+	}
+	if rec := h.do("GET", base+"?engine=oracle", ""); rec.Code != http.StatusBadRequest {
+		t.Errorf("engine inválida na visão: %d", rec.Code)
+	}
+	rec := h.do("POST", base, `{"choice":"managed","engine":"redis","variable":"CELERY_BROKER_URL"}`)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"engine":"redis"`) || !strings.Contains(rec.Body.String(), `"tls":false`) {
+		t.Fatalf("redis gerenciado: %d %s", rec.Code, rec.Body)
+	}
+	vals, _, _ := h.st.RevealEnvValues(t.Context(), p.ID)
+	u := vals["CELERY_BROKER_URL"]
+	if !strings.HasPrefix(u, "redis://:") || !strings.Contains(u, "@cobogo-redis-") || !strings.HasSuffix(u, ":6379/0") {
+		t.Errorf("CELERY_BROKER_URL = %q", u)
+	}
+	if strings.Contains(rec.Body.String(), strings.TrimSuffix(strings.TrimPrefix(strings.SplitN(u, "@", 2)[0], "redis://:"), "")) && len(u) > 0 && strings.Contains(rec.Body.String(), "redis://") {
+		t.Error("a URL com a senha apareceu na resposta")
+	}
+	// O banco relacional segue o dele, e as duas visões trazem cada um o seu serviço.
+	if rec := h.do("GET", base, ""); !strings.Contains(rec.Body.String(), `"engine":"postgres"`) {
+		t.Errorf("visão do banco: %s", rec.Body)
+	}
+	if rec := h.do("GET", base+"?engine=redis", ""); !strings.Contains(rec.Body.String(), `"mode":"managed"`) {
+		t.Errorf("visão do Redis: %s", rec.Body)
+	}
+	// Partes: host, porta e senha, sem usuário nem banco.
+	p2 := h.createProject("redis-partes")
+	if rec := h.do("POST", "/api/v1/projects/"+p2.ID.String()+"/database", `{"choice":"managed","engine":"redis","variables":{"host":"REDIS_HOST","port":"REDIS_PORT","password":"REDIS_PASSWORD"}}`); rec.Code != http.StatusOK {
+		t.Fatalf("redis em partes: %d %s", rec.Code, rec.Body)
+	}
+	v2, _, _ := h.st.RevealEnvValues(t.Context(), p2.ID)
+	if v2["REDIS_PORT"] != "6379" || !strings.HasPrefix(v2["REDIS_HOST"], "cobogo-redis-") || len(v2["REDIS_PASSWORD"]) < 20 {
+		t.Errorf("partes do Redis = %q %q", v2["REDIS_HOST"], v2["REDIS_PORT"])
+	}
+	// A exclusão é por engine e pede o nome do projeto.
+	if rec := h.do("DELETE", base, `{"confirm_slug":"com-redis","engine":"redis"}`); rec.Code != http.StatusAccepted {
+		t.Errorf("apagar o Redis: %d %s", rec.Code, rec.Body)
+	}
+	if rec := h.do("GET", base, ""); !strings.Contains(rec.Body.String(), `"mode":"managed"`) || strings.Contains(rec.Body.String(), `"status":"deleting"`) {
+		t.Errorf("o banco relacional não pode ser afetado pela exclusão do Redis: %s", rec.Body)
+	}
+}

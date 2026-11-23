@@ -40,7 +40,7 @@ type Engine struct {
 	// quando a engine não o suporta.
 	TLS func(ctx context.Context, r *Runtime, spec ServiceSpec) (env, args []string, err error)
 	// ClientEnv são as variáveis dos contêineres descartáveis de dump e de restauração
-	// (a senha vai por ambiente).
+	// (a senha vai por ambiente). Só as engines com dump (os bancos relacionais).
 	ClientEnv func(password string) []string
 	// DumpCommand é o comando de dump para o arquivo (dentro de /out).
 	DumpCommand func(host, file string) []string
@@ -52,6 +52,7 @@ type Engine struct {
 var engines = map[string]Engine{
 	domain.ServicePostgres: postgresEngine,
 	domain.ServiceMySQL:    mysqlEngine,
+	domain.ServiceRedis:    redisEngine,
 }
 
 // EngineFor devolve a especificação de uma engine, ou um erro se o Cobogó não a provê.
@@ -130,4 +131,23 @@ var mysqlEngine = Engine{
 	RestoreScript: `set -e; set -o pipefail
 grep -q -- '-- Dump completed' "/out/$1"
 { echo 'DROP DATABASE IF EXISTS app; CREATE DATABASE app CHARACTER SET utf8mb4; USE app;'; cat "/out/$1"; } | mysql -h "$2" -u app --batch`,
+}
+
+// RedisImage é a imagem oficial do Redis (série 8, alpine), fixada por digest.
+const RedisImage = "redis:8-alpine@sha256:7958cfbb9d152f87dadfbc89f1b0b15938f0b81ff8982feb327476f4911935c3"
+
+// redisEngine (DEC-50 C): senha obrigatória (a de um serviço sem porta publicada, na rede privada
+// do projeto), persistência AOF no volume (uma fila que perde as tarefas a cada reinício é pior do que o
+// disco), política `noeviction` (um broker nunca descarta uma tarefa para abrir espaço; a memória
+// cheia vira erro de escrita, que a aplicação vê) e sem TLS (como o MySQL, na primeira versão). O servidor
+// inicia pelo entrypoint da imagem, que larga o root e ajusta a posse de /data. Sem dump: a persistência
+// é o volume, e as filas e caches são transitórios; o backup do projeto não o inclui.
+var redisEngine = Engine{
+	Name: domain.ServiceRedis, Label: "Redis",
+	Image: RedisImage, DataPath: domain.EngineDataPath(domain.ServiceRedis), Port: 6379,
+	UID: "999", MemoryMB: 256, CPUs: 0.5, Pids: 64,
+	Args:    []string{"sh", "-c", `exec docker-entrypoint.sh redis-server --appendonly yes --appendfsync everysec --maxmemory 160mb --maxmemory-policy noeviction --requirepass "$REDIS_PASSWORD"`},
+	CapAdd:  []string{"CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"},
+	Health:  []string{"CMD-SHELL", `redis-cli --no-auth-warning -a "$REDIS_PASSWORD" ping | grep -q PONG`},
+	InitEnv: func(password string) []string { return []string{"REDIS_PASSWORD=" + password} },
 }

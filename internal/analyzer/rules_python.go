@@ -24,7 +24,7 @@ func PythonCatalog() Catalog {
 			{ID: extractorEnvFiles, Extract: extractEnvFiles},
 			{ID: extractorPySource, Extract: extractPythonSource},
 		},
-		Rules: []Rule{ruleHEU041(), ruleHEU042(), ruleHEU043(), ruleHEU044(), ruleHEU045(), ruleHEU046(), ruleHEU09For("HEU-04.1"), ruleHEU08()},
+		Rules: []Rule{ruleHEU041(), ruleHEU042(), ruleHEU043(), ruleHEU044(), ruleHEU045(), ruleHEU046(), ruleHEU047(), ruleHEU09For("HEU-04.1"), ruleHEU08()},
 		Fields: []FieldSpec{
 			{Name: domain.FieldProfile, Required: true, Overridable: false, Validate: func(v string) error { return nil }},
 			{Name: domain.FieldPackageManager, Required: true, Overridable: true, Validate: validatePyManager},
@@ -36,6 +36,8 @@ func PythonCatalog() Catalog {
 			{Name: domain.FieldPythonFramework, Overridable: true, Validate: validateFramework},
 			{Name: domain.FieldDjangoSettings, Overridable: true, Validate: validateDottedModule},
 			{Name: domain.FieldDjangoPlatformHosts, Overridable: true, Validate: validateBool},
+			{Name: domain.FieldProcessWorker, Overridable: true, Validate: validateProcess},
+			{Name: domain.FieldProcessScheduler, Overridable: true, Validate: validateProcess},
 			{Name: domain.FieldStartCommand, Overridable: true, Validate: validateCommand},
 			{Name: domain.FieldBuildCommand, Overridable: true, Validate: validateCommand},
 			{Name: domain.FieldExecutionMode, Overridable: true, Validate: validateExecutionMode},
@@ -579,7 +581,10 @@ func ruleHEU044() Rule {
 					case "release":
 						out.Warnings = append(out.Warnings, finding("", fmt.Sprintf("HEU-04.4: o Procfile tem uma fase release (%q); o Cobogó não a roda no deploy. Rode-a na aba Comandos quando precisar", p.Value), p))
 					default:
-						out.Warnings = append(out.Warnings, finding("", fmt.Sprintf("HEU-04.4: o processo %q do Procfile é ignorado: o Cobogó roda um processo por projeto (o web). Para ele, crie outro projeto com o mesmo repositório", p.Name), p))
+						// worker e agendador viram processos do projeto (HEU-04.7); o resto não roda.
+						if processKindOf(p.Name) == "" {
+							out.Warnings = append(out.Warnings, finding("", fmt.Sprintf("HEU-04.4: o processo %q do Procfile não é um worker nem um agendador e não roda: o Cobogó roda o web e, do mesmo código, um worker e um agendador. Para outro serviço, crie outro projeto com o mesmo repositório", p.Name), p))
+						}
 					}
 				}
 			}
@@ -754,6 +759,90 @@ func ruleHEU046() Rule {
 			return out
 		},
 	}
+}
+
+// processKindOf diz que processo do Procfile um nome é: worker, agendador ou nenhum dos dois.
+func processKindOf(name string) string {
+	n := strings.ToLower(name)
+	switch {
+	case n == "beat" || n == "clock" || n == "scheduler" || n == "celerybeat" || n == "celery-beat" || strings.HasSuffix(n, "beat"):
+		return domain.ProcessScheduler
+	case n == "worker" || n == "workers" || n == "celery" || strings.HasSuffix(n, "worker"):
+		return domain.ProcessWorker
+	}
+	return ""
+}
+
+func validateProcess(v string) error {
+	if v == domain.ProcessNone {
+		return nil
+	}
+	return validateCommand(v)
+}
+
+// HEU-04.7: os processos além do web (DEC-51): o worker e o agendador, do Procfile (declaração) ou do
+// Celery (inferência, com o arquivo e a linha do app). São propostas com evidência: o override com o
+// comando troca, e "none" desliga. O Celery sem sinal de broker ganha um aviso.
+func ruleHEU047() Rule {
+	return Rule{
+		Meta: RuleMeta{ID: "HEU-04.7", Version: "0.1", State: RuleProposed, Requires: []string{"HEU-04.1"}, Fields: []string{domain.FieldProcessWorker, domain.FieldProcessScheduler}},
+		Apply: func(in RuleInput) RuleOutput {
+			var out RuleOutput
+			propose := func(field, value string, origin domain.Origin, ev ...domain.Evidence) {
+				out.Proposals = append(out.Proposals, domain.Proposal{Field: field, Value: value, Origin: origin, EvidenceIDs: evidenceIDs(ev)})
+			}
+			haveWorker, haveScheduler := false, false
+			for _, p := range in.Of(kindPyProcfile) {
+				switch processKindOf(p.Name) {
+				case domain.ProcessWorker:
+					if !haveWorker {
+						propose(domain.FieldProcessWorker, p.Value, domain.OriginDeclaration, p)
+						haveWorker = true
+					}
+				case domain.ProcessScheduler:
+					if !haveScheduler {
+						propose(domain.FieldProcessScheduler, p.Value, domain.OriginDeclaration, p)
+						haveScheduler = true
+					}
+				}
+			}
+			var celeryWorker, celeryBeat []domain.Evidence
+			for _, e := range in.Of(kindPyCelery) {
+				switch e.Name {
+				case "worker":
+					celeryWorker = append(celeryWorker, e)
+				case "beat", "beat_setting":
+					celeryBeat = append(celeryBeat, e)
+				}
+			}
+			if !hasDep(in, "celery") || len(celeryWorker) == 0 {
+				return out
+			}
+			app := celeryWorker[0]
+			if !haveWorker {
+				propose(domain.FieldProcessWorker, "celery -A "+shellQuoteArg(app.Value)+" worker -l info --concurrency=2", domain.OriginInference, app)
+			}
+			if !haveScheduler && len(celeryBeat) > 0 {
+				cmd := "celery -A " + shellQuoteArg(app.Value) + " beat -l info"
+				if hasDep(in, "django-celery-beat") {
+					cmd += " --scheduler django_celery_beat.schedulers:DatabaseScheduler"
+				}
+				propose(domain.FieldProcessScheduler, cmd, domain.OriginInference, celeryBeat[0])
+			}
+			if len(in.Of(kindPyRedis)) == 0 && !hasDep(in, "redis", "django-redis") {
+				out.Warnings = append(out.Warnings, finding("", "HEU-07: este projeto usa Celery, mas não achei um sinal de broker (Redis); o worker sobe e não recebe tarefas. Se o broker é outro (RabbitMQ, SQS), o Cobogó ainda não o provê: informe um externo numa variável de ambiente lida pelo código", app))
+			}
+			return out
+		},
+	}
+}
+
+// shellQuoteArg põe aspas simples num alvo com caracteres de shell (um alvo `pacote.modulo:app` não precisa).
+func shellQuoteArg(s string) string {
+	if regexp.MustCompile(`^[A-Za-z0-9_.:/-]+$`).MatchString(s) {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func orDash(s string) string {
