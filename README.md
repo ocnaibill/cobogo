@@ -1,21 +1,31 @@
 # Project Cobogó
 
-> **Status:** M1 em Go (fatia vertical inicial) | Licença: AGPLv3
+> **Status:** MVP em operação (painel, API, worker, coletor e backup em contêineres) | Licença: AGPLv3
 
-Uma plataforma open-source de **_Platform as a Service_ (PaaS)** guiada por heurísticas: analisa um repositório, produz um plano de deploy explicável, gera o Dockerfile e conduz a aplicação até um contêiner verificado.
+Uma plataforma open-source de **_Platform as a Service_ (PaaS)** guiada por heurísticas: você informa o link de um repositório e o Cobogó analisa o código, produz um plano de deploy explicável, gera o Dockerfile, prepara os serviços de que a aplicação precisa e conduz tudo até contêineres verificados e publicados.
 
 **Foco:** Developer Experience (DX), explicabilidade das decisões e auto-hospedagem.
 
 ## Documentação do projeto
 
-O protótipo original em Node.js/TypeScript foi preservado na tag [`prototype-node`](https://github.com/ocnaibill/cobogo/tree/prototype-node) e removido do `main` após a primeira fatia vertical em Go entrar em funcionamento (DEC-22). O código atual implementa o recorte M1 do documento mestre e o que veio depois: análise explicável, geração de Dockerfile, build e contêiner reais para os perfis Node.js/npm (P-NODE), Bun (P-BUN), site estático (P-STATIC) e Python (P-PY: pip ou uv, Flask, FastAPI, Django e outros alvos WSGI/ASGI; DEC-48).
+O protótipo original em Node.js/TypeScript foi preservado na tag [`prototype-node`](https://github.com/ocnaibill/cobogo/tree/prototype-node) e removido do `main` após a primeira fatia vertical em Go entrar em funcionamento (DEC-22). O código atual implementa, em Go, o recorte M1 do documento mestre e o que veio depois:
+
+- **Análise explicável e geração de Dockerfile**, com build e contêiner reais para os perfis Node.js/npm (P-NODE), Bun (P-BUN), site estático (P-STATIC) e Python (P-PY: pip ou uv; Flask, FastAPI, Django e outros alvos WSGI/ASGI; DEC-48).
+- **O projeto é o repositório (DEC-49 a DEC-52):** um link vira uma pilha de aplicações (por exemplo, frontend e backend no mesmo repositório), com os serviços gerenciados que o código pede (PostgreSQL, MySQL e Redis; DEC-42, DEC-44 e DEC-50), processos adicionais como worker e agendador (DEC-51), as variáveis que a plataforma já conhece preenchidas e ligadas entre as aplicações, a fase de release com migrações e comandos pontuais com receitas, como criar o administrador do Django.
+- **Operação:** painel React, parar/iniciar/reiniciar, volumes persistentes, variáveis e segredos guiados, logs de execução, métricas por projeto, comandos pontuais e backup e restauração, da plataforma e dos dados de cada projeto.
+
+Documentos de referência:
 
 - [Documento mestre: escopo, requisitos, arquitetura, telas e roadmap](docs/PROJETO-MESTRE.md)
 - [Motor de heurísticas e apoio por modelos de decisão](docs/MOTOR-DE-HEURISTICAS.md)
+- [Requisitos funcionais](docs/REQUISITOS-FUNCIONAIS.md), [não funcionais](docs/REQUISITOS-NAO-FUNCIONAIS.md) e [regras de negócio](docs/REGRAS-DE-NEGOCIO.md)
+- [Decisões de arquitetura (DEC-19 a DEC-52)](docs/decisoes/)
+- [Contrato da API (OpenAPI)](docs/api/openapi.yaml)
+- [Instalação na VM](deploy/README.md)
 - [Referências comentadas e trabalhos relacionados](docs/REFERENCIAS-COMENTADAS.md)
 - [Pesquisa sobre heurísticas, evidências e decisão assistida](docs/pesquisa/HEURISTICAS-REFERENCIAS.md)
 
-Os documentos incluem diagramas Mermaid e links para suas prévias SVG.
+Os documentos incluem diagramas Mermaid e links para suas prévias SVG. O motor de heurísticas que está no código pode estar à frente do texto do documento do motor; na dúvida, vale o código.
 
 ## 💡 A identidade
 
@@ -23,21 +33,23 @@ O nome **Cobogó** faz referência ao elemento arquitetônico modernista, ícone
 
 ## 🛠️ Tech stack
 
-- **Backend:** Go, API e worker como processos separados (DEC-01, DEC-02)
-- **Banco de dados:** PostgreSQL, com fila de jobs via `SKIP LOCKED` (DEC-03, §12.3)
-- **Build e execução:** Docker Engine SDK oficial (`github.com/docker/docker`)
-- **Frontend:** React (ainda não iniciado; chega em M2)
+- **Backend:** Go, com a API, o worker, o coletor de métricas e o serviço de backup como processos separados (`cmd/api`, `cmd/worker`, `cmd/collector`, `cmd/backup`; DEC-01, DEC-02, DEC-43, DEC-47)
+- **Banco de dados:** PostgreSQL, com fila de jobs via `SKIP LOCKED` (DEC-03, §12.3) e roles separados por componente (DEC-33)
+- **Build e execução:** Docker Engine SDK oficial (`github.com/docker/docker`), sempre por um proxy filtrado do socket
+- **Frontend:** painel em React 19 com Vite e TanStack Query, embutido no binário da API (DEC-34)
+- **Entrada:** Traefik, que lê as rotas de um listener interno do Cobogó (DEC-31), e Cloudflare Tunnel na VM (DEC-32)
 
-Ver [§12 do mestre](docs/PROJETO-MESTRE.md#12-arquitetura-proposta) para a arquitetura completa e [§17.2](docs/PROJETO-MESTRE.md#172-execução-dod-e-isolamento-entre-projetos) para a topologia de execução prevista no homelab (DEC-19). Em M1, o worker fala direto com o daemon Docker local; os três proxies filtrados entram ao implantar na VM do Proxmox.
+Ver [§12 do mestre](docs/PROJETO-MESTRE.md#12-arquitetura-proposta) para a arquitetura completa e [§17.2](docs/PROJETO-MESTRE.md#172-execução-dod-e-isolamento-entre-projetos) para a topologia de execução no homelab (DEC-19). Na VM, só o proxy do Docker monta o socket (DEC-32); no desenvolvimento fora de contêiner, o worker fala direto com o daemon Docker local.
 
 ## **🚀 Como rodar localmente (desenvolvimento)**
 
 ### **1. Pré-requisitos**
 
-- **Go** 1.25 ou superior
+- **Go** 1.26 ou superior
 - **Docker** (rodando e acessível localmente)
 - **PostgreSQL** (pode ser o do `infra/docker-compose.dev.yml`)
 - **Git**
+- **Node.js** 22 ou superior, só para construir ou desenvolver o painel (`web/`)
 
 ### **2. Banco de dados**
 
@@ -76,11 +88,11 @@ DATABASE_URL="postgres://cobogo:devpassword@localhost:5432/cobogo_core?sslmode=d
 DATABASE_URL="postgres://cobogo:devpassword@localhost:5432/cobogo_core?sslmode=disable" go run ./cmd/worker
 ```
 
-A API sobe em `http://localhost:8080` por padrão (`API_ADDR` para trocar).
+A API sobe em `http://localhost:8080` por padrão (`API_ADDR` para trocar) e serve o painel embutido. Para o painel aparecer, construa-o antes de compilar a API (`cd web && npm ci && npm run build`); para desenvolvê-lo com recarga ao vivo, `npm run dev` dentro de `web/`.
 
 ## **🧪 Como testar (fluxo de deploy)**
 
-Ainda sem frontend (chega em M2); use `curl` ou um cliente HTTP. Toda a API fica em `/api/v1` e exige sessão, menos a configuração inicial e o login. Requisições de alteração (`POST`, `PUT`, `DELETE`) precisam do cabeçalho `Origin` igual a `COBOGO_PUBLIC_URL` (o navegador envia sozinho; no `curl`, passe `-H "Origin: $COBOGO_PUBLIC_URL"`) e corpo `application/json`.
+O painel faz tudo o que está abaixo pela interface; esta seção mostra a mesma API com `curl` (ou outro cliente HTTP), que é o contrato descrito em [`docs/api/openapi.yaml`](docs/api/openapi.yaml). Toda a API fica em `/api/v1` e exige sessão, menos a configuração inicial e o login. Requisições de alteração (`POST`, `PUT`, `DELETE`) precisam do cabeçalho `Origin` igual a `COBOGO_PUBLIC_URL` (o navegador envia sozinho; no `curl`, passe `-H "Origin: $COBOGO_PUBLIC_URL"`) e corpo `application/json`.
 
 ```bash
 API=http://localhost:8080
@@ -109,6 +121,8 @@ curl "${H[@]}" -X POST $API/api/v1/projects -d '{
 
 O repositório precisa ser público e estar num host permitido. `root_directory` é o diretório do projeto dentro do repositório (`apps/web`, por exemplo); `..` e caminhos que escapam do repositório são recusados.
 
+**O projeto é o repositório (DEC-52).** Pelo painel, basta colar o link: `POST $API/api/v1/stacks` com `{"repository_url": "..."}` cria o projeto, `POST .../stacks/<id>/scan` lê o repositório de novo, e o Cobogó propõe as aplicações que encontra (frontend e backend, por exemplo) com um nome para cada uma. `POST .../stacks/<id>/deployments` publica todas, o backend antes do frontend. A plataforma preenche e liga sozinha o que ela já sabe (endereços entre as aplicações, `ALLOWED_HOSTS` e `CSRF_TRUSTED_ORIGINS` do Django, chaves secretas de uma lista fechada), cria o PostgreSQL, o MySQL ou o Redis que o código pede quando a evidência é forte e a variável de conexão não tem valor, e roda a fase de release (`python manage.py migrate` em Django com migrações, ou o `release:` do `Procfile`). Cada decisão aparece na análise com o arquivo e a linha que a motivou. Os endpoints por aplicação abaixo continuam valendo para cada uma delas.
+
 ### **2. Disparar o deploy**
 
 ```bash
@@ -127,7 +141,7 @@ curl "${H[@]}" -X POST $API/api/v1/deployments/<id>/answers -d '{
 }'
 ```
 
-Os campos aceitos são `port`, `start_command` e `build_command` (RN-03). A resposta reenfileira o **mesmo deploy** no **mesmo commit** já analisado (RF-08, RN-04), mesmo que a branch tenha avançado. Valores inválidos são recusados na hora (`400`); um deploy que não está em `NEEDS_INPUT` responde `409`.
+Os campos aceitos dependem do perfil (RN-03): `port`, `start_command`, `build_command`, `execution_mode`, `package_manager`, `node_version`, `bun_version`, `output_dir`, `spa_fallback` e `health_path` no ecossistema JavaScript; `python_version`, `app_target`, `python_framework`, `django_settings`, `release_command` e os processos adicionais (`process_worker`, `process_scheduler`) em Python. A resposta da análise lista, para cada pendência, as opções e a evidência. A resposta reenfileira o **mesmo deploy** no **mesmo commit** já analisado (RF-08, RN-04), mesmo que a branch tenha avançado. Valores inválidos são recusados na hora (`400`); um deploy que não está em `NEEDS_INPUT` responde `409`.
 
 ### **4. Variáveis de ambiente do projeto**
 
@@ -162,13 +176,13 @@ Para trocar a chave de cifra (`COBOGO_SECRET_KEYS` e `COBOGO_SECRET_KEY_CURRENT`
 
 **Dados persistentes (DEC-41).** Para guardar dados entre deploys (o SQLite e as folhas do caderno, por exemplo), **você** declara os caminhos dentro do contêiner: `PUT $API/api/v1/projects/<id>/persistent-paths` com `{"paths": ["/app/data", "/app/content"]}`. Vale a partir do próximo deploy: o Cobogó cria um volume por caminho (na primeira vez ele recebe o conteúdo da imagem; depois o volume prevalece) e, em projeto com volume, **a release anterior para antes de a nova subir** (alguns segundos fora do ar); se a nova falhar, a anterior volta. `GET .../persistent-paths` lista os volumes com o tamanho aproximado. Excluir o projeto **mantém os volumes**, que passam a ser "volumes sem projeto" (`GET /api/v1/volumes/orphans`), a menos que você envie `"delete_data": true`; `DELETE /api/v1/volumes/<nome>` com `{"confirm_name": "<nome>"}` apaga um volume sem projeto (irreversível). Não vale para site estático. A análise **sugere** caminhos (`GET .../persistent-paths` traz `suggestions`, e a análise traz `persistent_suggestions`), a partir do que o código abre ou escreve; nada é aplicado sem você declarar.
 
-**PostgreSQL auxiliar (DEC-42).** Quando o código usa PostgreSQL (evidência forte, como importar `pg` num arquivo de runtime) e a variável de conexão não tem valor, o deploy **para antes do build** e pergunta onde está o banco; a análise traz `service_needs`. `POST $API/api/v1/projects/<id>/database` com `{"choice": "managed"}` (criar um PostgreSQL do Cobogó), `"external"` (você informa a URL como variável) ou `"none"` responde à pergunta e reenfileira o deploy; **nada é criado antes da sua escolha**. No modo gerenciado, o próximo deploy cria um PostgreSQL 16 só deste projeto (256 MiB, só na rede do projeto, sem porta pública, dados em volume), espera ele ficar saudável e entrega a conexão na variável, que passa a ser `linked` (não se edita; a senha nunca é devolvida). `GET .../database` mostra o estado e o tamanho, e `DELETE .../database` com `{"confirm_slug": "<nome>"}` apaga o banco **e os dados**. O banco nasce vazio e o Cobogó não roda migrações. **Conexão em partes e TLS (DEC-44).** A análise detecta como o código lê a conexão: uma URL (`DATABASE_URL`) ou uma família de variáveis (`POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, também `PG`, `DB_`, `DATABASE_`), e a pergunta mostra cada variável com o nome editável; `POST .../database` aceita `{"choice": "managed", "variables": {"host": "MEU_HOST", "password": "MINHA_SENHA"}}` (papéis `url`, `host`, `port`, `user`, `password`, `database`, `ca`). O banco gerenciado novo aceita **TLS** com certificado próprio; a aplicação recebe a CA em `/etc/cobogo/db-ca.pem`, apontada por `NODE_EXTRA_CA_CERTS` e `PGSSLROOTCERT` (e na variável de CA que o código ler, em tempo de execução), então `ssl: true` valida sem mudar o código. Bancos criados antes não têm TLS e não são migrados. Limites: só PostgreSQL, e clientes que verificam TLS sem usar nenhum desses mecanismos não conectam (veja a DEC-44).
+**PostgreSQL auxiliar (DEC-42).** Quando o código usa PostgreSQL (evidência forte, como importar `pg` num arquivo de runtime) e a variável de conexão não tem valor, o deploy **para antes do build** e pergunta onde está o banco; a análise traz `service_needs`. `POST $API/api/v1/projects/<id>/database` com `{"choice": "managed"}` (criar um PostgreSQL do Cobogó), `"external"` (você informa a URL como variável) ou `"none"` responde à pergunta e reenfileira o deploy; **nada é criado antes da sua escolha**. No modo gerenciado, o próximo deploy cria um PostgreSQL 16 só deste projeto (256 MiB, só na rede do projeto, sem porta pública, dados em volume), espera ele ficar saudável e entrega a conexão na variável, que passa a ser `linked` (não se edita; a senha nunca é devolvida). `GET .../database` mostra o estado e o tamanho, e `DELETE .../database` com `{"confirm_slug": "<nome>"}` apaga o banco **e os dados**. O banco nasce vazio. Em projeto Python/Django com migrações no repositório, a fase de release roda `migrate` a cada deploy (DEC-52); nos demais, o Cobogó não roda migrações e a aplicação precisa criar as tabelas ao subir (ou você usa a aba Comandos). **Conexão em partes e TLS (DEC-44).** A análise detecta como o código lê a conexão: uma URL (`DATABASE_URL`) ou uma família de variáveis (`POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, também `PG`, `DB_`, `DATABASE_`), e a pergunta mostra cada variável com o nome editável; `POST .../database` aceita `{"choice": "managed", "variables": {"host": "MEU_HOST", "password": "MINHA_SENHA"}}` (papéis `url`, `host`, `port`, `user`, `password`, `database`, `ca`). O banco gerenciado novo aceita **TLS** com certificado próprio; a aplicação recebe a CA em `/etc/cobogo/db-ca.pem`, apontada por `NODE_EXTRA_CA_CERTS` e `PGSSLROOTCERT` (e na variável de CA que o código ler, em tempo de execução), então `ssl: true` valida sem mudar o código. Bancos criados antes não têm TLS e não são migrados. Limites: clientes que verificam TLS sem usar nenhum desses mecanismos não conectam (veja a DEC-44). **MySQL e Redis (DEC-50 e DEC-51).** O mesmo fluxo vale para outras engines: o código que lê uma conexão MySQL ou Redis gera a mesma pergunta de destino (e, em um projeto novo cuja evidência é forte, o serviço é criado sem perguntar, por DEC-52); o serviço gerenciado tem rede e volume próprios, sem porta pública, e entra nos backups. Um Django com Celery ganha processos adicionais (`worker` e agendador) a partir do mesmo código. MongoDB, RabbitMQ e outras engines não são gerenciados.
 
 **Comandos pontuais (DEC-45).** Na aba "Comandos" do projeto (ou por `POST $API/api/v1/projects/<id>/commands` com `{"script": "reindex"}` ou `{"command": "ls /app/data"}`) você roda um comando no ambiente do projeto: um **contêiner descartável** da imagem da release ativa, com as variáveis do projeto, só na rede dele, sem porta pública, sem capacidades, com limite de memória (512 MiB), CPU, processos e tempo (5 min por padrão, até 10), removido ao terminar. Não é `exec` (o proxy do Docker segue com `EXEC=0`). Um por vez por projeto; a saída (256 KiB, começo e fim) e o texto saem com os valores das variáveis trocados por `[REDIGIDO]`. Como um comando enxerga as variáveis, **a senha é pedida de novo** (`POST /api/v1/auth/reauth`) e vale por 10 minutos, só naquela sessão. Os botões são os scripts do `package.json` que não são de início, build, desenvolvimento nem teste; `pause_app` para a aplicação durante o comando. Não há terminal interativo, e não vale para site estático. Limites e o que não se resolve (fuga do contêiner, saída de rede): DEC-45 e as issues #41 e #42.
 
-**Logs de execução (DEC-46).** Na aba "Logs" do projeto (ou por `GET $API/api/v1/projects/<id>/logs`) você vê o que a **aplicação e o PostgreSQL gerenciado** imprimem depois do deploy (o log de build e de deploy continua no histórico de deploys). O worker segue o stdout e o stderr dos contêineres, **troca os valores das variáveis do projeto por `[REDIGIDO]`** (só os que o Cobogó conhece: um segredo montado ou codificado pela aplicação passa) e guarda no banco as **últimas 24 horas e até 20 000 linhas por projeto**; um limite de 200 linhas por segundo por contêiner descarta o excesso e avisa quantas. A consulta é por cursor (`after` e `before` com o `id` da linha, `origin=app|postgres`) e o painel acompanha por polling de 2 s. Fica de fora: exportar (issue #28), SSE e os logs do Traefik e da plataforma.
+**Logs de execução (DEC-46).** Na aba "Logs" do projeto (ou por `GET $API/api/v1/projects/<id>/logs`) você vê o que a **aplicação e o PostgreSQL gerenciado** imprimem depois do deploy (o log de build e de deploy continua no histórico de deploys). O worker segue o stdout e o stderr dos contêineres, **troca os valores das variáveis do projeto por `[REDIGIDO]`** (só os que o Cobogó conhece: um segredo montado ou codificado pela aplicação passa) e guarda no banco as **últimas 24 horas e até 20 000 linhas por projeto**; um limite de 200 linhas por segundo por contêiner descarta o excesso e avisa quantas. A consulta é por cursor (`after` e `before` com o `id` da linha, `origin=app|postgres`) e o painel acompanha por polling de 2 s. Fica de fora: exportar, SSE e os logs do Traefik e da plataforma.
 
-**Backup e restauração da plataforma (DEC-47, parte A).** O serviço `backup` faz todo dia um dump consistente do banco interno (com os segredos **cifrados**) num volume, guarda **7 dias e 4 semanas** (configurável) e confere que cada arquivo abre. A página **Backups** do painel mostra o estado, avisa quando o último backup bom passa de 36 horas e **baixa os arquivos** (pede a senha de novo): a cópia que vale é a que você leva para fora da VM, porque as cópias locais não protegem da perda do disco. A `COBOGO_SECRET_KEY` **não** entra no backup e se guarda à parte; é a única coisa do `.env` que não se refaz. `deploy/update.sh` atualiza com um backup antes, e `deploy/restore.sh` restaura numa VM limpa (gerando um `.env` novo) e prova que serviu com `cobogo-api rotate-secrets --verify`. **Backup dos dados de cada projeto (DEC-47, parte B).** Na aba **Dados** de um projeto, "Fazer backup agora" (ou `POST $API/api/v1/projects/<id>/backups` com `{"pause_app": false}`) copia os **volumes declarados** (um `tar.gz` de cada, lido somente leitura por um contêiner descartável) e o **PostgreSQL gerenciado** (`pg_dump`, nunca o arquivo em uso) para o volume de backups, com `manifest.json` e somas SHA-256. A opção "pausar a aplicação" fecha a janela em que um SQLite em uso poderia ser copiado no meio de uma escrita; vem desligada. O backup falha inteiro se qualquer parte falhar. Guarda os últimos 3 por projeto (configurável). **Baixar** entrega um `.tar` (com a senha de novo); cada dono baixa os backups dos seus projetos. Os dados não são cifrados e as variáveis de ambiente não entram (estão no backup da plataforma). A exclusão do projeto ou do banco pede **um backup antes** (ou "apagar sem backup"), e excluir o projeto apaga os backups dele: baixe antes. **Restaurar (parte C).** Em cada backup bom, "Restaurar…" substitui o conteúdo atual dos volumes e do banco pelo do backup (`POST .../backups/<id>/restore` com `{"confirm_slug": "<nome>"}`; pede a senha de novo e o nome do projeto). O Cobogó faz antes um **backup de segurança** do estado atual (se ele falhar, nada é tocado), confere o tamanho e a soma de cada arquivo (corrompido: recusa sem alterar nada), pausa a aplicação, troca cada volume sem passar por estado pela metade e o banco numa transação só, e inicia a aplicação de novo se estava no ar. Caminhos que o projeto não declara mais são ignorados e ditos; volumes nunca são criados nem apagados à revelia.
+**Backup e restauração da plataforma (DEC-47, parte A).** O serviço `backup` faz todo dia um dump consistente do banco interno (com os segredos **cifrados**) num volume, guarda **7 dias e 4 semanas** (configurável) e confere que cada arquivo abre. A página **Backups** do painel mostra o estado, avisa quando o último backup bom passa de 36 horas e **baixa os arquivos** (pede a senha de novo): a cópia que vale é a que você leva para fora da VM, porque as cópias locais não protegem da perda do disco. A `COBOGO_SECRET_KEY` **não** entra no backup e se guarda à parte; é a única coisa do `.env` que não se refaz. `deploy/update.sh` atualiza com um backup antes, e `deploy/restore.sh` restaura numa VM limpa (gerando um `.env` novo) e prova que serviu com `cobogo-api rotate-secrets --verify`. **Backup dos dados de cada projeto (DEC-47, parte B).** Na aba **Dados** de um projeto, "Fazer backup agora" (ou `POST $API/api/v1/projects/<id>/backups` com `{"pause_app": false}`) copia os **volumes declarados** (um `tar.gz` de cada, lido somente leitura por um contêiner descartável) e o **PostgreSQL gerenciado** (`pg_dump`, nunca o arquivo em uso) para o volume de backups, com `manifest.json` e somas SHA-256. A opção "pausar a aplicação" fecha a janela em que um SQLite em uso poderia ser copiado no meio de uma escrita; vem desligada. O backup falha inteiro se qualquer parte falhar. Guarda os últimos 3 por projeto (configurável). **Baixar** entrega um `.tar` (com a senha de novo); cada dono baixa os backups dos seus projetos (subir um backup pelo painel ainda não existe: atrás de um túnel da Cloudflare o corpo é limitado a 100 MB; a alternativa é copiar o arquivo para o volume de backups, issue #43). Os dados não são cifrados e as variáveis de ambiente não entram (estão no backup da plataforma). A exclusão do projeto ou do banco pede **um backup antes** (ou "apagar sem backup"), e excluir o projeto apaga os backups dele: baixe antes. **Restaurar (parte C).** Em cada backup bom, "Restaurar…" substitui o conteúdo atual dos volumes e do banco pelo do backup (`POST .../backups/<id>/restore` com `{"confirm_slug": "<nome>"}`; pede a senha de novo e o nome do projeto). O Cobogó faz antes um **backup de segurança** do estado atual (se ele falhar, nada é tocado), confere o tamanho e a soma de cada arquivo (corrompido: recusa sem alterar nada), pausa a aplicação, troca cada volume sem passar por estado pela metade e o banco numa transação só, e inicia a aplicação de novo se estava no ar. Caminhos que o projeto não declara mais são ignorados e ditos; volumes nunca são criados nem apagados à revelia.
 
 **Recursos e saúde dos contêineres (DEC-43).** Um coletor próprio (`cmd/collector`, serviço `collector` do compose) lê o Docker por um proxy **só de leitura** e grava, a cada 5 s, o estado, os reinícios, a CPU (em núcleos) e a memória (sem o cache) de cada contêiner do Cobogó, com o seu role do banco, que só escreve as amostras. `GET $API/api/v1/projects/<id>/metrics?window=15m|1h|6h|24h|7d` traz os contêineres, a série da janela (lacunas e valores sem leitura são `null`, nunca zero), os marcadores de deploy e de reinício e a **sonda de rota** (uma requisição `GET /` pelo Traefik, a cada 15 s); `GET /api/v1/metrics/overview` agrega o consumo. Uma leitura com mais de três intervalos é **antiga** e a saúde vira desconhecida. Docker stats mede o contêiner, não a aplicação: não há latência de usuários nem taxa de erro. No ambiente local sem contêineres, rode `go run ./cmd/collector` com o `DATABASE_URL` e o Docker local.
 
@@ -200,7 +214,7 @@ Um deploy que ainda não executou (`QUEUED` ou `NEEDS_INPUT`) pode ser cancelado
 curl "${H[@]}" -X POST $API/api/v1/deployments/<id>/cancel
 ```
 
-Ao suceder, a `release` traz a porta publicada no host para acesso direto ao contêiner (a URL pública vem com o roteamento, ainda não implementado).
+Ao suceder, a `release` traz a `url` pública da aplicação (roteamento por hostname, seção 7) e a porta publicada no host para acesso direto ao contêiner, em desenvolvimento.
 
 **Verificação (readiness):** a aplicação passa quando responde três vezes seguidas, em até 120 s, com qualquer status HTTP abaixo de 500 (redirecionamentos não são seguidos). O evento `verifying/probe` registra caminho e status e avisa se não foi 2xx. Para sondar outra rota, informe `health_path` (por exemplo `{"overrides": {"health_path": "/healthz"}}`).
 
@@ -237,7 +251,7 @@ curl "${H[@]}" -X PUT $API/api/v1/settings/apps_domain -d '{"value": "localhost:
 curl "${H[@]}" -X PUT $API/api/v1/settings/apps_scheme -d '{"value": "http"}'
 ```
 
-A partir do próximo deploy, a aplicação do projeto `meu-app` responde em `http://meu-app.localhost:8088/` e a `release` traz essa `url`. A rota muda até 2 s depois de o deploy concluir. Os contêineres de releases anteriores continuam rodando, sem receber tráfego, até a atualização com release preservada (parte 5c).
+A partir do próximo deploy, a aplicação do projeto `meu-app` responde em `http://meu-app.localhost:8088/` e a `release` traz essa `url`. A rota muda até 2 s depois de o deploy concluir. A release anterior continua até a nova passar na sonda de prontidão; depois que a rota troca, uma faxina aposenta as releases antigas e preserva a ativa, a anterior protegida e os volumes (DEC-38).
 
 ### **8. Pilha completa em contêineres (D0)**
 
@@ -250,7 +264,7 @@ cp deploy/.env.example deploy/.env.local     # e preencha; o Git ignora este arq
 docker compose --env-file deploy/.env.local -f deploy/compose.yml -f deploy/compose.local.yml up -d --build
 ```
 
-O painel responde em `http://localhost:8088` (pelo Traefik) e a API também em `127.0.0.1:18080`. Na VM, use só `deploy/compose.yml`, que não publica porta nenhuma, e o perfil `tunnel` para o `cloudflared`. O PostgreSQL da pilha tem roles separados (DEC-33): o serviço `migrate` roda uma vez, com o role dono do esquema, aplica as migrations e os privilégios, e só então a API (`cobogo_api`) e o worker (`cobogo_worker`) sobem. Eles não migram (`COBOGO_AUTO_MIGRATE=0`): conferem que o esquema é o esperado e param com uma mensagem clara se não for. No desenvolvimento fora de contêiner nada muda: um usuário e migração automática (`COBOGO_AUTO_MIGRATE` vale 1). Para aplicar migrations e privilégios à mão: `DATABASE_URL=<role dono> go run ./cmd/api migrate`. O roteiro de instalação na VM vem na próxima parte.
+O painel responde em `http://localhost:8088` (pelo Traefik) e a API também em `127.0.0.1:18080`. Na VM, use só `deploy/compose.yml`, que não publica porta nenhuma, e o perfil `tunnel` para o `cloudflared`. O PostgreSQL da pilha tem roles separados (DEC-33): o serviço `migrate` roda uma vez, com o role dono do esquema, aplica as migrations e os privilégios, e só então a API (`cobogo_api`) e o worker (`cobogo_worker`) sobem. Eles não migram (`COBOGO_AUTO_MIGRATE=0`): conferem que o esquema é o esperado e param com uma mensagem clara se não for. No desenvolvimento fora de contêiner nada muda: um usuário e migração automática (`COBOGO_AUTO_MIGRATE` vale 1). Para aplicar migrations e privilégios à mão: `DATABASE_URL=<role dono> go run ./cmd/api migrate`. O roteiro de instalação na VM, com o túnel da Cloudflare, o backup diário e a atualização, está em [`deploy/README.md`](deploy/README.md).
 
 ## Testes automatizados
 
