@@ -71,6 +71,16 @@ describe("failureDetail", () => {
     expect(d).toMatchObject({ stage: "verificação", exitCode: 1, logTail: "Error: X" });
     expect(d?.diagnosis?.variables).toEqual(["X"]);
   });
+  it("traz a correção sugerida de uma falha de build de época (DEC-54 C)", () => {
+    const d = failureDetail([
+      ev("building", "failed", {
+        error: "build",
+        diagnosis: { confidence: "confirmed", message: "Causa: OpenSSL", suggestion: { overrides: { build_legacy_openssl: "true" }, label: "o contorno do OpenSSL no build" } },
+      }),
+    ]);
+    expect(d?.stage).toBe("build");
+    expect(d?.diagnosis?.suggestion?.overrides).toEqual({ build_legacy_openssl: "true" });
+  });
   it("reconhece a morte por memória", () => {
     expect(failureDetail([ev("verifying", "failed", { error: "x", oom_killed: true })])?.oomKilled).toBe(true);
   });

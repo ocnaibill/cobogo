@@ -35,6 +35,10 @@ const (
 	// kindListenPort: o código escuta numa porta escrita nele (`app.listen(8000)`,
 	// `const PORT = 8000; app.listen(PORT)`), sem ler PORT (DEC-53 B). Value é o número.
 	kindListenPort = "listen.port"
+	// kindLegacyToolchain: uma ferramenta de build de uma geração que usa o webpack 4
+	// (react-scripts ou @vue/cli-service antes da 5). Name é o pacote; Value, a versão
+	// declarada. No Node 17 ou mais novo ela falha com ERR_OSSL_EVP_UNSUPPORTED (DEC-54 B).
+	kindLegacyToolchain = "build.legacy_toolchain"
 	// kindMissingEnvFile: um script lê variáveis de um arquivo que não está no
 	// repositório (`node --env-file=config.env`; DEC-53 D). Name é o arquivo.
 	kindMissingEnvFile = "script.env_file_missing"

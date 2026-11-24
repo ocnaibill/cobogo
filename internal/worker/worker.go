@@ -271,6 +271,24 @@ type failureDetail struct {
 	Diagnosis diagnosis.Diagnosis
 }
 
+// buildTailLines é quantas linhas do final do log do build o worker guarda para diagnosticar.
+const buildTailLines = 120
+
+// buildFailure acompanha a falha do build do final do log (sem valores secretos) e do
+// diagnóstico de época, quando o log o permite (DEC-54 C). Sem assinatura conhecida, a falha
+// segue como era.
+func buildFailure(err error, lines []string, plan domain.Plan) error {
+	if len(lines) == 0 {
+		return err
+	}
+	tail := redact.Tail(redact.Clean(strings.Join(lines, "\n")), logTailBytes)
+	d := diagnosis.Build(tail, plan.Profile, plan.PythonVersion)
+	if d.Confidence == diagnosis.Unknown {
+		return err
+	}
+	return &detailedError{err: err, detail: failureDetail{LogTail: tail, Diagnosis: d}}
+}
+
 // detailedError é uma falha de estágio acompanhada de failureDetail.
 type detailedError struct {
 	err    error
@@ -548,7 +566,12 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 		}
 	}
 	imageLabels := map[string]string{dockerrt.LabelManaged: "true", dockerrt.LabelProject: project.ID.String()}
+	var buildTail []string // o final do log do build, para reconhecer uma falha de época (DEC-54 C)
 	buildResult, err := rt.BuildWithArgs(buildCtx, rootDir, plan.Dockerfile, imageTag, plan.Runtime, buildArgs, imageLabels, func(line string) {
+		buildTail = append(buildTail, line)
+		if len(buildTail) > buildTailLines {
+			buildTail = buildTail[len(buildTail)-buildTailLines:]
+		}
 		_ = w.emit(ctx, o, dep.ID, "building", "log", map[string]any{"line": line})
 	})
 	cancelBuild()
@@ -556,7 +579,7 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 		if errors.Is(buildCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
 			err = fmt.Errorf("o build excedeu o limite de %s: %w", buildTimeout, err)
 		}
-		return at("BUILDING", err)
+		return at("BUILDING", buildFailure(err, buildTail, plan))
 	}
 	if err := w.emit(ctx, o, dep.ID, "building", "completed", map[string]any{"image_id": buildResult.ImageID, "image_tag": buildResult.ImageTag}); err != nil {
 		return err

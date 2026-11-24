@@ -264,9 +264,22 @@ func TestPythonAnalysis(t *testing.T) {
 		},
 		{
 			name: "python fora do catálogo", outcome: domain.AnalysisReady,
-			files:    map[string]string{"requirements.txt": "flask==3.1.0\n", ".python-version": "3.9.18\n", "app.py": flask["app.py"]},
+			files:    map[string]string{"requirements.txt": "flask==3.1.0\n", ".python-version": "3.7.9\n", "app.py": flask["app.py"]},
 			fields:   map[string]string{domain.FieldPythonVersion: "3.10"},
 			warnings: []string{"fora do catálogo", "saiu de suporte"},
+		},
+		{
+			// DEC-54 A: o 3.9 saiu de suporte; só vale por confirmação.
+			name: "python legado declarado pergunta", outcome: domain.AnalysisNeedsInput,
+			files:   map[string]string{"requirements.txt": "flask==3.1.0\n", ".python-version": "3.9.18\n", "app.py": flask["app.py"]},
+			pending: []string{domain.FieldPythonVersion},
+		},
+		{
+			name: "python legado confirmado", outcome: domain.AnalysisReady,
+			files:     map[string]string{"requirements.txt": "flask==3.1.0\n", ".python-version": "3.9.18\n", "app.py": flask["app.py"]},
+			overrides: map[string]string{domain.FieldPythonVersion: "3.9"},
+			fields:    map[string]string{domain.FieldPythonVersion: "3.9"},
+			warnings:  []string{"saiu de suporte"},
 		},
 		{
 			name: "runtime.txt do heroku", outcome: domain.AnalysisReady,
@@ -408,8 +421,11 @@ func TestPythonVersionSpec(t *testing.T) {
 }
 
 func TestCheckOverridesKnowsPythonFields(t *testing.T) {
-	if err := CheckOverrides(map[string]string{domain.FieldPythonVersion: "3.9"}); err == nil {
-		t.Error("3.9 deveria ser recusada")
+	if err := CheckOverrides(map[string]string{domain.FieldPythonVersion: "3.7"}); err == nil {
+		t.Error("3.7 deveria ser recusada")
+	}
+	if err := CheckOverrides(map[string]string{domain.FieldPythonVersion: "3.9"}); err != nil {
+		t.Errorf("3.9 é legada e vale por confirmação: %v", err)
 	}
 	if err := CheckOverrides(map[string]string{domain.FieldPythonVersion: "3.12", domain.FieldAppTarget: "app.main:app"}); err != nil {
 		t.Errorf("override válido recusado: %v", err)

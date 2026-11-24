@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"io/fs"
 	"path"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/ocnaibill/cobogo/internal/domain"
@@ -51,12 +53,14 @@ func extractManifest(fsys fs.FS, x *Extraction) error {
 	x.filesRead++
 
 	var pkg struct {
-		Scripts        map[string]string `json:"scripts"`
-		Workspaces     json.RawMessage   `json:"workspaces"`
-		Engines        map[string]any    `json:"engines"`
-		Module         any               `json:"module"`
-		Main           any               `json:"main"`
-		PackageManager any               `json:"packageManager"`
+		Scripts         map[string]string `json:"scripts"`
+		Dependencies    map[string]string `json:"dependencies"`
+		DevDependencies map[string]string `json:"devDependencies"`
+		Workspaces      json.RawMessage   `json:"workspaces"`
+		Engines         map[string]any    `json:"engines"`
+		Module          any               `json:"module"`
+		Main            any               `json:"main"`
+		PackageManager  any               `json:"packageManager"`
 	}
 	if err := json.Unmarshal(data, &pkg); err != nil {
 		invalid(err.Error())
@@ -85,6 +89,17 @@ func extractManifest(fsys fs.FS, x *Extraction) error {
 		}
 	}
 
+	// Ferramentas de build da geração do webpack 4 (DEC-54 B): lista fechada, porque o
+	// contorno do OpenSSL é o que a documentação delas e do webpack indica.
+	for _, tool := range legacyBuildTools {
+		spec, ok := pkg.Dependencies[tool]
+		if !ok {
+			spec, ok = pkg.DevDependencies[tool]
+		}
+		if ok && declaredMajor(spec) > 0 && declaredMajor(spec) < 5 {
+			x.emit(extractorManifest, domain.Evidence{Kind: kindLegacyToolchain, Name: tool, Value: spec, Source: "package.json", Scope: domain.ScopeBuild})
+		}
+	}
 	for _, runtime := range []string{"node", "bun"} {
 		if v, ok := pkg.Engines[runtime].(string); ok && strings.TrimSpace(v) != "" {
 			x.emit(extractorManifest, domain.Evidence{Kind: kindEngines, Name: runtime, Value: strings.TrimSpace(v), Source: "package.json#engines." + runtime, Scope: domain.ScopeBuild})
@@ -211,4 +226,20 @@ func emitMissingEnvFiles(fsys fs.FS, x *Extraction, command, source string, scop
 		}
 		x.emit(extractorManifest, domain.Evidence{Kind: kindMissingEnvFile, Name: clean, Value: example, Source: source, Scope: scope})
 	}
+}
+
+// legacyBuildTools são as ferramentas cuja versão 4 ou menor traz o webpack 4.
+var legacyBuildTools = []string{"react-scripts", "@vue/cli-service"}
+
+var firstNumber = regexp.MustCompile(`(\d+)(?:\.|$)`)
+
+// declaredMajor devolve a major do limite inferior de uma faixa do npm (`^4.0.3`, `~3.3.0`,
+// `4.0.3`), ou 0 se a faixa não diz (`latest`, `*`).
+func declaredMajor(spec string) int {
+	m := firstNumber.FindStringSubmatch(spec)
+	if m == nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(m[1])
+	return n
 }

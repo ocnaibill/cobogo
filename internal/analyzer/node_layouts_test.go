@@ -248,3 +248,57 @@ func TestLockfileOfAWorkspaceIsNamed(t *testing.T) {
 		t.Fatalf("without the repository there is no ancestor to name: %+v", res.Unsupported)
 	}
 }
+
+// DEC-54 B: ferramenta de build da geração do webpack 4 num Node com OpenSSL 3.
+func TestLegacyToolchainAsksForTheOpenSSLWorkaround(t *testing.T) {
+	cra := func(version string) map[string]string {
+		return nodeRepo(`{"scripts":{"build":"react-scripts build"},"dependencies":{"react":"18.0.0","react-scripts":"`+version+`"}}`, map[string]string{"public/index.html": "<html></html>"})
+	}
+	ask := func(res domain.AnalysisResult) *domain.Finding {
+		for i := range res.Pending {
+			if res.Pending[i].Field == domain.FieldBuildLegacyOpenSSL {
+				return &res.Pending[i]
+			}
+		}
+		return nil
+	}
+	for _, v := range []string{"4.0.3", "^4.0.3", "~3.3.0", "3.3.0", "2.1.8"} {
+		res := analyzeNode(t, cra(v), nil)
+		if ask(res) == nil {
+			t.Errorf("react-scripts %s: expected the question; pending=%+v", v, res.Pending)
+		}
+	}
+	for _, v := range []string{"5.0.1", "^5.0.0", "latest", "*"} {
+		if res := analyzeNode(t, cra(v), nil); ask(res) != nil {
+			t.Errorf("react-scripts %s must not ask", v)
+		}
+	}
+	// A resposta fecha a pergunta; "true" deixa um aviso, "false" não pergunta de novo.
+	res := analyzeNode(t, cra("4.0.3"), map[string]string{"build_legacy_openssl": "true"})
+	if ask(res) != nil || res.Fields[domain.FieldBuildLegacyOpenSSL].Value != "true" || !hasMessage(res.Warnings, "openssl-legacy-provider") {
+		t.Fatalf("confirmed: %+v warnings=%+v", res.Fields[domain.FieldBuildLegacyOpenSSL], res.Warnings)
+	}
+	if res = analyzeNode(t, cra("4.0.3"), map[string]string{"build_legacy_openssl": "false"}); ask(res) != nil {
+		t.Fatal("declining ends the question")
+	}
+	// Sem comando de build a ferramenta não roda: nada a contornar.
+	noBuild := nodeRepo(`{"scripts":{"start":"node server.js"},"dependencies":{"react-scripts":"4.0.3"}}`, map[string]string{"server.js": "app.listen(process.env.PORT)"})
+	if res = analyzeNode(t, noBuild, nil); ask(res) != nil {
+		t.Fatal("no build script, no question")
+	}
+	// @vue/cli-service antes da 5 também.
+	vue := nodeRepo(`{"scripts":{"build":"vue-cli-service build"},"devDependencies":{"@vue/cli-service":"~4.5.0"}}`, map[string]string{"public/index.html": "<html></html>"})
+	if res = analyzeNode(t, vue, nil); ask(res) == nil {
+		t.Fatal("@vue/cli-service 4 should ask")
+	}
+}
+
+// Um projeto que já aplica o contorno no próprio script não é perguntado.
+func TestLegacyToolchainAlreadyHandledByTheProject(t *testing.T) {
+	files := nodeRepo(`{"scripts":{"build":"cross-env NODE_OPTIONS=--openssl-legacy-provider react-scripts build"},"dependencies":{"react-scripts":"4.0.3"}}`, map[string]string{"public/index.html": "<html></html>"})
+	for _, p := range analyzeNode(t, files, nil).Pending {
+		if p.Field == domain.FieldBuildLegacyOpenSSL {
+			t.Fatalf("the project already sets it: %+v", p)
+		}
+	}
+}

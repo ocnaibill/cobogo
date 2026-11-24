@@ -36,6 +36,17 @@ type Diagnosis struct {
 	// novo deploy (por enquanto só "port"; DEC-35).
 	Field   string `json:"field,omitempty"`
 	Message string `json:"message"`
+	// Suggestion é uma correção que o painel oferece como "novo deploy com ..."
+	// (DEC-54 C): overrides conhecidos do motor, que só valem com a confirmação da pessoa.
+	Suggestion *Suggestion `json:"suggestion,omitempty"`
+}
+
+// Suggestion é um conjunto de overrides sugerido por um diagnóstico.
+type Suggestion struct {
+	// Overrides é campo do plano → valor, o mesmo corpo de um novo deploy.
+	Overrides map[string]string `json:"overrides"`
+	// Label diz o que o botão faz ("Python 3.11").
+	Label string `json:"label"`
 }
 
 // PlatformPortIgnored explica a sonda que não obteve resposta de um app que lê

@@ -71,7 +71,41 @@ const DefaultPythonVersion = "3.13"
 
 // UnsupportedUpstreamPython são as versões do catálogo que o projeto Python já não
 // corrige (fim de suporte): a escolha vale, com aviso.
-var UnsupportedUpstreamPython = map[string]string{"3.10": "outubro de 2026"}
+var UnsupportedUpstreamPython = map[string]string{"3.8": "outubro de 2024", "3.9": "outubro de 2025", "3.10": "outubro de 2026"}
+
+// LegacyPythonVersions são versões que o catálogo NÃO escolhe sozinho: saíram de suporte
+// e só valem por confirmação explícita (override, nunca por .python-version nem
+// requires-python; DEC-54 A, no molde da issue #32). Servem a projetos que fixam
+// dependências de uma época em que o Python mais novo ainda era esse.
+var LegacyPythonVersions = []string{"3.8", "3.9"}
+
+// PythonVersionKnown diz se a versão é do catálogo ou legada.
+func PythonVersionKnown(v string) bool {
+	for _, list := range [][]string{SupportedPythonVersions, LegacyPythonVersions} {
+		for _, x := range list {
+			if x == v {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// IsLegacyPython diz se a versão só vale por confirmação.
+func IsLegacyPython(v string) bool {
+	for _, x := range LegacyPythonVersions {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+// Servidores para o Python legado: as versões fixadas acima exigem um Python mais novo.
+const (
+	LegacyGunicornVersion = "23.0.0"
+	LegacyUvicornVersion  = "0.30.6"
+)
 
 // Servidores que a plataforma instala quando o projeto não os declara (DEC-48,
 // decisão 2), em versões fixadas (estáveis há algumas semanas em 22/11/2026). O uv é

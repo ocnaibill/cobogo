@@ -291,3 +291,33 @@ func TestUnlockedInstall(t *testing.T) {
 		t.Errorf("estático sem lockfile:\n%s", plan.Dockerfile)
 	}
 }
+
+// DEC-54 B: o contorno do OpenSSL vale só no RUN do build, nunca como ENV da imagem.
+func TestLegacyOpenSSLOnlyOnTheBuildRun(t *testing.T) {
+	field := func(v string) domain.Field { return domain.Field{Value: v, Origin: domain.OriginOverride} }
+	res := domain.AnalysisResult{Outcome: domain.AnalysisReady, Fields: map[string]domain.Field{
+		domain.FieldProfile: field(domain.ProfileStatic), domain.FieldPackageManager: field("npm"), domain.FieldPort: field("8080"),
+		domain.FieldBuildCommand: field("react-scripts build"), domain.FieldOutputDir: field("build"), domain.FieldBuildLegacyOpenSSL: field("true"),
+	}}
+	plan, err := FromAnalysis(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(plan.Dockerfile, "RUN NODE_OPTIONS=--openssl-legacy-provider react-scripts build\n") || strings.Contains(plan.Dockerfile, "ENV NODE_OPTIONS") {
+		t.Errorf("estático:\n%s", plan.Dockerfile)
+	}
+	node := domain.AnalysisResult{Outcome: domain.AnalysisReady, Fields: map[string]domain.Field{
+		domain.FieldProfile: field(domain.ProfileNode), domain.FieldPackageManager: field("npm"), domain.FieldPort: field("8080"),
+		domain.FieldStartCommand: field("node server.js"), domain.FieldBuildCommand: field("react-scripts build"), domain.FieldBuildLegacyOpenSSL: field("true"),
+	}}
+	plan, err = FromAnalysis(node)
+	if err != nil || !strings.Contains(plan.Dockerfile, "RUN NODE_OPTIONS=--openssl-legacy-provider react-scripts build\n") {
+		t.Errorf("node: %v\n%s", err, plan.Dockerfile)
+	}
+	// Sem a confirmação, o build é o de sempre.
+	delete(res.Fields, domain.FieldBuildLegacyOpenSSL)
+	plan, _ = FromAnalysis(res)
+	if strings.Contains(plan.Dockerfile, "openssl-legacy-provider") {
+		t.Errorf("sem confirmação não há contorno:\n%s", plan.Dockerfile)
+	}
+}

@@ -77,7 +77,7 @@ func pythonFromAnalysis(res domain.AnalysisResult, port int, portOrigin, mode st
 	if version == "" {
 		version = domain.DefaultPythonVersion
 	}
-	if !slices.Contains(domain.SupportedPythonVersions, version) {
+	if !domain.PythonVersionKnown(version) {
 		return domain.Plan{}, fmt.Errorf("planner: versão de Python %q não suportada", version)
 	}
 	manager := f(domain.FieldPackageManager)
@@ -177,9 +177,16 @@ func PythonServerCommand(target, iface string) string {
 
 // pythonServer é o pacote do servidor de produção da interface e a versão fixada
 // que a plataforma instala quando o projeto não o traz.
-func pythonServer(iface string) (string, string) {
+func pythonServer(iface, pythonVersion string) (string, string) {
+	legacy := domain.IsLegacyPython(pythonVersion)
 	if iface == domain.InterfaceASGI {
+		if legacy {
+			return "uvicorn", domain.LegacyUvicornVersion
+		}
 		return "uvicorn", domain.UvicornVersion
+	}
+	if legacy {
+		return "gunicorn", domain.LegacyGunicornVersion
 	}
 	return "gunicorn", domain.GunicornVersion
 }
@@ -268,7 +275,7 @@ func renderPythonDockerfile(in PythonPlanInput, install, start string) string {
 	// O código inteiro antes da instalação: um requirements pode incluir outros
 	// arquivos (-r requirements/base.txt) em qualquer pasta.
 	b.WriteString("COPY . .\n")
-	server, version := pythonServer(in.Interface)
+	server, version := pythonServer(in.Interface, in.Version)
 	if in.Manager == domain.ManagerUV {
 		fmt.Fprintf(&b, "RUN pip install uv==%s\n", domain.UVVersion)
 		b.WriteString("ENV UV_PROJECT_ENVIRONMENT=/opt/venv UV_PYTHON_DOWNLOADS=never UV_PYTHON=/opt/venv/bin/python UV_LINK_MODE=copy UV_NO_CACHE=1\n")

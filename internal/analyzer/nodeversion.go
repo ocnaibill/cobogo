@@ -48,9 +48,9 @@ func admittedByRange(c *semver.Constraints) []string {
 func ruleHEU10() Rule {
 	return Rule{
 		Meta: RuleMeta{
-			ID: "HEU-10", Version: ruleVersion, State: RuleProposed,
+			ID: "HEU-10", Version: "0.3", State: RuleProposed,
 			Requires: []string{"HEU-01"},
-			Fields:   []string{domain.FieldNodeVersion},
+			Fields:   []string{domain.FieldNodeVersion, domain.FieldBuildLegacyOpenSSL},
 		},
 		Apply: func(in RuleInput) RuleOutput {
 			// A versão do Node só vale para o perfil P-NODE; o P-BUN tem a
@@ -67,6 +67,24 @@ func ruleHEU10() Rule {
 				out.Warnings = append(out.Warnings, finding("", fmt.Sprintf(
 					"HEU-10: %s depende de node-sass, descontinuado e que compila código nativo: ele não funciona nas versões de Node do catálogo (%s) e o build tende a falhar. O substituto recomendado é o pacote sass (Dart Sass). Suporte a versões antigas do Node é a issue #32.",
 					dep.Source, supportedNodeVersions()), dep))
+			}
+			// Ferramenta de build do webpack 4 num Node que tem o OpenSSL 3 (DEC-54 B): o
+			// contorno documentado vale só no build, e só com a confirmação da pessoa.
+			if legacy := in.Of(kindLegacyToolchain); len(legacy) > 0 && len(in.Named(kindScript, "build")) > 0 && !scriptsHandleOpenSSL(in) {
+				first := legacy[0]
+				switch in.Overrides[domain.FieldBuildLegacyOpenSSL] {
+				case "true":
+					out.Warnings = append(out.Warnings, finding("", fmt.Sprintf(
+						"HEU-10: %s %s usa o webpack 4; o build roda com NODE_OPTIONS=--openssl-legacy-provider (só no build, nunca na imagem que executa a aplicação), como você confirmou.",
+						first.Name, first.Value), first))
+				case "false":
+				default:
+					f := finding(domain.FieldBuildLegacyOpenSSL, fmt.Sprintf(
+						"HEU-10: %s %s usa o webpack 4, que falha no Node 17 ou mais novo com ERR_OSSL_EVP_UNSUPPORTED (o OpenSSL 3 não tem o algoritmo MD4 que ele usa). A imagem usa o Node %s. O contorno documentado é rodar só o build com NODE_OPTIONS=--openssl-legacy-provider; a aplicação em execução não muda. Quer ativá-lo?",
+						first.Name, first.Value, domain.DefaultNodeVersion), first)
+					f.Options = []domain.Option{{Value: "true", Kind: domain.OptionProduction, Note: "NODE_OPTIONS=--openssl-legacy-provider só no comando de build"}}
+					out.Pending = append(out.Pending, f)
+				}
 			}
 			warn := func(e domain.Evidence, why string) {
 				out.Warnings = append(out.Warnings, finding("", fmt.Sprintf(
@@ -123,4 +141,15 @@ func validateNodeVersion(v string) error {
 		return fmt.Errorf("%q não é uma versão de Node suportada; use uma de %s", v, supportedNodeVersions())
 	}
 	return nil
+}
+
+// scriptsHandleOpenSSL diz se algum script do projeto já aplica o contorno do OpenSSL: o projeto
+// resolveu sozinho, e o Cobogó não pergunta (DEC-54 B).
+func scriptsHandleOpenSSL(in RuleInput) bool {
+	for _, e := range in.Of(kindScript) {
+		if strings.Contains(e.Value, "openssl-legacy-provider") {
+			return true
+		}
+	}
+	return false
 }

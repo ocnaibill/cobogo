@@ -53,6 +53,24 @@ type NodePlanInput struct {
 	PortOrigin  string
 	// Unlocked instala sem lockfile (DEC-53 H): `npm install` em vez de `npm ci`.
 	Unlocked bool
+	// LegacyOpenSSL roda o comando de build com o OpenSSL antigo (DEC-54 B).
+	LegacyOpenSSL bool
+}
+
+// legacyOpenSSLPrefix é o contorno documentado do webpack 4 num Node com OpenSSL 3. Vale só
+// para o RUN do build: não é ENV, então não chega à imagem que executa a aplicação.
+const legacyOpenSSLPrefix = "NODE_OPTIONS=--openssl-legacy-provider "
+
+// buildRun escreve o RUN do comando de build, com o contorno do OpenSSL quando confirmado.
+func buildRun(command string, legacyOpenSSL bool) string {
+	if legacyOpenSSL {
+		return "RUN " + legacyOpenSSLPrefix + command + "\n"
+	}
+	return "RUN " + command + "\n"
+}
+
+func legacyOpenSSL(res domain.AnalysisResult) bool {
+	return res.Fields[domain.FieldBuildLegacyOpenSSL].Value == "true"
 }
 
 // FromAnalysis converte uma análise pronta no plano executável (DEC-23: o
@@ -109,15 +127,16 @@ func FromAnalysis(res domain.AnalysisResult) (domain.Plan, error) {
 		return domain.Plan{}, fmt.Errorf("planner: versão de Node %q não suportada", version)
 	}
 	return BuildNodePlan(NodePlanInput{
-		DropPrepare:  dropPrepare(res),
-		StartCommand: res.Fields[domain.FieldStartCommand].Value,
-		BuildCommand: res.Fields[domain.FieldBuildCommand].Value,
-		Mode:         mode,
-		NodeVersion:  version,
-		HealthPath:   res.Fields[domain.FieldHealthPath].Value,
-		Port:         port,
-		PortOrigin:   string(portField.Origin),
-		Unlocked:     unlocked(res),
+		DropPrepare:   dropPrepare(res),
+		StartCommand:  res.Fields[domain.FieldStartCommand].Value,
+		BuildCommand:  res.Fields[domain.FieldBuildCommand].Value,
+		Mode:          mode,
+		NodeVersion:   version,
+		HealthPath:    res.Fields[domain.FieldHealthPath].Value,
+		Port:          port,
+		PortOrigin:    string(portField.Origin),
+		Unlocked:      unlocked(res),
+		LegacyOpenSSL: legacyOpenSSL(res),
 	}), nil
 }
 
@@ -193,7 +212,7 @@ func renderNodeDockerfile(in NodePlanInput, install string) string {
 	fmt.Fprintf(&b, "RUN %s\n", install)
 	b.WriteString("COPY . .\n")
 	if in.BuildCommand != "" {
-		fmt.Fprintf(&b, "RUN %s\n", in.BuildCommand)
+		b.WriteString(buildRun(in.BuildCommand, in.LegacyOpenSSL))
 		b.WriteString("RUN npm prune --omit=dev\n")
 	}
 

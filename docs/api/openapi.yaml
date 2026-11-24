@@ -2947,7 +2947,11 @@ components:
             Varia por evento. Nunca contém valores de variáveis (só nomes). Em
             `failed`, pode trazer `error`, `exit_code`, `log_tail` (já
             redigido) e `diagnosis` (`confidence`, `message`, `variables` e,
-            quando a correção é um override num novo deploy, `field`).
+            quando a correção é um override num novo deploy, `field`). Numa falha
+            de build de uma época antiga (OpenSSL do webpack 4, Python mais novo
+            que as dependências fixadas), traz também `suggestion`
+            (`overrides` e `label`): a correção que o motor conhece, que só vale
+            se a pessoa a confirmar num novo deploy (DEC-54 C).
     Release:
       type: object
       required: [id, deployment_id, image_id, container_id, operational_state, health, host_port, created_at]

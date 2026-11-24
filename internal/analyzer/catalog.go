@@ -102,7 +102,7 @@ type Catalog struct {
 }
 
 // O catálogo JavaScript cobre os perfis P-NODE (npm) e P-BUN (DEC-36).
-const nodeCatalogVersion = "p-js-0.6"
+const nodeCatalogVersion = "p-js-0.7"
 
 func NodeCatalog() Catalog {
 	return Catalog{
@@ -126,6 +126,7 @@ func NodeCatalog() Catalog {
 			{Name: domain.FieldBuildCommand, Overridable: true, Validate: validateCommand},
 			{Name: domain.FieldExecutionMode, Overridable: true, Validate: validateExecutionMode},
 			{Name: domain.FieldNodeVersion, Overridable: true, Validate: validateNodeVersion},
+			{Name: domain.FieldBuildLegacyOpenSSL, Overridable: true, Validate: validateBool},
 			{Name: domain.FieldBunVersion, Overridable: true, Validate: validateBunVersion},
 			{Name: domain.FieldOutputDir, Overridable: true, Validate: validateOutputDir},
 			{Name: domain.FieldSPAFallback, Overridable: true, Validate: validateBool},

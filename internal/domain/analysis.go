@@ -28,6 +28,10 @@ const (
 	// FieldAllowUnlocked é a escolha de instalar sem lockfile (DEC-53 H): true instala com
 	// `npm install` ou `bun install`, e as versões podem mudar entre deploys.
 	FieldAllowUnlocked = "allow_unlocked"
+	// FieldBuildLegacyOpenSSL é a escolha de rodar o build com o OpenSSL antigo
+	// (NODE_OPTIONS=--openssl-legacy-provider), só no estágio de build: o contorno
+	// documentado para ferramentas que usam webpack 4 (DEC-54 B).
+	FieldBuildLegacyOpenSSL = "build_legacy_openssl"
 	// FieldDatabase é a pendência de destino do banco (HEU-06.6, DEC-42). Não é um
 	// campo do plano e não se responde por overrides: a escolha vai em
 	// POST /projects/{id}/database.

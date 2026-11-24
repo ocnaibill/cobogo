@@ -181,7 +181,14 @@ export interface FailureDetail {
   logTail?: string;
   oomKilled?: boolean;
   /** `field`: o campo do plano suspeito, corrigível com um override num novo deploy (DEC-35). */
-  diagnosis?: { confidence: "confirmed" | "possible" | "unknown"; message: string; variables?: string[]; field?: string };
+  diagnosis?: {
+    confidence: "confirmed" | "possible" | "unknown";
+    message: string;
+    variables?: string[];
+    field?: string;
+    /** Uma correção que o motor conhece, oferecida como "novo deploy com ..." (DEC-54 C). */
+    suggestion?: { overrides: Record<string, string>; label: string };
+  };
 }
 
 export function failureDetail(events: DeploymentEvent[]): FailureDetail | null {

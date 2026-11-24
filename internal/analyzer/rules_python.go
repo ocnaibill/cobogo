@@ -13,7 +13,7 @@ import (
 // Regras do catálogo Python (DEC-48, HEU-04). Uma regra só escreve os campos que
 // lhe pertencem; o que não dá para concluir vira pergunta, nunca palpite.
 
-const pythonCatalogVersion = "p-py-0.2"
+const pythonCatalogVersion = "p-py-0.3"
 
 // PythonCatalog é o catálogo do perfil P-PY.
 func PythonCatalog() Catalog {
@@ -61,8 +61,8 @@ func validatePyManager(v string) error {
 }
 
 func validatePythonVersion(v string) error {
-	if !slices.Contains(domain.SupportedPythonVersions, v) {
-		return fmt.Errorf("%q não é uma versão do catálogo (%s)", v, strings.Join(domain.SupportedPythonVersions, ", "))
+	if !domain.PythonVersionKnown(v) {
+		return fmt.Errorf("%q não é uma versão do catálogo (%s) nem uma legada que só vale por confirmação (%s)", v, strings.Join(domain.SupportedPythonVersions, ", "), strings.Join(domain.LegacyPythonVersions, ", "))
 	}
 	return nil
 }
@@ -323,7 +323,7 @@ func satisfies(version, spec string) bool {
 // com aviso; a 3.10, com o aviso de fim de suporte.
 func ruleHEU042() Rule {
 	return Rule{
-		Meta: RuleMeta{ID: "HEU-04.2", Version: "0.1", State: RuleProposed, Requires: []string{"HEU-04.1"}, Fields: []string{domain.FieldPythonVersion}},
+		Meta: RuleMeta{ID: "HEU-04.2", Version: "0.2", State: RuleProposed, Requires: []string{"HEU-04.1"}, Fields: []string{domain.FieldPythonVersion}},
 		Apply: func(in RuleInput) RuleOutput {
 			var out RuleOutput
 			propose := func(v string, origin domain.Origin, ev ...domain.Evidence) {
@@ -344,6 +344,22 @@ func ruleHEU042() Rule {
 				}
 				return last
 			}
+			// requires-python restringe as versões que a escolha por compatibilidade pode sugerir.
+			requires := in.Named(kindPyVersion, "requires-python")
+			allowed := func(v string) bool {
+				for _, e := range requires {
+					if !satisfies(v, e.Value) {
+						return false
+					}
+				}
+				return true
+			}
+
+			var chosen string
+			var origin domain.Origin
+			var ev []domain.Evidence
+			declared := false // a pessoa escolheu uma versão do catálogo: ela decide
+		pick:
 			for _, source := range []string{".python-version", "runtime.txt"} {
 				for _, e := range in.Named(kindPyVersion, source) {
 					maj, mn, ok := minorOf(e.Value)
@@ -351,30 +367,80 @@ func ruleHEU042() Rule {
 						continue
 					}
 					v := fmt.Sprintf("%d.%d", maj, mn)
-					if slices.Contains(domain.SupportedPythonVersions, v) {
-						propose(v, domain.OriginDeclaration, e)
-						return out
+					switch {
+					case slices.Contains(domain.SupportedPythonVersions, v):
+						chosen, origin, ev, declared = v, domain.OriginDeclaration, []domain.Evidence{e}, true
+					case domain.IsLegacyPython(v):
+						// Versão legada só vale por confirmação (DEC-54 A): pergunta, com a do catálogo ao lado.
+						chosen, origin, ev = nearest(maj, mn), domain.OriginInference, []domain.Evidence{e}
+						f := finding(domain.FieldPythonVersion, fmt.Sprintf("HEU-04.2: %s pede o Python %s, que saiu de suporte (%s). Quer usá-lo mesmo assim? Ele não recebe correções de segurança; o Cobogó só o usa se você confirmar.", source, v, domain.UnsupportedUpstreamPython[v]), e)
+						f.Options = []domain.Option{
+							{Value: v, Kind: domain.OptionProduction, Note: "fora de suporte do Python; vale só por confirmação"},
+							{Value: chosen, Kind: domain.OptionProduction, Note: "a versão do catálogo mais próxima"},
+						}
+						out.Pending = append(out.Pending, f)
+					default:
+						alt := nearest(maj, mn)
+						out.Warnings = append(out.Warnings, finding("", fmt.Sprintf("HEU-04.2: %s pede o Python %s, fora do catálogo (%s); o Cobogó usa o %s", source, v, strings.Join(domain.SupportedPythonVersions, ", "), alt), e))
+						chosen, origin, ev = alt, domain.OriginInference, []domain.Evidence{e}
 					}
-					alt := nearest(maj, mn)
-					out.Warnings = append(out.Warnings, finding("", fmt.Sprintf("HEU-04.2: %s pede o Python %s, fora do catálogo (%s); o Cobogó usa o %s", source, v, strings.Join(domain.SupportedPythonVersions, ", "), alt), e))
-					propose(alt, domain.OriginInference, e)
-					return out
+					break pick
 				}
 			}
-			for _, e := range in.Named(kindPyVersion, "requires-python") {
-				if satisfies(domain.DefaultPythonVersion, e.Value) {
-					propose(domain.DefaultPythonVersion, domain.OriginInference, e)
-					return out
+			if chosen == "" {
+				for _, e := range requires {
+					if satisfies(domain.DefaultPythonVersion, e.Value) {
+						chosen, origin, ev = domain.DefaultPythonVersion, domain.OriginInference, []domain.Evidence{e}
+						break
+					}
+					for i := len(domain.SupportedPythonVersions) - 1; i >= 0; i-- {
+						if v := domain.SupportedPythonVersions[i]; satisfies(v, e.Value) {
+							chosen, origin, ev = v, domain.OriginInference, []domain.Evidence{e}
+							break
+						}
+					}
+					if chosen != "" {
+						break
+					}
+					out.Warnings = append(out.Warnings, finding("", fmt.Sprintf("HEU-04.2: requires-python (%s) não admite nenhuma versão do catálogo; o Cobogó usa o %s", e.Value, domain.DefaultPythonVersion), e))
 				}
-				for i := len(domain.SupportedPythonVersions) - 1; i >= 0; i-- {
-					if v := domain.SupportedPythonVersions[i]; satisfies(v, e.Value) {
-						propose(v, domain.OriginInference, e)
-						return out
+			}
+			if chosen == "" {
+				chosen, origin = domain.DefaultPythonVersion, domain.OriginDefault
+			}
+			propose(chosen, origin, ev...)
+
+			// Época das dependências (DEC-54 A): os pacotes fixados contra a versão escolhida.
+			if in.Overrides[domain.FieldPythonVersion] == "" && len(out.Pending) == 0 {
+				pins := pinnedRanges(in.Of(kindPyDependency))
+				best, blockers := compatiblePythonWhere(pins, chosen, allowed)
+				if len(blockers) > 0 {
+					names := make([]string, 0, len(blockers))
+					cited := make([]domain.Evidence, 0, len(blockers))
+					for _, b := range blockers {
+						names = append(names, fmt.Sprintf("%s %s (declara %s)", b.Package, b.Version, pyRangeText(b)))
+						cited = append(cited, b.Evidence)
+					}
+					why := fmt.Sprintf("o Python %s fica fora do que os pacotes fixados declaram aceitar no PyPI: %s. O build tende a falhar (sem wheel para esta versão o pacote é compilado do zero, ou nem importa).", chosen, strings.Join(names, "; "))
+					switch {
+					case declared:
+						out.Warnings = append(out.Warnings, finding("", "HEU-04.2: "+why+" Você declarou essa versão; se o build falhar, ela pode ser o motivo.", cited...))
+					case best == "" || best == chosen:
+						out.Warnings = append(out.Warnings, finding("", "HEU-04.2: "+why+" Nenhuma versão conhecida admite todos de uma vez.", cited...))
+					default:
+						note := "o maior Python que todos os pacotes fixados declaram aceitar"
+						if domain.IsLegacyPython(best) {
+							note += "; saiu de suporte do Python (" + domain.UnsupportedUpstreamPython[best] + "), vale só por confirmação"
+						}
+						f := finding(domain.FieldPythonVersion, "HEU-04.2: "+why+fmt.Sprintf(" O maior Python que todos admitem é o %s.", best), cited...)
+						f.Options = []domain.Option{
+							{Value: best, Kind: domain.OptionProduction, Note: note},
+							{Value: chosen, Kind: domain.OptionProduction, Note: "manter a versão do Cobogó; o build pode falhar"},
+						}
+						out.Pending = append(out.Pending, f)
 					}
 				}
-				out.Warnings = append(out.Warnings, finding("", fmt.Sprintf("HEU-04.2: requires-python (%s) não admite nenhuma versão do catálogo; o Cobogó usa o %s", e.Value, domain.DefaultPythonVersion), e))
 			}
-			propose(domain.DefaultPythonVersion, domain.OriginDefault)
 			return out
 		},
 	}

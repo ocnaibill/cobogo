@@ -589,6 +589,7 @@ function FailurePanel({
   const d = failure?.diagnosis;
   const [port, setPort] = useState("");
   const portSuspect = !failure?.oomKilled && d?.field === "port";
+  const suggestion = !failure?.oomKilled ? d?.suggestion : undefined;
   const portValid = /^\d{1,5}$/.test(port) && Number(port) > 0 && Number(port) < 65536;
   return (
     <Card
@@ -630,7 +631,9 @@ function FailurePanel({
             <strong>Próximo passo:</strong>
             {failure?.oomKilled
               ? "aumente a memória do projeto e publique de novo."
-              : portSuspect
+              : suggestion
+                ? `a correção sugerida é ${suggestion.label}; ela só vale se você a confirmar num novo deploy.`
+                : portSuspect
                 ? "informe a porta em que a aplicação escuta e publique de novo."
                 : d?.variables?.length
                 ? `preencha ${d.variables.join(", ")} e publique de novo.`
@@ -647,7 +650,16 @@ function FailurePanel({
                 Preencher variáveis
               </LinkButton>
             )}
-            {portSuspect ? (
+            {suggestion && (
+              <Button variant="primary" icon="refresh" busy={busy} onClick={() => onRedeploy(suggestion.overrides)}>
+                Novo deploy com {suggestion.label}
+              </Button>
+            )}
+            {suggestion ? (
+              <Button variant="secondary" icon="refresh" onClick={() => onRedeploy()} busy={busy}>
+                Novo deploy sem mudar
+              </Button>
+            ) : portSuspect ? (
               <form
                 className="row"
                 onSubmit={(e) => {

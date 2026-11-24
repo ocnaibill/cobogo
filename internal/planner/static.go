@@ -32,6 +32,8 @@ type StaticPlanInput struct {
 	HealthPath string
 	// Unlocked instala sem lockfile (DEC-53 H).
 	Unlocked bool
+	// LegacyOpenSSL roda o build com o OpenSSL antigo (DEC-54 B).
+	LegacyOpenSSL bool
 }
 
 func staticFromAnalysis(res domain.AnalysisResult) (domain.Plan, error) {
@@ -41,13 +43,14 @@ func staticFromAnalysis(res domain.AnalysisResult) (domain.Plan, error) {
 		return domain.Plan{}, fmt.Errorf("planner: site estático sem diretório de saída")
 	}
 	in := StaticPlanInput{
-		Manager:      manager,
-		BuildCommand: res.Fields[domain.FieldBuildCommand].Value,
-		DropPrepare:  dropPrepare(res),
-		OutputDir:    out,
-		SPAFallback:  res.Fields[domain.FieldSPAFallback].Value == "true",
-		HealthPath:   res.Fields[domain.FieldHealthPath].Value,
-		Unlocked:     unlocked(res),
+		Manager:       manager,
+		BuildCommand:  res.Fields[domain.FieldBuildCommand].Value,
+		DropPrepare:   dropPrepare(res),
+		OutputDir:     out,
+		SPAFallback:   res.Fields[domain.FieldSPAFallback].Value == "true",
+		HealthPath:    res.Fields[domain.FieldHealthPath].Value,
+		Unlocked:      unlocked(res),
+		LegacyOpenSSL: legacyOpenSSL(res),
 	}
 	switch manager {
 	case domain.ManagerNPM:
@@ -139,7 +142,7 @@ func BuildStaticPlan(in StaticPlanInput) domain.Plan {
 			fmt.Fprintf(&b, "ARG %s\n", name)
 		}
 		b.WriteString("ENV NODE_ENV=production\n")
-		fmt.Fprintf(&b, "RUN %s\n", in.BuildCommand)
+		b.WriteString(buildRun(in.BuildCommand, in.LegacyOpenSSL && in.Manager == domain.ManagerNPM))
 		fmt.Fprintf(&b, "RUN test -f %[1]s/index.html || { echo \"o build não gerou %[1]s/index.html; informe o diretório de saída do build (output_dir)\" >&2; exit 1; }\n\n", in.OutputDir)
 	}
 

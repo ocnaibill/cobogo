@@ -119,8 +119,8 @@ func TestPythonDockerfile(t *testing.T) {
 		t.Error("OldGunicorn")
 	}
 
-	if _, err := FromAnalysis(pythonResult(map[string]string{domain.FieldPythonVersion: "3.9"})); err == nil {
-		t.Error("3.9 aceita")
+	if _, err := FromAnalysis(pythonResult(map[string]string{domain.FieldPythonVersion: "3.7"})); err == nil {
+		t.Error("3.7 aceita")
 	}
 }
 
@@ -239,5 +239,29 @@ func TestPythonRequirementsFileAndDjangoDir(t *testing.T) {
 
 	if _, err := FromAnalysis(pythonResult(map[string]string{domain.FieldDjangoDir: "a b; rm -rf /"})); err == nil {
 		t.Error("uma pasta com caracteres de shell deve ser recusada")
+	}
+}
+
+// DEC-54 A: um Python legado, escolhido por confirmação, usa servidores que ele aceita.
+func TestLegacyPythonPlan(t *testing.T) {
+	plan, err := FromAnalysis(pythonResult(map[string]string{domain.FieldPythonVersion: "3.9"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	df := plan.Dockerfile
+	for _, want := range []string{"FROM python:3.9 AS build\n", "\nFROM python:3.9-slim\n", "pip install gunicorn==" + domain.LegacyGunicornVersion} {
+		if !strings.Contains(df, want) {
+			t.Errorf("Dockerfile sem %q:\n%s", want, df)
+		}
+	}
+	if strings.Contains(df, domain.GunicornVersion) {
+		t.Errorf("o servidor novo exige um Python mais novo:\n%s", df)
+	}
+	plan, err = FromAnalysis(pythonResult(map[string]string{domain.FieldPythonVersion: "3.8", domain.FieldPythonInterface: "asgi", domain.FieldPythonFramework: "fastapi"}))
+	if err != nil || !strings.Contains(plan.Dockerfile, "uvicorn=="+domain.LegacyUvicornVersion) {
+		t.Errorf("asgi legado: %v\n%s", err, plan.Dockerfile)
+	}
+	if _, err := FromAnalysis(pythonResult(map[string]string{domain.FieldPythonVersion: "3.7"})); err == nil {
+		t.Error("3.7 não é do catálogo nem legada")
 	}
 }
