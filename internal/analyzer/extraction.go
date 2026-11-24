@@ -32,6 +32,12 @@ const (
 	// kindBunDefaultPort: servidor do Bun sem porta, que lê PORT sozinho
 	// (Bun.serve sem port, ou export default do arquivo de entrada; DEC-36).
 	kindBunDefaultPort = "bun.default_port"
+	// kindListenPort: o código escuta numa porta escrita nele (`app.listen(8000)`,
+	// `const PORT = 8000; app.listen(PORT)`), sem ler PORT (DEC-53 B). Value é o número.
+	kindListenPort = "listen.port"
+	// kindMissingEnvFile: um script lê variáveis de um arquivo que não está no
+	// repositório (`node --env-file=config.env`; DEC-53 D). Name é o arquivo.
+	kindMissingEnvFile = "script.env_file_missing"
 	// Perfil estático (DEC-37).
 	kindStaticIndex  = "static.index"        // index.html na raiz
 	kindDependency   = "manifest.dependency" // dependência que decide a forma de publicar
@@ -49,6 +55,9 @@ type Extraction struct {
 	evidence  map[string]domain.Evidence
 	gaps      []domain.Gap
 	filesRead int
+	// overrides são as respostas válidas do usuário: um extrator só as lê quando a
+	// resposta decide QUAL arquivo ler (requirements_file; DEC-53 E).
+	overrides map[string]string
 }
 
 func newExtraction() *Extraction {

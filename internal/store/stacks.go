@@ -263,6 +263,8 @@ type NewApp struct {
 	RootDirectory string
 	Slug          string
 	Role          string
+	// Ecosystem fixa o ecossistema quando a pasta é dividida por duas aplicações (DEC-53 F).
+	Ecosystem string
 }
 
 // CreateApps cria as aplicações no projeto, numa transação, e um deploy para cada uma
@@ -275,7 +277,7 @@ func (s *Store) CreateApps(ctx context.Context, stackID, ownerID uuid.UUID, apps
 	}
 	existing := map[string]bool{}
 	for _, a := range st.Apps {
-		existing[a.RootDirectory] = true
+		existing[AppKey(a.RootDirectory, a.Ecosystem)] = true
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -284,11 +286,11 @@ func (s *Store) CreateApps(ctx context.Context, stackID, ownerID uuid.UUID, apps
 	defer tx.Rollback(ctx)
 	out := []domain.Project{}
 	for _, a := range apps {
-		if existing[a.RootDirectory] {
+		if existing[AppKey(a.RootDirectory, a.Ecosystem)] {
 			continue
 		}
-		existing[a.RootDirectory] = true
-		p, err := insertApp(ctx, tx, ownerID, stackID, a.Slug, st.RepositoryURL, a.RootDirectory, a.Role)
+		existing[AppKey(a.RootDirectory, a.Ecosystem)] = true
+		p, err := insertApp(ctx, tx, ownerID, stackID, a.Slug, st.RepositoryURL, a.RootDirectory, a.Role, a.Ecosystem)
 		if err != nil {
 			return nil, err
 		}
@@ -334,7 +336,7 @@ func (s *Store) ProjectSlugInUse(ctx context.Context, slug string) (bool, error)
 // StackApps devolve as aplicações vivas de um projeto (para o worker).
 func (s *Store) StackApps(ctx context.Context, stackID uuid.UUID) ([]domain.Project, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, slug, root_directory, role FROM projects
+		SELECT id, slug, root_directory, role, ecosystem FROM projects
 		WHERE stack_id = $1 AND deleted_at IS NULL ORDER BY created_at`, stackID)
 	if err != nil {
 		return nil, fmt.Errorf("store: listar aplicações: %w", err)
@@ -343,10 +345,14 @@ func (s *Store) StackApps(ctx context.Context, stackID uuid.UUID) ([]domain.Proj
 	out := []domain.Project{}
 	for rows.Next() {
 		var p domain.Project
-		if err := rows.Scan(&p.ID, &p.Slug, &p.RootDirectory, &p.Role); err != nil {
+		if err := rows.Scan(&p.ID, &p.Slug, &p.RootDirectory, &p.Role, &p.Ecosystem); err != nil {
 			return nil, fmt.Errorf("store: ler aplicação: %w", err)
 		}
 		out = append(out, p)
 	}
 	return out, rows.Err()
 }
+
+// AppKey identifica uma aplicação do projeto: a pasta e, quando duas dividem a mesma pasta,
+// o ecossistema de cada uma (DEC-53 F).
+func AppKey(rootDirectory, ecosystem string) string { return rootDirectory + "\x00" + ecosystem }

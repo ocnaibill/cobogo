@@ -119,3 +119,61 @@ func TestCreateStackScanAndApps(t *testing.T) {
 		t.Errorf("reusar o nome: %v", err)
 	}
 }
+
+// DEC-53 F: duas aplicações dividem a pasta quando cada uma fixa um ecossistema, e o
+// ecossistema vai em todo deploy dela.
+func TestTwoAppsShareAFolderByEcosystem(t *testing.T) {
+	st := storetest.New(t)
+	own := owner(t, st)
+	stack, err := st.CreateStack(ctx, own.ID, "loja", "https://github.com/exemplo/loja")
+	if err != nil {
+		t.Fatal(err)
+	}
+	apps, err := st.CreateApps(ctx, stack.ID, own.ID, []store.NewApp{
+		{RootDirectory: "", Slug: "loja-api", Role: domain.CompBackend, Ecosystem: domain.EcosystemPython},
+		{RootDirectory: "", Slug: "loja", Role: domain.CompFrontend, Ecosystem: domain.EcosystemJavaScript},
+	})
+	if err != nil || len(apps) != 2 {
+		t.Fatalf("duas aplicações na mesma pasta: %+v %v", apps, err)
+	}
+	// A mesma pasta com o mesmo ecossistema de novo é ignorada.
+	again, err := st.CreateApps(ctx, stack.ID, own.ID, []store.NewApp{{RootDirectory: "", Slug: "loja-api-2", Role: domain.CompBackend, Ecosystem: domain.EcosystemPython}})
+	if err != nil || len(again) != 0 {
+		t.Errorf("repetida: %+v %v", again, err)
+	}
+	for _, a := range apps {
+		dep, _, err := st.CreateDeploymentWithJob(ctx, a.ID, "k-"+a.Slug, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if dep.Overrides[domain.FieldEcosystem] != a.Ecosystem {
+			t.Errorf("%s: o deploy deve carregar o ecossistema %q, tem %v", a.Slug, a.Ecosystem, dep.Overrides)
+		}
+	}
+	// Uma resposta explícita do pedido vale mais.
+	dep, _, err := st.CreateDeploymentWithJob(ctx, apps[0].ID, "k-explicit", map[string]string{domain.FieldEcosystem: domain.EcosystemJavaScript, "port": "9000"})
+	if err != nil || dep.Overrides[domain.FieldEcosystem] != domain.EcosystemJavaScript || dep.Overrides["port"] != "9000" {
+		t.Errorf("override explícito: %+v %v", dep.Overrides, err)
+	}
+	// Uma aplicação sem ecossistema fixo não ganha override nenhum.
+	plain, err := st.CreateApps(ctx, stack.ID, own.ID, []store.NewApp{{RootDirectory: "admin", Slug: "loja-admin", Role: domain.CompApp}})
+	if err != nil || len(plain) != 1 {
+		t.Fatal(err)
+	}
+	if dep, _, _ = st.CreateDeploymentWithJob(ctx, plain[0].ID, "k-plain", nil); len(dep.Overrides) != 0 {
+		t.Errorf("sem ecossistema fixo, sem override: %v", dep.Overrides)
+	}
+	got, err := st.GetStackFor(ctx, stack.ID, own.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned := 0
+	for _, a := range got.Apps {
+		if a.Ecosystem != "" {
+			pinned++
+		}
+	}
+	if pinned != 2 {
+		t.Errorf("o ecossistema fixado deve aparecer na listagem: %+v", got.Apps)
+	}
+}

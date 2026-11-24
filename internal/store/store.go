@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"sort"
 	"time"
 
@@ -80,14 +81,14 @@ func (s *Store) CreateProject(ctx context.Context, ownerID uuid.UUID, slug, repo
 	} else if err != nil {
 		return domain.Project{}, fmt.Errorf("store: criar projeto: %w", err)
 	}
-	p, err := insertApp(ctx, tx, ownerID, stackID, slug, repositoryURL, rootDirectory, "")
+	p, err := insertApp(ctx, tx, ownerID, stackID, slug, repositoryURL, rootDirectory, "", "")
 	if err != nil {
 		return domain.Project{}, err
 	}
 	return p, tx.Commit(ctx)
 }
 
-func insertApp(ctx context.Context, tx pgx.Tx, ownerID, stackID uuid.UUID, slug, repositoryURL, rootDirectory, role string) (domain.Project, error) {
+func insertApp(ctx context.Context, tx pgx.Tx, ownerID, stackID uuid.UUID, slug, repositoryURL, rootDirectory, role, ecosystem string) (domain.Project, error) {
 	p := domain.Project{
 		ID:              uuid.New(),
 		OwnerID:         &ownerID,
@@ -97,13 +98,14 @@ func insertApp(ctx context.Context, tx pgx.Tx, ownerID, stackID uuid.UUID, slug,
 		CreatedAt:       time.Now().UTC(),
 		StackID:         &stackID,
 		Role:            role,
+		Ecosystem:       ecosystem,
 		AppState:        domain.AppNone,
 		PersistentPaths: []string{},
 	}
 	_, err := tx.Exec(ctx, `
-		INSERT INTO projects (id, owner_id, slug, repository_url, root_directory, created_at, stack_id, role)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		p.ID, p.OwnerID, p.Slug, p.RepositoryURL, p.RootDirectory, p.CreatedAt, p.StackID, p.Role,
+		INSERT INTO projects (id, owner_id, slug, repository_url, root_directory, created_at, stack_id, role, ecosystem)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		p.ID, p.OwnerID, p.Slug, p.RepositoryURL, p.RootDirectory, p.CreatedAt, p.StackID, p.Role, p.Ecosystem,
 	)
 	if isUniqueViolation(err) {
 		return domain.Project{}, fmt.Errorf("%w: %s", ErrSlugTaken, slug)
@@ -121,13 +123,13 @@ func (s *Store) GetProject(ctx context.Context, id uuid.UUID) (domain.Project, e
 	var p domain.Project
 	var limitsRaw string
 	err := s.pool.QueryRow(ctx, `
-		SELECT p.id, p.owner_id, p.slug, p.repository_url, p.root_directory, p.limits, p.created_at, p.deleted_at, p.persistent_paths, p.stack_id, p.role,
+		SELECT p.id, p.owner_id, p.slug, p.repository_url, p.root_directory, p.limits, p.created_at, p.deleted_at, p.persistent_paths, p.stack_id, p.role, p.ecosystem,
 		       COALESCE((SELECT CASE WHEN r.stopped_at IS NULL THEN 'running' ELSE 'stopped' END
 		            FROM releases r JOIN deployments dd ON dd.id = r.deployment_id
 		            WHERE dd.project_id = p.id AND r.operational_state = 'active'
 		            ORDER BY r.created_at DESC LIMIT 1), 'none')
 		FROM projects p WHERE p.id = $1`, id,
-	).Scan(&p.ID, &p.OwnerID, &p.Slug, &p.RepositoryURL, &p.RootDirectory, &limitsRaw, &p.CreatedAt, &p.DeletedAt, &p.PersistentPaths, &p.StackID, &p.Role, &p.AppState)
+	).Scan(&p.ID, &p.OwnerID, &p.Slug, &p.RepositoryURL, &p.RootDirectory, &limitsRaw, &p.CreatedAt, &p.DeletedAt, &p.PersistentPaths, &p.StackID, &p.Role, &p.Ecosystem, &p.AppState)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Project{}, ErrNotFound
 	}
@@ -197,9 +199,18 @@ func (s *Store) GetDeploymentFor(ctx context.Context, id, ownerID uuid.UUID) (do
 // única por projeto.
 func (s *Store) CreateDeploymentWithJob(ctx context.Context, projectID uuid.UUID, idempotencyKey string, overrides map[string]string) (domain.Deployment, domain.Job, error) {
 	now := time.Now().UTC()
-	if overrides == nil {
-		overrides = map[string]string{}
+	// Uma aplicação que divide a pasta com outra de outro ecossistema carrega a escolha dela em
+	// todo deploy (DEC-53 F); uma resposta explícita do pedido vale mais.
+	var ecosystem string
+	if err := s.pool.QueryRow(ctx, `SELECT ecosystem FROM projects WHERE id = $1`, projectID).Scan(&ecosystem); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return domain.Deployment{}, domain.Job{}, fmt.Errorf("store: ler o ecossistema do projeto: %w", err)
 	}
+	merged := map[string]string{}
+	maps.Copy(merged, overrides)
+	if ecosystem != "" && merged[domain.FieldEcosystem] == "" {
+		merged[domain.FieldEcosystem] = ecosystem
+	}
+	overrides = merged
 	overridesJSON, err := json.Marshal(overrides)
 	if err != nil {
 		return domain.Deployment{}, domain.Job{}, fmt.Errorf("store: serializar overrides: %w", err)

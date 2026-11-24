@@ -30,6 +30,8 @@ type StaticPlanInput struct {
 	// BuildArgs são as variáveis públicas (VITE_...) que entram no build.
 	BuildArgs  []string
 	HealthPath string
+	// Unlocked instala sem lockfile (DEC-53 H).
+	Unlocked bool
 }
 
 func staticFromAnalysis(res domain.AnalysisResult) (domain.Plan, error) {
@@ -45,6 +47,7 @@ func staticFromAnalysis(res domain.AnalysisResult) (domain.Plan, error) {
 		OutputDir:    out,
 		SPAFallback:  res.Fields[domain.FieldSPAFallback].Value == "true",
 		HealthPath:   res.Fields[domain.FieldHealthPath].Value,
+		Unlocked:     unlocked(res),
 	}
 	switch manager {
 	case domain.ManagerNPM:
@@ -106,16 +109,24 @@ func BuildStaticPlan(in StaticPlanInput) domain.Plan {
 	case domain.ManagerNPM:
 		plan.BuildImage, plan.NodeVersion = nodeBuildImage(in.NodeVersion), in.NodeVersion
 		plan.InstallCommand = "npm ci --include=dev"
+		copyFiles := "package.json package-lock.json"
+		if in.Unlocked {
+			plan.InstallCommand, copyFiles = "npm install --no-audit --no-fund --include=dev", "package.json"
+		}
 		fmt.Fprintf(&b, "FROM %s AS build\nWORKDIR /app\nENV PATH=/app/node_modules/.bin:$PATH\n", plan.BuildImage)
-		b.WriteString("COPY package.json package-lock.json ./\n")
+		fmt.Fprintf(&b, "COPY %s ./\n", copyFiles)
 		if in.DropPrepare {
 			b.WriteString("RUN npm pkg delete scripts.prepare\n")
 		}
 	case domain.ManagerBun:
 		plan.BuildImage, plan.BunVersion = bunBuildImage(in.BunVersion), in.BunVersion
 		plan.InstallCommand = "bun install --frozen-lockfile"
+		copyFiles := "package.json " + in.BunLockfile
+		if in.Unlocked {
+			plan.InstallCommand, copyFiles = "bun install", "package.json"
+		}
 		fmt.Fprintf(&b, "FROM %s AS build\nWORKDIR /app\nENV PATH=/app/node_modules/.bin:$PATH\n", plan.BuildImage)
-		fmt.Fprintf(&b, "COPY package.json %s ./\n", in.BunLockfile)
+		fmt.Fprintf(&b, "COPY %s ./\n", copyFiles)
 		if in.DropPrepare {
 			b.WriteString("RUN bun pm pkg delete scripts.prepare\n")
 		}

@@ -88,7 +88,7 @@ func (w *Worker) surveyStack(ctx context.Context, st domain.Stack) (domain.Stack
 	}
 	own := map[string]string{}
 	for _, a := range existing {
-		own[a.RootDirectory] = a.Slug
+		own[store.AppKey(a.RootDirectory, a.Ecosystem)] = a.Slug
 	}
 	ownSlugs := map[string]bool{}
 	for _, s := range own {
@@ -108,7 +108,7 @@ func (w *Worker) surveyStack(ctx context.Context, st domain.Stack) (domain.Stack
 	var fresh []domain.StackScanApp
 	var idx []int
 	for i, a := range apps {
-		if _, ok := own[a.RootDirectory]; !ok {
+		if _, ok := own[store.AppKey(a.RootDirectory, a.PinnedEcosystem)]; !ok {
 			fresh = append(fresh, a)
 			idx = append(idx, i)
 		}
@@ -125,7 +125,7 @@ func (w *Worker) surveyStack(ctx context.Context, st domain.Stack) (domain.Stack
 		apps[i].Slug = fresh[j].Slug
 	}
 	for i := range apps {
-		if s, ok := own[apps[i].RootDirectory]; ok {
+		if s, ok := own[store.AppKey(apps[i].RootDirectory, apps[i].PinnedEcosystem)]; ok {
 			apps[i].Slug = s
 		}
 	}

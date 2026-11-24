@@ -72,3 +72,48 @@ func hasComponent(cs []domain.Component, role, label string) bool {
 	}
 	return false
 }
+
+// DEC-53 F: a raiz mistura Python e JavaScript e as duas partes são aplicações.
+func TestSurveyOfAMixedRootProposesOneAppPerEcosystem(t *testing.T) {
+	files := djangoRepo(map[string]string{
+		"package.json":      `{"scripts":{"start":"react-scripts start","build":"react-scripts build"},"dependencies":{"react":"18.0.0","react-scripts":"5.0.1"}}`,
+		"package-lock.json": lockJSON,
+		"src/index.js":      "import React from 'react'",
+	})
+	root := toFS(files)
+	apps, err := Survey(root, func(dir string) (fs.FS, error) { return fs.Sub(root, dir) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	byEco := map[string]domain.StackScanApp{}
+	for _, a := range apps {
+		if a.RootDirectory == "" {
+			byEco[a.PinnedEcosystem] = a
+		}
+	}
+	py, js := byEco[domain.EcosystemPython], byEco[domain.EcosystemJavaScript]
+	if py.PinnedEcosystem == "" || js.PinnedEcosystem == "" || len(apps) != 2 {
+		t.Fatalf("expected one app per ecosystem on the shared root, got %+v", apps)
+	}
+	if py.Role == js.Role {
+		t.Errorf("the two roles must differ (backend/fullstack versus frontend): %q %q", py.Role, js.Role)
+	}
+	if py.Profile != domain.ProfilePython || js.Profile != domain.ProfileStatic {
+		t.Errorf("profiles = %q, %q; want P-PY and P-STATIC", py.Profile, js.Profile)
+	}
+}
+
+// Um package.json só de ferramentas num projeto Python não vira uma segunda aplicação.
+func TestSurveyOfAMixedRootIgnoresToolingOnlyPackageJSON(t *testing.T) {
+	files := djangoRepo(map[string]string{"package.json": `{"scripts":{"css":"tailwindcss -o out.css"},"devDependencies":{"tailwindcss":"3.0.0"}}`, "package-lock.json": lockJSON})
+	root := toFS(files)
+	apps, err := Survey(root, func(dir string) (fs.FS, error) { return fs.Sub(root, dir) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range apps {
+		if a.PinnedEcosystem == domain.EcosystemJavaScript {
+			t.Fatalf("a tooling-only package.json is not an app: %+v", a)
+		}
+	}
+}

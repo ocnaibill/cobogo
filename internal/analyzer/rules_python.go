@@ -13,7 +13,7 @@ import (
 // Regras do catálogo Python (DEC-48, HEU-04). Uma regra só escreve os campos que
 // lhe pertencem; o que não dá para concluir vira pergunta, nunca palpite.
 
-const pythonCatalogVersion = "p-py-0.1"
+const pythonCatalogVersion = "p-py-0.2"
 
 // PythonCatalog é o catálogo do perfil P-PY.
 func PythonCatalog() Catalog {
@@ -39,6 +39,8 @@ func PythonCatalog() Catalog {
 			{Name: domain.FieldProcessWorker, Overridable: true, Validate: validateProcess},
 			{Name: domain.FieldProcessScheduler, Overridable: true, Validate: validateProcess},
 			{Name: domain.FieldReleaseCommand, Overridable: true, Validate: validateProcess},
+			{Name: domain.FieldRequirementsFile, Overridable: true, Validate: validateRequirementsFile},
+			{Name: domain.FieldDjangoDir},
 			{Name: domain.FieldStartCommand, Overridable: true, Validate: validateCommand},
 			{Name: domain.FieldBuildCommand, Overridable: true, Validate: validateCommand},
 			{Name: domain.FieldExecutionMode, Overridable: true, Validate: validateExecutionMode},
@@ -83,6 +85,16 @@ func validateAppTarget(v string) error {
 
 var dottedModule = regexp.MustCompile(`^[A-Za-z_][\w]*(\.[A-Za-z_][\w]*)*$`)
 
+var requirementsFilePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_./-]*\.txt$`)
+
+// validateRequirementsFile aceita um caminho relativo, dentro do projeto, que termina em .txt.
+func validateRequirementsFile(v string) error {
+	if !requirementsFilePattern.MatchString(v) || strings.Contains(v, "..") || strings.Contains(v, "//") {
+		return fmt.Errorf("%q não é um arquivo .txt relativo ao projeto (por exemplo requirements/production.txt)", v)
+	}
+	return nil
+}
+
 func validateDottedModule(v string) error {
 	if !dottedModule.MatchString(v) {
 		return fmt.Errorf("%q não é um módulo Python (por exemplo projeto.settings.production)", v)
@@ -121,7 +133,7 @@ func hasDep(in RuleInput, names ...string) bool {
 // viram pergunta.
 func ruleHEU041() Rule {
 	return Rule{
-		Meta: RuleMeta{ID: "HEU-04.1", Version: "0.1", State: RuleProposed, Fields: []string{domain.FieldProfile, domain.FieldPackageManager}},
+		Meta: RuleMeta{ID: "HEU-04.1", Version: "0.2", State: RuleProposed, Fields: []string{domain.FieldProfile, domain.FieldPackageManager, domain.FieldRequirementsFile}},
 		Apply: func(in RuleInput) RuleOutput {
 			var out RuleOutput
 			unsupported := func(msg string, ev ...domain.Evidence) {
@@ -174,14 +186,45 @@ func ruleHEU041() Rule {
 				manager, ev = domain.ManagerUV, uv
 			case len(pip) > 0:
 				manager, ev = domain.ManagerPip, pip
+				// O arquivo escolhido fora da raiz (DEC-53 E) vai para o plano.
+				if file := pip[0].Source; file != "requirements.txt" {
+					out.Proposals = append(out.Proposals, domain.Proposal{Field: domain.FieldRequirementsFile, Value: file, Origin: domain.OriginInference, EvidenceIDs: evidenceIDs(pip)})
+				}
+			case len(in.Of(kindPyReqCandidate)) > 0:
+				cands := in.Of(kindPyReqCandidate)
+				f := finding(domain.FieldRequirementsFile, "HEU-04.1: não há requirements.txt na raiz e há mais de um arquivo de dependências no projeto; escolha qual instalar (um que inclui os outros com -r costuma ser o de produção)", cands...)
+				for _, c := range cands {
+					kind := domain.OptionProduction
+					note := "arquivo de dependências do projeto"
+					if c.Value == "development" {
+						kind, note = domain.OptionDevelopment, "o nome sugere desenvolvimento ou testes"
+					}
+					f.Options = append(f.Options, domain.Option{Value: c.Name, Kind: kind, Note: note})
+				}
+				out.Pending = append(out.Pending, f)
+				return out
 			case len(later) > 0:
 				unsupported(fmt.Sprintf("o projeto usa %s, que entra na fase 2 do suporte a Python; por enquanto o Cobogó instala com pip (requirements.txt) ou uv (uv.lock). Exporte um requirements.txt (por exemplo `poetry export -f requirements.txt`) ou use uv", strings.Join(laterNames, ", ")), later...)
+				return out
+			case len(in.Of(kindAncestorLock)) > 0 && (len(in.Named(kindPyManifest, "pyproject.toml")) > 0 || len(in.Named(kindPyManifest, "setup.py")) > 0):
+				// O uv.lock (ou poetry.lock) de um workspace fica na raiz dele (DEC-53 G).
+				var py []domain.Evidence
+				for _, e := range in.Of(kindAncestorLock) {
+					if e.Name == "uv" || e.Name == "poetry" {
+						py = append(py, e)
+					}
+				}
+				if len(py) == 0 {
+					unsupported("há pyproject.toml ou setup.py, mas nenhum requirements.txt nem uv.lock; instalar só pelo pyproject (sem lock) entra na fase 2. Gere um requirements.txt (`pip freeze`) ou um uv.lock (`uv lock`)")
+					return out
+				}
+				unsupported(fmt.Sprintf("esta pasta não tem requirements.txt nem uv.lock, mas %s existe na pasta acima: é o lockfile de um workspace, e workspaces ficam fora do perfil Python. Publique a aplicação a partir de um repositório próprio ou gere um requirements.txt (`uv export --no-dev --no-hashes -o requirements.txt`) nesta pasta", py[0].Source), py...)
 				return out
 			case len(in.Named(kindPyManifest, "pyproject.toml")) > 0 || len(in.Named(kindPyManifest, "setup.py")) > 0:
 				unsupported("há pyproject.toml ou setup.py, mas nenhum requirements.txt nem uv.lock; instalar só pelo pyproject (sem lock) entra na fase 2. Gere um requirements.txt (`pip freeze`) ou um uv.lock (`uv lock`)")
 				return out
 			default:
-				unsupported("nenhum arquivo de dependências (requirements.txt ou uv.lock) na raiz do projeto")
+				unsupported("nenhum arquivo de dependências (requirements.txt na raiz, em requirements/ ou numa subpasta de primeiro nível, ou uv.lock) no projeto")
 				return out
 			}
 			if len(later) > 0 {
@@ -208,10 +251,10 @@ func ruleHEU041() Rule {
 					out.Warnings = append(out.Warnings, finding("", fmt.Sprintf("HEU-04.1: dependências sem versão fixada (%s): o pip não tem lock, então um deploy futuro pode instalar outra versão. Fixe com == (pip freeze) ou use uv", strings.Join(shown, ", ")), loose[0]))
 				}
 			}
-			out.Proposals = []domain.Proposal{
-				{Field: domain.FieldProfile, Value: domain.ProfilePython, Origin: domain.OriginInference, EvidenceIDs: evidenceIDs(ev)},
-				{Field: domain.FieldPackageManager, Value: manager, Origin: domain.OriginInference, EvidenceIDs: evidenceIDs(ev)},
-			}
+			out.Proposals = append(out.Proposals,
+				domain.Proposal{Field: domain.FieldProfile, Value: domain.ProfilePython, Origin: domain.OriginInference, EvidenceIDs: evidenceIDs(ev)},
+				domain.Proposal{Field: domain.FieldPackageManager, Value: manager, Origin: domain.OriginInference, EvidenceIDs: evidenceIDs(ev)},
+			)
 			return out
 		},
 	}
@@ -350,8 +393,8 @@ var (
 func ruleHEU043() Rule {
 	return Rule{
 		Meta: RuleMeta{
-			ID: "HEU-04.3", Version: "0.1", State: RuleProposed, Requires: []string{"HEU-04.1"},
-			Fields: []string{domain.FieldAppTarget, domain.FieldPythonInterface, domain.FieldPythonFramework, domain.FieldDjangoSettings},
+			ID: "HEU-04.3", Version: "0.2", State: RuleProposed, Requires: []string{"HEU-04.1"},
+			Fields: []string{domain.FieldAppTarget, domain.FieldPythonInterface, domain.FieldPythonFramework, domain.FieldDjangoSettings, domain.FieldDjangoDir},
 		},
 		Apply: func(in RuleInput) RuleOutput {
 			var out RuleOutput
@@ -387,6 +430,9 @@ func ruleHEU043() Rule {
 					}
 				}
 				propose(domain.FieldDjangoSettings, settings, domain.OriginDeclaration, mods[0])
+				if dirs := in.Of(kindDjangoDir); len(dirs) > 0 {
+					propose(domain.FieldDjangoDir, dirs[0].Value, domain.OriginInference, dirs[0])
+				}
 				apps := in.Of(kindDjangoApp)
 				asgi := hasDep(in, "channels", "daphne")
 				var chosen *domain.Evidence

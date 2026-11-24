@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/ocnaibill/cobogo/internal/domain"
@@ -45,7 +46,56 @@ var (
 	defaultExport = regexp.MustCompile(`(?m)^\s*export\s+default\b`)
 	portWord      = regexp.MustCompile(`\bport\b`)
 	identifier    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+	// Porta escrita no código (DEC-53 B): `.listen(8000)`, `.listen(PORT)` com PORT uma
+	// constante numérica do mesmo arquivo, `.listen({ port: 8000 })` e `serve({ port: 8000 })`.
+	listenLiteral = regexp.MustCompile(`\.listen\(\s*(\d{2,5})\s*[,)]`)
+	listenIdent   = regexp.MustCompile(`\.listen\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*[,)]`)
+	listenOptions = regexp.MustCompile(`(?:\.listen|\bserve)\(\s*\{[^{}]*?\bport\s*:\s*(\d{2,5})\b`)
+	// Variáveis lidas por um schema que recebe o ambiente inteiro (zod, envalid, t3-env):
+	// `schema.parse(process.env)`. As chaves do schema são os nomes (DEC-53 B).
+	envPassedWhole = regexp.MustCompile(`\(\s*(?:process|Bun)\.env\s*[,)]`)
+	schemaPortKey  = regexp.MustCompile(`(?m)^\s*["']?PORT["']?\s*:`)
 )
+
+// numericConst acha `const NAME = 8000` num arquivo e devolve o número.
+func numericConst(data []byte, name string) string {
+	re := regexp.MustCompile(`(?m)^\s*(?:export\s+)?(?:const|let|var)\s+` + regexp.QuoteMeta(name) + `\s*=\s*(\d{2,5})\s*;?\s*(?://.*)?$`)
+	if m := re.FindSubmatch(data); m != nil {
+		return string(m[1])
+	}
+	return ""
+}
+
+// validPort diz se o texto é uma porta TCP.
+func validPort(s string) bool {
+	n, err := strconv.Atoi(s)
+	return err == nil && n >= 1 && n <= 65535
+}
+
+// listenPorts devolve cada porta escrita no código de um arquivo e a linha dela.
+func listenPorts(data []byte) map[string]int {
+	out := map[string]int{}
+	add := func(port string, offset int) {
+		if validPort(port) {
+			if _, ok := out[port]; !ok {
+				out[port] = lineAt(data, offset)
+			}
+		}
+	}
+	for _, m := range listenLiteral.FindAllSubmatchIndex(data, -1) {
+		add(string(data[m[2]:m[3]]), m[0])
+	}
+	for _, m := range listenOptions.FindAllSubmatchIndex(data, -1) {
+		add(string(data[m[2]:m[3]]), m[0])
+	}
+	for _, m := range listenIdent.FindAllSubmatchIndex(data, -1) {
+		if port := numericConst(data, string(data[m[2]:m[3]])); port != "" {
+			add(port, m[0])
+		}
+	}
+	return out
+}
 
 // extractSource procura referências a variáveis de ambiente no código. Acesso
 // dinâmico (`process.env[x]`) não pode ser resolvido sem executar o código e
@@ -107,6 +157,16 @@ func extractSource(fsys fs.FS, x *Extraction) error {
 		if scope != domain.ScopeTest {
 			for _, m := range localhostDefault.FindAllSubmatchIndex(data, -1) {
 				x.emit(extractorSource, domain.Evidence{Kind: kindEnvLocalhostDefault, Name: string(data[m[2]:m[3]]), Value: string(data[m[4]:m[5]]), Source: name, Line: lineAt(data, m[0]), Scope: scope})
+			}
+		}
+		if scope == domain.ScopeRuntime {
+			for port, line := range listenPorts(data) {
+				x.emit(extractorSource, domain.Evidence{Kind: kindListenPort, Name: "listen", Value: port, Source: name, Line: line, Scope: scope})
+			}
+			if envPassedWhole.Match(data) {
+				if loc := schemaPortKey.FindIndex(data); loc != nil {
+					x.emit(extractorSource, domain.Evidence{Kind: kindEnvReference, Name: "PORT", Source: name, Line: lineAt(data, loc[0]), Scope: scope})
+				}
 			}
 		}
 		if scope == domain.ScopeRuntime && !portWord.Match(data) {

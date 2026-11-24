@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -23,7 +24,12 @@ const (
 )
 
 const (
-	kindPyManifest   = "py.manifest"   // um arquivo de dependências (Name = o arquivo)
+	kindPyManifest = "py.manifest" // um arquivo de dependências (Name = o arquivo)
+	// kindPyReqCandidate: um arquivo de requirements que não está na raiz (DEC-53 E).
+	// Name é o caminho; Value é a classe (production, development ou neutral).
+	kindPyReqCandidate = "py.requirements_candidate"
+	// kindDjangoDir: a pasta do manage.py quando não é a raiz (DEC-53 E). Value é a pasta.
+	kindDjangoDir    = "django.dir"
 	kindPyLock       = "py.lock"       // um lockfile (Name = o gerenciador)
 	kindPyDependency = "py.dependency" // Name = pacote normalizado, Value = a especificação
 	kindPyUnpinned   = "py.unpinned"   // uma linha de requirements sem versão fixada
@@ -146,6 +152,8 @@ func extractPythonManifest(fsys fs.FS, x *Extraction) error {
 	if exists(fsys, "requirements.txt") {
 		x.emit(extractorPyManifest, domain.Evidence{Kind: kindPyManifest, Name: "requirements.txt", Source: "requirements.txt", Scope: domain.ScopeBuild})
 		readRequirements(fsys, x, "requirements.txt", 0, map[string]bool{})
+	} else {
+		chooseRequirements(fsys, x)
 	}
 	if data, state, err := readSmallFile(fsys, "pyproject.toml"); err == nil && state == fileOK {
 		x.emit(extractorPyManifest, domain.Evidence{Kind: kindPyManifest, Name: "pyproject.toml", Source: "pyproject.toml", Scope: domain.ScopeBuild})
@@ -494,7 +502,22 @@ func extractPythonSource(fsys fs.FS, x *Extraction) error {
 	if usedSrc {
 		x.emit(extractorPySource, domain.Evidence{Kind: kindPySrcLayout, Source: "src", Scope: domain.ScopeBuild})
 	}
-	extractDjango(fsys, x, srcLayout)
+	if dir := djangoManageDir(fsys); dir == "" {
+		extractDjango(fsys, x, srcLayout)
+	} else if sub, err := fs.Sub(fsys, dir); err == nil {
+		// O manage.py está numa subpasta: o contrato do Django é lido de lá e as fontes
+		// voltam com o caminho completo (DEC-53 E).
+		inner := newExtraction()
+		extractDjango(sub, inner, false)
+		found, _ := inner.finish()
+		for _, e := range found {
+			e.Source = dir + "/" + e.Source
+			x.emit(e.Extractor, e)
+		}
+		if len(found) > 0 {
+			x.emit(extractorPySource, domain.Evidence{Kind: kindDjangoDir, Value: dir, Source: dir + "/manage.py", Scope: domain.ScopeRuntime})
+		}
+	}
 	return nil
 }
 
@@ -634,4 +657,143 @@ func extractDjango(fsys fs.FS, x *Extraction, srcLayout bool) {
 			}
 		}
 	}
+}
+
+// Arquivos de requirements fora da raiz (DEC-53 E). Os nomes de pasta e de arquivo que
+// indicam produção ou desenvolvimento seguem as convenções de modelos de projeto Django
+// (requirements/base.txt, production.txt, local.txt) e de imagens de deploy (deploy/).
+var (
+	reqRootVariant = regexp.MustCompile(`^requirements[-_.][A-Za-z0-9_.-]+\.txt$`)
+	reqDevWords    = []string{"dev", "local", "test", "ci", "lint", "docs", "doc", "debug", "tox", "coverage"}
+	reqProdWords   = []string{"prod", "production", "deploy", "release"}
+)
+
+// requirementsCandidates lista os arquivos de requirements que não são o da raiz:
+// requirements/*.txt, requirements-*.txt na raiz e, numa subpasta de primeiro nível que
+// não é outro projeto, requirements.txt ou requirements/*.txt.
+func requirementsCandidates(fsys fs.FS) []string {
+	var out []string
+	txtIn := func(dir string) {
+		entries, err := fs.ReadDir(fsys, dir)
+		if err != nil {
+			return
+		}
+		for _, e := range entries {
+			if e.Type().IsRegular() && path.Ext(e.Name()) == ".txt" {
+				out = append(out, path.Join(dir, e.Name()))
+			}
+		}
+	}
+	txtIn("requirements")
+	if entries, err := fs.ReadDir(fsys, "."); err == nil {
+		for _, e := range entries {
+			name := e.Name()
+			switch {
+			case e.Type().IsRegular() && reqRootVariant.MatchString(name):
+				out = append(out, name)
+			case e.IsDir() && !pySkippedDirs[name] && !strings.HasPrefix(name, ".") && name != "requirements" && !isPyTestDir(name):
+				if exists(fsys, name+"/manage.py") || exists(fsys, name+"/pyproject.toml") || exists(fsys, name+"/setup.py") {
+					continue
+				}
+				if exists(fsys, name+"/requirements.txt") {
+					out = append(out, name+"/requirements.txt")
+				}
+				txtIn(name + "/requirements")
+			}
+		}
+	}
+	sort.Strings(out)
+	return slices.Compact(out)
+}
+
+func isPyTestDir(name string) bool {
+	return name == "tests" || name == "test" || name == "docs" || name == "doc"
+}
+
+// requirementsClass classifica um caminho pelas palavras do nome do arquivo e das pastas.
+func requirementsClass(file string) string {
+	words := regexp.MustCompile(`[^a-z0-9]+`).Split(strings.ToLower(strings.TrimSuffix(file, ".txt")), -1)
+	has := func(list []string) bool {
+		return slices.ContainsFunc(words, func(w string) bool { return slices.Contains(list, w) })
+	}
+	switch {
+	case has(reqDevWords):
+		return "development"
+	case has(reqProdWords):
+		return "production"
+	}
+	return "neutral"
+}
+
+// chooseRequirements escolhe o arquivo de dependências quando a raiz não tem requirements.txt:
+// o override do usuário; senão, o único de produção; senão, o único que sobra depois de
+// tirar os de desenvolvimento. Mais de um possível fica como pergunta (candidatos emitidos).
+func chooseRequirements(fsys fs.FS, x *Extraction) {
+	if file := x.overrides[domain.FieldRequirementsFile]; file != "" {
+		if exists(fsys, file) {
+			emitRequirements(fsys, x, file)
+		}
+		return
+	}
+	cands := requirementsCandidates(fsys)
+	var prod, rest []string
+	for _, c := range cands {
+		switch requirementsClass(c) {
+		case "production":
+			prod = append(prod, c)
+		case "neutral":
+			rest = append(rest, c)
+		}
+	}
+	switch {
+	case len(prod) == 1:
+		emitRequirements(fsys, x, prod[0])
+		return
+	case len(prod) == 0 && len(rest) == 1:
+		emitRequirements(fsys, x, rest[0])
+		return
+	}
+	for _, c := range cands {
+		x.emit(extractorPyManifest, domain.Evidence{Kind: kindPyReqCandidate, Name: c, Value: requirementsClass(c), Source: c, Scope: domain.ScopeBuild})
+	}
+}
+
+func emitRequirements(fsys fs.FS, x *Extraction, file string) {
+	x.emit(extractorPyManifest, domain.Evidence{Kind: kindPyManifest, Name: "requirements.txt", Value: file, Source: file, Scope: domain.ScopeBuild})
+	readRequirements(fsys, x, file, 0, map[string]bool{})
+}
+
+// djangoManageDir acha a pasta do manage.py quando ele não está na raiz: até dois níveis,
+// só se houver um. Mais de um (ou nenhum) devolve "".
+func djangoManageDir(fsys fs.FS) string {
+	if exists(fsys, "manage.py") {
+		return ""
+	}
+	var found []string
+	entries, err := fs.ReadDir(fsys, ".")
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if !e.IsDir() || pySkippedDirs[e.Name()] || strings.HasPrefix(e.Name(), ".") || isPyTestDir(e.Name()) {
+			continue
+		}
+		if exists(fsys, e.Name()+"/manage.py") {
+			found = append(found, e.Name())
+			continue
+		}
+		sub, err := fs.ReadDir(fsys, e.Name())
+		if err != nil {
+			continue
+		}
+		for _, s := range sub {
+			if s.IsDir() && !pySkippedDirs[s.Name()] && !strings.HasPrefix(s.Name(), ".") && !isPyTestDir(s.Name()) && exists(fsys, e.Name()+"/"+s.Name()+"/manage.py") {
+				found = append(found, e.Name()+"/"+s.Name())
+			}
+		}
+	}
+	if len(found) == 1 {
+		return found[0]
+	}
+	return ""
 }

@@ -28,6 +28,11 @@ const (
 	// FieldReleaseCommand é a fase de release (DEC-52 item 4): roda uma vez por deploy, da
 	// imagem nova, antes de a aplicação nova subir (as migrações); "none" a desliga.
 	FieldReleaseCommand = "release_command"
+	// FieldRequirementsFile é o arquivo que o pip instala quando não é o requirements.txt da
+	// raiz (requirements/production.txt, deploy/requirements.txt; DEC-53 E).
+	FieldRequirementsFile = "requirements_file"
+	// FieldDjangoDir é a pasta do manage.py quando ele não está na raiz do projeto (DEC-53 E).
+	FieldDjangoDir = "django_dir"
 )
 
 // Ecossistemas.

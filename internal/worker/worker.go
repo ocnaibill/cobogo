@@ -434,7 +434,7 @@ func (w *Worker) pipeline(ctx context.Context, o *store.Owned, job *domain.Job, 
 		return at("ANALYZING", err)
 	}
 
-	result, err := analyzer.Analyze(os.DirFS(rootDir), analyzer.Input{Overrides: dep.Overrides})
+	result, err := analyzer.Analyze(os.DirFS(rootDir), analyzer.Input{Overrides: dep.Overrides, Repo: os.DirFS(ws.Dir), Dir: root})
 	if err != nil {
 		return at("ANALYZING", err)
 	}

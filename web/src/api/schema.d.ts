@@ -1423,6 +1423,13 @@ export interface components {
             stack_id?: string | null;
             /** @description O papel da aplicação no projeto (`frontend`, `backend`, `fullstack`, `app`), ou vazio antes da primeira análise. */
             role?: string;
+            /**
+             * @description O ecossistema fixado quando duas aplicações dividem a pasta (Python e JavaScript na
+             *     mesma raiz; DEC-53 F). Todo deploy dela leva `ecosystem` como override. Ausente: o
+             *     motor detecta.
+             * @enum {string}
+             */
+            ecosystem?: "javascript" | "python";
         };
         /**
          * @description O projeto que o painel mostra (DEC-52): um repositório, com as aplicações
@@ -1453,6 +1460,12 @@ export interface components {
             role: string;
             label: string;
             ecosystem?: string;
+            /**
+             * @description Preenchido quando a pasta mistura Python e JavaScript e esta parte é uma aplicação
+             *     (DEC-53 F). Vai como `ecosystem` ao criar a aplicação.
+             * @enum {string}
+             */
+            pinned_ecosystem?: "javascript" | "python";
             profile?: string;
             /** @description O endereço sugerido (`<slug>.<domínio>`). */
             slug: string;
@@ -3053,6 +3066,12 @@ export interface operations {
                         slug: string;
                         /** @enum {string} */
                         role?: "frontend" | "backend" | "fullstack" | "app" | "";
+                        /**
+                         * @description Fixa o ecossistema quando duas aplicações dividem a mesma pasta
+                         *     (`pinned_ecosystem` da proposta; DEC-53 F). Vazio: o motor detecta.
+                         * @enum {string}
+                         */
+                        ecosystem?: "javascript" | "python" | "";
                     }[];
                     deploy?: boolean;
                     idempotency_key?: string;

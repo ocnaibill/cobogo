@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"path"
 	"slices"
 	"strings"
 
@@ -143,7 +144,16 @@ func labelsOf(d dirDeps, names ...string) []string {
 
 // describeDir diz o papel de uma pasta, ou ok=false se ela não parece uma aplicação.
 func describeDir(fsys fs.FS, dir string) (domain.Component, bool) {
+	return describeDirAs(fsys, dir, "")
+}
+
+// describeDirAs descreve a pasta como o ecossistema dado, quando ela mistura os dois
+// (DEC-53 F): a mesma pasta pode ter uma aplicação Python e uma JavaScript.
+func describeDirAs(fsys fs.FS, dir, ecosystem string) (domain.Component, bool) {
 	d := readDirDeps(fsys, dir)
+	if ecosystem != "" && d.ecosystem == ecosystemBoth {
+		d.ecosystem = ecosystem
+	}
 	c := domain.Component{Dir: dir, Supported: true, Evidence: []string{}}
 	switch d.ecosystem {
 	case domain.EcosystemJavaScript, ecosystemBoth:
@@ -185,6 +195,11 @@ func describeDir(fsys fs.FS, dir string) (domain.Component, bool) {
 	case domain.EcosystemPython:
 		fw := d.first(pyWebDeps...)
 		if fw == "" && !exists(fsys, joinDir(dir, "manage.py")) {
+			return c, false
+		}
+		// Uma pasta só com requirements (deploy/, docker/) não é uma aplicação: tem de haver
+		// código Python nela (DEC-53 E).
+		if !exists(fsys, joinDir(dir, "manage.py")) && !hasPythonCode(fsys, dir) {
 			return c, false
 		}
 		if fw == "" {
@@ -230,7 +245,8 @@ func findSiblings(fsys fs.FS) []domain.Component {
 		}
 		for _, e := range entries {
 			name := e.Name()
-			if !e.IsDir() || strings.HasPrefix(name, ".") || pySkippedDirs[name] || siblingSkip[strings.ToLower(name)] {
+			// Nomes com {{ }}, % ou $ são modelos de gerador (cookiecutter, cruft), não pastas reais.
+			if !e.IsDir() || strings.HasPrefix(name, ".") || pySkippedDirs[name] || siblingSkip[strings.ToLower(name)] || strings.ContainsAny(name, "{}%$") {
 				continue
 			}
 			sub := joinDir(dir, name)
@@ -267,10 +283,13 @@ var serviceSignatures = []struct {
 
 // buildComponents monta o mapa: a aplicação desta pasta, os serviços e processos que
 // ela pede, e as aplicações irmãs.
-func buildComponents(fsys fs.FS, res domain.AnalysisResult) []domain.Component {
+func buildComponents(fsys fs.FS, res domain.AnalysisResult, ecosystem string) []domain.Component {
 	out := []domain.Component{}
-	own, ok := describeDir(fsys, ".")
+	own, ok := describeDirAs(fsys, ".", ecosystem)
 	d := readDirDeps(fsys, ".")
+	if ecosystem != "" && d.ecosystem == ecosystemBoth {
+		d.ecosystem = ecosystem
+	}
 	if ok {
 		if res.Fields[domain.FieldProfile].Value == domain.ProfileStatic {
 			own.Role = domain.CompFrontend
@@ -334,4 +353,27 @@ func buildComponents(fsys fs.FS, res domain.AnalysisResult) []domain.Component {
 		})
 	}
 	return append(out, findSiblings(fsys)...)
+}
+
+// hasPythonCode diz se a pasta tem algum arquivo .py (até três níveis), fora dos testes.
+func hasPythonCode(fsys fs.FS, dir string) bool {
+	found := false
+	_ = fs.WalkDir(fsys, dir, func(name string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			rel := strings.Count(strings.TrimPrefix(strings.TrimPrefix(name, dir), "/"), "/")
+			if name != dir && (pySkippedDirs[d.Name()] || strings.HasPrefix(d.Name(), ".") || isPyTestDir(d.Name()) || rel >= 3) {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if path.Ext(name) == ".py" && d.Type().IsRegular() {
+			found = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return found
 }

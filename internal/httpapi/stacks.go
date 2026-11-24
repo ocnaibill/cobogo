@@ -125,6 +125,8 @@ type stackAppRequest struct {
 	RootDirectory string `json:"root_directory"`
 	Slug          string `json:"slug"`
 	Role          string `json:"role"`
+	// Ecosystem fixa o ecossistema quando duas aplicações dividem a pasta (DEC-53 F).
+	Ecosystem string `json:"ecosystem"`
 }
 
 type createStackAppsRequest struct {
@@ -169,12 +171,18 @@ func (s *Server) handleCreateStackApps(w http.ResponseWriter, r *http.Request, u
 			writeError(w, http.StatusBadRequest, "papel inválido: "+a.Role)
 			return
 		}
-		if seenSlug[a.Slug] || seenDir[root] {
+		if a.Ecosystem != "" && a.Ecosystem != domain.EcosystemPython && a.Ecosystem != domain.EcosystemJavaScript {
+			writeError(w, http.StatusBadRequest, "ecossistema inválido: "+a.Ecosystem)
+			return
+		}
+		// Duas aplicações só dividem a pasta quando cada uma fixa um ecossistema diferente.
+		key := store.AppKey(root, a.Ecosystem)
+		if seenSlug[a.Slug] || seenDir[key] || (a.Ecosystem == "" && seenDir[store.AppKey(root, domain.EcosystemPython)]) || (a.Ecosystem == "" && seenDir[store.AppKey(root, domain.EcosystemJavaScript)]) {
 			writeError(w, http.StatusBadRequest, "duas aplicações com o mesmo endereço ou a mesma pasta")
 			return
 		}
-		seenSlug[a.Slug], seenDir[root] = true, true
-		apps = append(apps, store.NewApp{RootDirectory: root, Slug: a.Slug, Role: a.Role})
+		seenSlug[a.Slug], seenDir[key] = true, true
+		apps = append(apps, store.NewApp{RootDirectory: root, Slug: a.Slug, Role: a.Role, Ecosystem: a.Ecosystem})
 	}
 	created, err := s.store.CreateApps(r.Context(), st.ID, user.ID, apps)
 	switch {

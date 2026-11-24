@@ -53,6 +53,12 @@ type PythonPlanInput struct {
 	Processes []domain.PlanProcess
 	// Release é a fase de release (DEC-52 item 4).
 	Release string
+	// RequirementsFile é o arquivo que o pip instala quando não é o requirements.txt da
+	// raiz (DEC-53 E). Vazio: requirements.txt.
+	RequirementsFile string
+	// DjangoDir é a pasta do manage.py quando não é a raiz (DEC-53 E): o diretório de
+	// trabalho da aplicação, do build (collectstatic) e dos comandos.
+	DjangoDir string
 	// SrcLayout põe /app/src no PYTHONPATH.
 	SrcLayout bool
 	// SystemPackages são os pacotes de execução do catálogo que as dependências pedem.
@@ -82,6 +88,9 @@ func pythonFromAnalysis(res domain.AnalysisResult, port int, portOrigin, mode st
 	if target == "" && f(domain.FieldStartCommand) == "" {
 		return domain.Plan{}, fmt.Errorf("planner: P-PY sem alvo nem comando de início")
 	}
+	if dir := f(domain.FieldDjangoDir); dir != "" && !djangoDirPattern.MatchString(dir) {
+		return domain.Plan{}, fmt.Errorf("planner: pasta do manage.py %q inválida", dir)
+	}
 	platformHosts := f(domain.FieldDjangoPlatformHosts) == "true" && f(domain.FieldPythonFramework) == domain.FrameworkDjango && f(domain.FieldDjangoSettings) != ""
 	var processes []domain.PlanProcess
 	for _, p := range []struct{ kind, field string }{{domain.ProcessWorker, domain.FieldProcessWorker}, {domain.ProcessScheduler, domain.FieldProcessScheduler}} {
@@ -94,10 +103,12 @@ func pythonFromAnalysis(res domain.AnalysisResult, port int, portOrigin, mode st
 		release = ""
 	}
 	in := PythonPlanInput{
-		Release:       release,
-		Processes:     processes,
-		PlatformHosts: platformHosts,
-		Version:       version, Manager: manager, AppTarget: target,
+		RequirementsFile: f(domain.FieldRequirementsFile),
+		DjangoDir:        f(domain.FieldDjangoDir),
+		Release:          release,
+		Processes:        processes,
+		PlatformHosts:    platformHosts,
+		Version:          version, Manager: manager, AppTarget: target,
 		Interface: f(domain.FieldPythonInterface), Framework: f(domain.FieldPythonFramework),
 		DjangoSettings: f(domain.FieldDjangoSettings), StartCommand: f(domain.FieldStartCommand),
 		BuildCommand: f(domain.FieldBuildCommand), Mode: mode, HealthPath: f(domain.FieldHealthPath),
@@ -201,6 +212,9 @@ func BuildPythonPlan(in PythonPlanInput) domain.Plan {
 		start = PythonServerCommand(in.AppTarget, in.Interface)
 	}
 	install := "pip install -r requirements.txt"
+	if in.RequirementsFile != "" && in.Manager == domain.ManagerPip {
+		install = "pip install -r " + shellQuote(in.RequirementsFile)
+	}
 	if in.Manager == domain.ManagerUV {
 		install = "uv sync --locked --no-dev --no-install-project"
 	}
@@ -240,6 +254,10 @@ func renderPythonDockerfile(in PythonPlanInput, install, start string) string {
 	// Um uvicorn do Procfile sem --host ouviria só em 127.0.0.1: estas variáveis
 	// valem como as opções dele, e as opções na linha de comando vencem.
 	env = append(env, "UVICORN_HOST=0.0.0.0", fmt.Sprintf("UVICORN_PORT=%d", in.Port))
+	workDir := "/app"
+	if in.DjangoDir != "" {
+		workDir += "/" + in.DjangoDir
+	}
 	common := "WORKDIR /app\nENV " + strings.Join(env, " \\\n    ") + "\n"
 
 	var b strings.Builder
@@ -272,6 +290,10 @@ func renderPythonDockerfile(in PythonPlanInput, install, start string) string {
 			fmt.Fprintf(&b, "RUN pip install \"setuptools%s\"\n", domain.LegacySetuptoolsSpec)
 		}
 	}
+	if in.DjangoDir != "" {
+		// O manage.py está numa subpasta: o build e a execução partem de lá (DEC-53 E).
+		fmt.Fprintf(&b, "WORKDIR %s\n", workDir)
+	}
 	if in.BuildCommand != "" {
 		names := make([]string, 0, len(in.BuildEnv))
 		for name := range in.BuildEnv {
@@ -298,11 +320,14 @@ func renderPythonDockerfile(in PythonPlanInput, install, start string) string {
 	fmt.Fprintf(&b, "RUN useradd --uid %d --no-create-home --home-dir /app --shell /usr/sbin/nologin %s && chown %s:%s /app\n", pythonUID, pythonUser, pythonUser, pythonUser)
 	b.WriteString("COPY --from=build /opt/venv /opt/venv\n")
 	fmt.Fprintf(&b, "COPY --from=build --chown=%s:%s /app /app\n", pythonUser, pythonUser)
+	if in.DjangoDir != "" {
+		fmt.Fprintf(&b, "WORKDIR %s\n", workDir)
+	}
 	if in.PlatformHosts && in.DjangoSettings != "" {
 		// O módulo de ajuste só existe na imagem de execução: o build (collectstatic) usa o
 		// settings do projeto como está. O DJANGO_SETTINGS_MODULE passa a apontar para ele.
 		encoded := base64.StdEncoding.EncodeToString([]byte(djangoPlatformSettings))
-		fmt.Fprintf(&b, "RUN echo %s | base64 -d > /app/%s.py && chown %s:%s /app/%s.py\n", encoded, platformSettingsModule, pythonUser, pythonUser, platformSettingsModule)
+		fmt.Fprintf(&b, "RUN echo %s | base64 -d > %s/%s.py && chown %s:%s %s/%s.py\n", encoded, workDir, platformSettingsModule, pythonUser, pythonUser, workDir, platformSettingsModule)
 		fmt.Fprintf(&b, "ENV COBOGO_DJANGO_SETTINGS=%s DJANGO_SETTINGS_MODULE=%s\n", in.DjangoSettings, platformSettingsModule)
 	}
 	fmt.Fprintf(&b, "USER %s\n", pythonUser)
@@ -342,3 +367,7 @@ if _url:
         _origins.append(_url)
     CSRF_TRUSTED_ORIGINS = _origins
 `
+
+// djangoDirPattern limita a pasta do manage.py a um ou dois segmentos simples: ela entra
+// em instruções de Dockerfile.
+var djangoDirPattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*(/[A-Za-z0-9_][A-Za-z0-9_.-]*)?$`)

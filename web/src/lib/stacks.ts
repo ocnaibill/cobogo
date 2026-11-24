@@ -32,10 +32,15 @@ export function stackTone(stack: Stack): Tone {
   return worst;
 }
 
-/** As aplicações propostas que ainda não existem no projeto (pela pasta). */
+/** A identidade de uma aplicação no projeto: a pasta e, quando duas dividem a pasta, o ecossistema fixado (DEC-53). */
+export function appKey(rootDirectory: string, ecosystem?: string | null): string {
+  return `${rootDirectory}\u0000${ecosystem ?? ""}`;
+}
+
+/** As aplicações propostas que ainda não existem no projeto (pela pasta e pelo ecossistema fixado). */
 export function pendingProposals(stack: Stack) {
-  const have = new Set(stack.apps.map((a) => a.root_directory));
-  return (stack.scan?.apps ?? []).filter((a) => !have.has(a.root_directory));
+  const have = new Set(stack.apps.map((a) => appKey(a.root_directory, a.ecosystem)));
+  return (stack.scan?.apps ?? []).filter((a) => !have.has(appKey(a.root_directory, a.pinned_ecosystem)));
 }
 
 /** A aplicação que guarda os serviços (banco, Redis): a que não é só frontend. */

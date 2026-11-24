@@ -2,6 +2,7 @@ package analyzer
 
 import (
 	"fmt"
+	"path"
 	"regexp"
 	"slices"
 	"strconv"
@@ -63,8 +64,8 @@ func jsManager(in RuleInput) (string, domain.Evidence) {
 func ruleHEU01() Rule {
 	return Rule{
 		Meta: RuleMeta{
-			ID: "HEU-01", Version: "0.4", State: RuleProposed,
-			Fields: []string{domain.FieldProfile, domain.FieldPackageManager},
+			ID: "HEU-01", Version: "0.5", State: RuleProposed,
+			Fields: []string{domain.FieldProfile, domain.FieldPackageManager, domain.FieldAllowUnlocked},
 		},
 		Apply: func(in RuleInput) RuleOutput {
 			var out RuleOutput
@@ -106,8 +107,6 @@ func ruleHEU01() Rule {
 				unsupported(fmt.Sprintf("lockfile de gerenciador não suportado (%s); o Cobogó aceita npm (package-lock.json) e Bun (bun.lock)", strings.Join(otherNames, ", ")), others...)
 			case len(others) > 0:
 				unsupported(fmt.Sprintf("múltiplos lockfiles, incluindo de gerenciador não suportado (%s); deixe só o do npm ou o do Bun", strings.Join(otherNames, ", ")), others...)
-			case len(npm)+len(bun) == 0:
-				unsupported("nenhum lockfile (package-lock.json ou bun.lock); sem ele não é possível fixar as dependências", manifest...)
 			}
 			if ws := in.Of(kindWorkspaces); len(ws) > 0 {
 				unsupported("workspaces declarado; monorepos ficam fora dos perfis JavaScript", ws...)
@@ -117,6 +116,28 @@ func ruleHEU01() Rule {
 			}
 
 			_, lock := jsManager(in)
+			if lock.Value == unlockedMarker {
+				// Sem lockfile (DEC-53 G e H).
+				switch {
+				case len(in.Of(kindAncestorLock)) > 0:
+					// O lockfile existe, só que acima desta pasta: é o de um workspace.
+					anc := in.Of(kindAncestorLock)
+					unsupported(fmt.Sprintf("esta pasta não tem lockfile, mas %s existe na pasta acima (%s): é o lockfile de um workspace, e workspaces ficam fora dos perfis JavaScript. Publique a aplicação a partir de um repositório próprio ou gere um package-lock.json nesta pasta (npm install --package-lock-only)", anc[0].Source, anc[0].Name), anc...)
+					return out
+				case in.Overrides[domain.FieldAllowUnlocked] == "false":
+					unsupported("nenhum lockfile (package-lock.json ou bun.lock) e você escolheu não instalar sem ele", manifest...)
+					return out
+				case in.Overrides[domain.FieldAllowUnlocked] == "true":
+					out.Warnings = append(out.Warnings, finding("", "HEU-01: o projeto não tem lockfile e você escolheu instalar sem ele: o build resolve as versões mais novas que o package.json permite e um deploy futuro pode instalar outras. Gere e versione um package-lock.json (npm install --package-lock-only) para fixá-las", manifest...))
+				default:
+					// Pergunta em vez de recusar: a instalação sem lock não é reproduzível, e a
+					// pessoa decide. As demais regras seguem, para todas as perguntas virem juntas.
+					f := finding(domain.FieldAllowUnlocked,
+						"HEU-01: o projeto não tem lockfile (package-lock.json ou bun.lock), então as versões das dependências não estão fixadas. Posso instalar com `npm install`, que resolve as versões mais novas que o package.json permite: pode funcionar hoje e quebrar num deploy futuro. Quer instalar assim?", manifest...)
+					f.Options = []domain.Option{{Value: "true", Kind: domain.OptionProduction, Note: "instala sem lockfile (npm install; bun install se o package.json declara Bun); o aviso fica na análise"}}
+					out.Pending = append(out.Pending, f)
+				}
+			}
 			if manager == "" {
 				f := finding(domain.FieldPackageManager,
 					"HEU-01: o repositório tem lockfile do npm e do Bun; escolha qual gerenciador usar (o outro lockfile é ignorado)",
@@ -180,6 +201,14 @@ func ruleHEU02() Rule {
 					fmt.Sprintf("HEU-02: scripts.start invoca %q, ferramenta de desenvolvimento; informe o comando de produção", devServerTool(start[0].Value)),
 					start[0])
 				f.Options, f.Omitted = options, omitted
+				// O mesmo arquivo sem a recarga automática é uma opção, nunca uma escolha
+				// do Cobogó (DEC-53 C).
+				if cmd, ok := productionEquivalent(start[0].Value); ok {
+					f.Options = slices.Insert(f.Options, 0, domain.Option{
+						Value: cmd, Kind: domain.OptionProduction,
+						Note: fmt.Sprintf("derivado de %q: o mesmo arquivo, sem recarga automática; confira que é o que você roda em produção", start[0].Value),
+					})
+				}
 				out.Pending = append(out.Pending, f)
 			default:
 				out.Proposals = append(out.Proposals, domain.Proposal{
@@ -190,6 +219,15 @@ func ruleHEU02() Rule {
 				out.Warnings = append(out.Warnings, finding("", fmt.Sprintf(
 					"HEU-02: scripts.prepare (%q) só instala ganchos do Git; no contêiner não há repositório Git e a ferramenta costuma ser dependência de desenvolvimento, então o Cobogó o remove do package.json da imagem antes de instalar",
 					prepare[0].Value), prepare[0]))
+			}
+			for _, missing := range in.Of(kindMissingEnvFile) {
+				hint := ""
+				if missing.Value != "" {
+					hint = fmt.Sprintf("; %s traz os nomes das variáveis", missing.Value)
+				}
+				out.Warnings = append(out.Warnings, finding("", fmt.Sprintf(
+					"HEU-02: %s lê variáveis do arquivo %q, que não está no repositório (arquivos assim costumam ficar fora do Git de propósito)%s. Cadastre as variáveis na aba Variáveis: sem o arquivo, o comando recusa iniciar",
+					scriptLabel(missing.Source), missing.Name, hint), missing))
 			}
 			if build := in.Named(kindScript, "build"); len(build) > 0 {
 				out.Proposals = append(out.Proposals, domain.Proposal{
@@ -208,7 +246,7 @@ func ruleHEU02() Rule {
 func ruleHEU05() Rule {
 	return Rule{
 		Meta: RuleMeta{
-			ID: "HEU-05", Version: "0.3", State: RuleProposed,
+			ID: "HEU-05", Version: "0.4", State: RuleProposed,
 			Requires: []string{"HEU-01"},
 			Fields:   []string{domain.FieldPort, domain.FieldHealthPath},
 		},
@@ -243,8 +281,25 @@ func ruleHEU05() Rule {
 				}}
 			}
 
+			// Sem ler PORT, um código que escuta numa porta escrita nele (`app.listen(8000)`)
+			// declara a porta: não é um valor de reserva, é o único que o código usa (DEC-53 B).
+			// Duas portas diferentes não se resolvem sozinhas.
 			var msg string
 			var cited []domain.Evidence
+			listens := in.Of(kindListenPort)
+			if distinct := distinctValues(listens); len(distinct) == 1 {
+				return RuleOutput{Proposals: []domain.Proposal{
+					defaultHealth,
+					{Field: domain.FieldPort, Value: distinct[0], Origin: domain.OriginDeclaration, EvidenceIDs: evidenceIDs(listens)},
+				}}
+			} else if len(distinct) > 1 {
+				msg = fmt.Sprintf("HEU-05: o código escuta em mais de uma porta escrita nele (%s); informe qual é a da aplicação", strings.Join(distinct, ", "))
+				cited = listens
+				return RuleOutput{
+					Proposals: []domain.Proposal{defaultHealth},
+					Pending:   []domain.Finding{finding(domain.FieldPort, msg, cited...)},
+				}
+			}
 			switch {
 			case len(refs) > 0:
 				msg = fmt.Sprintf("HEU-05: PORT referenciada apenas em código de teste ou de ferramentas (%s); sem contrato de runtime, informe a porta", refs[0].Source)
@@ -484,12 +539,8 @@ func hasWord(name, word string) bool {
 // um comando, ou "" se nenhuma conhecida aparece. É uma lista curta de
 // ferramentas; scripts indiretos (`npm run dev`) não são resolvidos.
 func devServerTool(command string) string {
-	separators := strings.NewReplacer("&&", "\n", "||", "\n", ";", "\n", "|", "\n")
-	for _, segment := range strings.Split(separators.Replace(command), "\n") {
-		tokens := strings.Fields(segment)
-		for len(tokens) > 0 && (strings.Contains(tokens[0], "=") || tokens[0] == "npx" || tokens[0] == "bunx") {
-			tokens = tokens[1:]
-		}
+	for _, segment := range commandSegments(command) {
+		tokens := commandTokens(segment)
 		if len(tokens) == 0 {
 			continue
 		}
@@ -498,6 +549,10 @@ func devServerTool(command string) string {
 		}
 		if slices.Contains(tokens, "--hot") {
 			return "--hot"
+		}
+		// -w é a forma curta de --watch no webpack, no tsc e no rollup.
+		if slices.Contains([]string{"webpack", "tsc", "rollup"}, tokens[0]) && slices.Contains(tokens, "-w") {
+			return tokens[0] + " -w"
 		}
 		first, second := tokens[0], ""
 		if len(tokens) > 1 {
@@ -636,4 +691,44 @@ func ruleHEU08() Rule {
 				strings.Join(names, ", ")), artifacts...)}}
 		},
 	}
+}
+
+// distinctValues devolve os valores diferentes das evidências, em ordem.
+func distinctValues(evidence []domain.Evidence) []string {
+	var out []string
+	for _, e := range evidence {
+		if !slices.Contains(out, e.Value) {
+			out = append(out, e.Value)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// nodeFilePattern limita o arquivo de um `nodemon <arquivo>` a um caminho simples de
+// JavaScript que o Node executa sozinho (nada de TypeScript, flags ou shell).
+var nodeFilePattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_./-]*$`)
+
+// productionEquivalent devolve o comando de produção óbvio de um comando de
+// desenvolvimento: `nodemon server.js` é `node server.js` sem a recarga. Só o caso
+// simples (a ferramenta e um arquivo, sem opções) é derivado; qualquer outra forma
+// continua exigindo que a pessoa informe o comando (DEC-53 C).
+func productionEquivalent(command string) (string, bool) {
+	tokens := strings.Fields(command)
+	if len(tokens) != 2 || tokens[0] != "nodemon" || !nodeFilePattern.MatchString(tokens[1]) {
+		return "", false
+	}
+	switch strings.ToLower(path.Ext(tokens[1])) {
+	case "", ".js", ".cjs", ".mjs":
+		return "node " + tokens[1], true
+	}
+	return "", false
+}
+
+// scriptLabel transforma a fonte `package.json#scripts.start` em "scripts.start".
+func scriptLabel(source string) string {
+	if _, label, ok := strings.Cut(source, "#"); ok {
+		return label
+	}
+	return source
 }

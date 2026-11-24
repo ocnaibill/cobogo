@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ProjectSummary, Stack } from "../api/client";
-import { appTabLabel, dataApp, pendingProposals, stackTone } from "./stacks";
+import { appKey, appTabLabel, dataApp, pendingProposals, stackTone } from "./stacks";
 
 const app = (over: Partial<ProjectSummary>): ProjectSummary =>
   ({
@@ -55,5 +55,19 @@ describe("stacks", () => {
       ],
     };
     expect(pendingProposals(stack([back], { scan })).map((p) => p.root_directory)).toEqual(["frontend"]);
+  });
+
+  it("duas aplicações na mesma pasta se distinguem pelo ecossistema fixado (DEC-53)", () => {
+    const py = app({ role: "backend", root_directory: "", ecosystem: "python" });
+    const scan = {
+      commit_sha: "abc",
+      apps: [
+        { root_directory: "", pinned_ecosystem: "python", role: "backend", label: "", slug: "x-api", evidence: [], components: [], questions: [], warnings: 0 },
+        { root_directory: "", pinned_ecosystem: "javascript", role: "frontend", label: "", slug: "x", evidence: [], components: [], questions: [], warnings: 0 },
+      ],
+    } as never;
+    expect(pendingProposals(stack([py], { scan })).map((p) => p.pinned_ecosystem)).toEqual(["javascript"]);
+    expect(appKey("", "python")).not.toBe(appKey("", "javascript"));
+    expect(appKey("web", undefined)).toBe(appKey("web", ""));
   });
 });

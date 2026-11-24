@@ -261,9 +261,21 @@ func fixtures() []fixture {
 			want:  unsupportedByHEU01,
 		},
 		{
-			name:  "missing lockfile is unsupported",
+			// DEC-53 H: sem lockfile o motor pergunta, em vez de recusar.
+			name:  "missing lockfile asks whether to install without it",
 			files: map[string]string{"package.json": startIndex},
-			want:  unsupportedByHEU01,
+			want: want{
+				outcome: domain.AnalysisNeedsInput,
+				fields: map[string]wantField{
+					domain.FieldProfile:        {value: "P-NODE", origin: domain.OriginInference},
+					domain.FieldPackageManager: {value: "npm", origin: domain.OriginInference},
+					domain.FieldNodeVersion:    {value: "26", origin: domain.OriginDefault},
+					domain.FieldExecutionMode:  {value: "production", origin: domain.OriginDefault},
+					domain.FieldHealthPath:     {value: "/", origin: domain.OriginDefault},
+					domain.FieldStartCommand:   {value: "node index.js", origin: domain.OriginDeclaration},
+				},
+				pending: []string{"allow_unlocked", "port"},
+			},
 		},
 		{
 			name:  "invalid package.json is unsupported",
@@ -858,8 +870,9 @@ func TestStartPendingOffersScriptOptions(t *testing.T) {
 		pkg  string
 		want []string
 	}{
-		"missing start":    {`{"scripts":{"serve":"node server.js","dev":"nodemon a.js","test":"jest"}}`, []string{"npm run serve", "npm run dev"}},
-		"dev-server start": {`{"scripts":{"start":"nodemon index.js","serve":"node server.js","test":"jest"}}`, []string{"npm run serve", "npm run start"}},
+		"missing start": {`{"scripts":{"serve":"node server.js","dev":"nodemon a.js","test":"jest"}}`, []string{"npm run serve", "npm run dev"}},
+		// A opção derivada (DEC-53 C) vem primeiro: é o mesmo arquivo, sem a recarga.
+		"dev-server start": {`{"scripts":{"start":"nodemon index.js","serve":"node server.js","test":"jest"}}`, []string{"node index.js", "npm run serve", "npm run start"}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

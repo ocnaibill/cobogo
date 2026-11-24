@@ -56,9 +56,11 @@ func TestBunFixtures(t *testing.T) {
 			want:  want{outcome: domain.AnalysisReady, fields: bunFields("bun run src/server.ts", platformPort)},
 		},
 		{
-			name:  "a fixed port in Bun.serve is only a hint",
+			// DEC-53 B revisou a DEC-36: uma porta escrita no código, sem ler PORT, é a
+			// porta que o código usa (declaração citada, com override). A sonda confere.
+			name:  "a fixed port in Bun.serve is a declaration of the code",
 			files: bunRepo(startServer, map[string]string{"src/server.ts": "Bun.serve({ port: 3000, fetch })"}),
-			want:  want{outcome: domain.AnalysisNeedsInput, fields: bunFields("bun run src/server.ts", nil), pending: []string{"port"}},
+			want:  want{outcome: domain.AnalysisReady, fields: bunFields("bun run src/server.ts", map[string]wantField{domain.FieldPort: {value: "3000", origin: domain.OriginDeclaration}})},
 		},
 		{
 			name: "export default of the start entry is served by Bun on PORT",

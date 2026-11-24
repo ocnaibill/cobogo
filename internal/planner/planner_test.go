@@ -247,3 +247,47 @@ func TestFromAnalysisRejects(t *testing.T) {
 		}
 	}
 }
+
+// DEC-53 H: sem lockfile, o build instala sem ele e o Dockerfile não copia um que não existe.
+func TestUnlockedInstall(t *testing.T) {
+	field := func(v string) domain.Field { return domain.Field{Value: v, Origin: domain.OriginInference} }
+	base := func(extra map[string]string) domain.AnalysisResult {
+		res := domain.AnalysisResult{Outcome: domain.AnalysisReady, Fields: map[string]domain.Field{
+			domain.FieldPackageManager: field("npm"), domain.FieldProfile: field(domain.ProfileNode), domain.FieldPort: field("8080"),
+			domain.FieldStartCommand: field("node index.js"), domain.FieldAllowUnlocked: field("true"),
+		}}
+		for k, v := range extra {
+			res.Fields[k] = field(v)
+		}
+		return res
+	}
+	plan, err := FromAnalysis(base(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(plan.Dockerfile, "package-lock.json") || strings.Contains(plan.Dockerfile, "npm ci") || !strings.Contains(plan.Dockerfile, "COPY package.json ./\n") || !strings.Contains(plan.Dockerfile, "npm install --no-audit --no-fund --omit=dev") {
+		t.Errorf("Node sem lockfile:\n%s", plan.Dockerfile)
+	}
+	// Com lockfile (o padrão), nada muda.
+	locked := base(nil)
+	delete(locked.Fields, domain.FieldAllowUnlocked)
+	if plan, _ = FromAnalysis(locked); !strings.Contains(plan.Dockerfile, "COPY package.json package-lock.json ./\n") || !strings.Contains(plan.Dockerfile, "npm ci --omit=dev") {
+		t.Errorf("Node com lockfile mudou:\n%s", plan.Dockerfile)
+	}
+
+	bun := base(map[string]string{domain.FieldProfile: domain.ProfileBun, domain.FieldPackageManager: "bun"})
+	if plan, err = FromAnalysis(bun); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(plan.Dockerfile, "frozen-lockfile") || !strings.Contains(plan.Dockerfile, "COPY package.json ./\n") || !strings.Contains(plan.Dockerfile, "RUN bun install --production") {
+		t.Errorf("Bun sem lockfile:\n%s", plan.Dockerfile)
+	}
+
+	static := base(map[string]string{domain.FieldProfile: domain.ProfileStatic, domain.FieldBuildCommand: "vite build", domain.FieldOutputDir: "dist"})
+	if plan, err = FromAnalysis(static); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(plan.Dockerfile, "npm ci") || strings.Contains(plan.Dockerfile, "package-lock.json") || !strings.Contains(plan.Dockerfile, "npm install --no-audit --no-fund --include=dev") {
+		t.Errorf("estático sem lockfile:\n%s", plan.Dockerfile)
+	}
+}

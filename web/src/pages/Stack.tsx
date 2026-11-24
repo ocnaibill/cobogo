@@ -11,7 +11,7 @@ import { ServicesTab } from "../components/Database";
 import { ProjectPage } from "./Project";
 import { isActive, profileLabel } from "../lib/deploy";
 import { repoName } from "../lib/format";
-import { appTabLabel, dataApp, pendingProposals, ROLE_LABEL } from "../lib/stacks";
+import { appKey, appTabLabel, dataApp, pendingProposals, ROLE_LABEL } from "../lib/stacks";
 import { useAppsDomain } from "../hooks/useInstance";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -202,7 +202,7 @@ function StackOverview({ stack: s, onOpen }: { stack: Stack; onOpen: (a: Project
                 {s.apps.map((a) => {
                   const url = apps.urlFor(a.slug);
                   const live = a.last_deployment?.state === "SUCCEEDED" && a.app_state !== "stopped";
-                  const scanned = s.scan?.apps.find((x) => x.root_directory === a.root_directory);
+                  const scanned = s.scan?.apps.find((x) => appKey(x.root_directory, x.pinned_ecosystem) === appKey(a.root_directory, a.ecosystem));
                   return (
                     <tr key={a.id}>
                       <td>
@@ -281,11 +281,11 @@ function Proposal({ stack: s, proposals }: { stack: Stack; proposals: StackScanA
   const qc = useQueryClient();
   const apps = useAppsDomain();
   const [chosen, setChosen] = useState<Record<string, { on: boolean; slug: string }>>(() =>
-    Object.fromEntries(proposals.map((p) => [p.root_directory, { on: !p.questions.includes("unsupported"), slug: p.slug }])),
+    Object.fromEntries(proposals.map((p) => [appKey(p.root_directory, p.pinned_ecosystem), { on: !p.questions.includes("unsupported"), slug: p.slug }])),
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const picked = proposals.filter((p) => chosen[p.root_directory]?.on);
+  const picked = proposals.filter((p) => chosen[appKey(p.root_directory, p.pinned_ecosystem)]?.on);
   const first = s.apps.length === 0;
 
   async function create() {
@@ -298,7 +298,12 @@ function Proposal({ stack: s, proposals }: { stack: Stack; proposals: StackScanA
           body: {
             deploy: true,
             idempotency_key: idempotencyKey(),
-            apps: picked.map((p) => ({ root_directory: p.root_directory, slug: (chosen[p.root_directory]?.slug ?? p.slug).trim(), role: p.role as "frontend" })),
+            apps: picked.map((p) => ({
+              root_directory: p.root_directory,
+              slug: (chosen[appKey(p.root_directory, p.pinned_ecosystem)]?.slug ?? p.slug).trim(),
+              role: p.role as "frontend",
+              ecosystem: p.pinned_ecosystem,
+            })),
           },
         }),
       );
@@ -325,23 +330,25 @@ function Proposal({ stack: s, proposals }: { stack: Stack; proposals: StackScanA
         </p>
         {error && <Notice tone="danger">{error}</Notice>}
         {proposals.map((p) => {
-          const c = chosen[p.root_directory] ?? { on: false, slug: p.slug };
+          const key = appKey(p.root_directory, p.pinned_ecosystem);
+          const c = chosen[key] ?? { on: false, slug: p.slug };
           const url = apps.urlFor(c.slug);
           const unsupported = p.questions.includes("unsupported");
           const questions = p.questions.filter((q) => q !== "unsupported");
           return (
-            <label key={p.root_directory} className={`option${c.on ? " selected" : ""}`} style={{ alignItems: "flex-start" }}>
+            <label key={key} className={`option${c.on ? " selected" : ""}`} style={{ alignItems: "flex-start" }}>
               <input
                 type="checkbox"
                 checked={c.on}
                 disabled={unsupported}
-                onChange={(e) => setChosen({ ...chosen, [p.root_directory]: { ...c, on: e.target.checked } })}
+                onChange={(e) => setChosen({ ...chosen, [key]: { ...c, on: e.target.checked } })}
                 style={{ width: "auto", marginTop: 4 }}
               />
               <span className="stack-sm" style={{ flex: 1 }}>
                 <span className="row">
                   <strong>{ROLE_LABEL[p.role] ?? "Aplicação"}</strong>
                   <span className="mono small">{p.root_directory || "./ (raiz)"}</span>
+                  {p.pinned_ecosystem && <Tag title="A pasta mistura Python e JavaScript: cada parte é uma aplicação.">{p.pinned_ecosystem === "python" ? "Python" : "JavaScript"}</Tag>}
                   {p.label && <Tag tone="brand">{p.label}</Tag>}
                   {profileLabel(p.profile) && <Tag>{profileLabel(p.profile)}</Tag>}
                 </span>
@@ -364,7 +371,7 @@ function Proposal({ stack: s, proposals }: { stack: Stack; proposals: StackScanA
                   <input
                     className="mono"
                     value={c.slug}
-                    onChange={(e) => setChosen({ ...chosen, [p.root_directory]: { ...c, slug: e.target.value.toLowerCase() } })}
+                    onChange={(e) => setChosen({ ...chosen, [key]: { ...c, slug: e.target.value.toLowerCase() } })}
                     aria-label={`Endereço de ${p.root_directory || "raiz"}`}
                     style={{ maxWidth: 220 }}
                     spellCheck={false}

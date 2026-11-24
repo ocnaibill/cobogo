@@ -201,3 +201,43 @@ func TestDjangoPlatformSettingsModuleBehaviour(t *testing.T) {
 		t.Errorf("curinga: %s", got)
 	}
 }
+
+// DEC-53 E: o arquivo de requirements fora da raiz e o manage.py numa subpasta.
+func TestPythonRequirementsFileAndDjangoDir(t *testing.T) {
+	plan, err := FromAnalysis(pythonResult(map[string]string{domain.FieldRequirementsFile: "requirements/production.txt"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(plan.Dockerfile, "RUN pip install -r 'requirements/production.txt'\n") && !strings.Contains(plan.Dockerfile, "RUN pip install -r requirements/production.txt\n") {
+		t.Errorf("a escolha do arquivo não chegou ao Dockerfile:\n%s", plan.Dockerfile)
+	}
+	if strings.Contains(plan.Dockerfile, "WORKDIR /app/") {
+		t.Errorf("sem django_dir o diretório de trabalho é /app:\n%s", plan.Dockerfile)
+	}
+
+	plan, err = FromAnalysis(pythonResult(map[string]string{
+		domain.FieldDjangoDir: "backend/server", domain.FieldPythonFramework: domain.FrameworkDjango,
+		domain.FieldDjangoSettings: "server.settings", domain.FieldAppTarget: "server.wsgi:application",
+		domain.FieldBuildCommand: "python manage.py collectstatic --noinput",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	df := plan.Dockerfile
+	build := strings.Index(df, "RUN python manage.py collectstatic")
+	if build < 0 || !strings.Contains(df[:build], "WORKDIR /app/backend/server\n") {
+		t.Errorf("o collectstatic deve rodar na pasta do manage.py:\n%s", df)
+	}
+	final := df[strings.LastIndex(df, "FROM "):]
+	if !strings.Contains(final, "WORKDIR /app/backend/server\n") {
+		t.Errorf("a imagem final deve partir da pasta do manage.py:\n%s", final)
+	}
+	// A instalação continua na raiz, onde está o arquivo de dependências.
+	if strings.Index(df, "RUN pip install -r requirements.txt") > build {
+		t.Errorf("a instalação deve vir antes da troca de pasta:\n%s", df)
+	}
+
+	if _, err := FromAnalysis(pythonResult(map[string]string{domain.FieldDjangoDir: "a b; rm -rf /"})); err == nil {
+		t.Error("uma pasta com caracteres de shell deve ser recusada")
+	}
+}

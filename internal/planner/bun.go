@@ -26,6 +26,8 @@ type BunPlanInput struct {
 	HealthPath string
 	Port       int
 	PortOrigin string
+	// Unlocked instala sem lockfile (DEC-53 H): sem --frozen-lockfile.
+	Unlocked bool
 }
 
 // bunLockfile acha, nas evidências da análise, o lockfile do Bun que a HEU-01
@@ -66,6 +68,9 @@ func BuildBunPlan(in BunPlanInput) domain.Plan {
 	if in.Mode == domain.ModeDevelopment || in.BuildCommand != "" {
 		install = "bun install --frozen-lockfile"
 	}
+	if in.Unlocked {
+		install = strings.Replace(install, " --frozen-lockfile", "", 1)
+	}
 	return domain.Plan{
 		Profile:        domain.ProfileBun,
 		Runtime:        bunRuntimeImage(in.BunVersion),
@@ -93,7 +98,11 @@ func renderBunDockerfile(in BunPlanInput, install string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "FROM %s AS build\n", bunBuildImage(in.BunVersion))
 	b.WriteString(common)
-	fmt.Fprintf(&b, "COPY package.json %s ./\n", in.Lockfile)
+	if in.Unlocked {
+		b.WriteString("COPY package.json ./\n")
+	} else {
+		fmt.Fprintf(&b, "COPY package.json %s ./\n", in.Lockfile)
+	}
 	if in.DropPrepare {
 		b.WriteString("RUN bun pm pkg delete scripts.prepare\n")
 	}
@@ -102,7 +111,11 @@ func renderBunDockerfile(in BunPlanInput, install string) string {
 	if in.BuildCommand != "" {
 		fmt.Fprintf(&b, "RUN %s\n", in.BuildCommand)
 		// O Bun não tem prune: reinstala só as dependências de produção.
-		b.WriteString("RUN rm -rf node_modules && bun install --frozen-lockfile --production\n")
+		prune := "bun install --frozen-lockfile --production"
+		if in.Unlocked {
+			prune = "bun install --production"
+		}
+		fmt.Fprintf(&b, "RUN rm -rf node_modules && %s\n", prune)
 	}
 
 	fmt.Fprintf(&b, "\nFROM %s\n", bunRuntimeImage(in.BunVersion))

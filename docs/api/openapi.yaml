@@ -718,6 +718,12 @@ paths:
                       role:
                         type: string
                         enum: [frontend, backend, fullstack, app, '']
+                      ecosystem:
+                        type: string
+                        enum: [javascript, python, '']
+                        description: |
+                          Fixa o ecossistema quando duas aplicações dividem a mesma pasta
+                          (`pinned_ecosystem` da proposta; DEC-53 F). Vazio: o motor detecta.
                 deploy:
                   type: boolean
                 idempotency_key:
@@ -2727,6 +2733,13 @@ components:
         role:
           type: string
           description: O papel da aplicação no projeto (`frontend`, `backend`, `fullstack`, `app`), ou vazio antes da primeira análise.
+        ecosystem:
+          type: string
+          enum: [javascript, python]
+          description: |
+            O ecossistema fixado quando duas aplicações dividem a pasta (Python e JavaScript na
+            mesma raiz; DEC-53 F). Todo deploy dela leva `ecosystem` como override. Ausente: o
+            motor detecta.
     Stack:
       type: object
       description: |
@@ -2784,6 +2797,12 @@ components:
           type: string
         ecosystem:
           type: string
+        pinned_ecosystem:
+          type: string
+          enum: [javascript, python]
+          description: |
+            Preenchido quando a pasta mistura Python e JavaScript e esta parte é uma aplicação
+            (DEC-53 F). Vai como `ecosystem` ao criar a aplicação.
         profile:
           type: string
         slug:

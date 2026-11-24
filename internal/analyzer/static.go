@@ -130,12 +130,8 @@ var staticTools = map[string]staticToolSpec{
 // o diretório de saída dado por opção. O último trecho que casa vale
 // ("tsc -b && vite build").
 func staticBuild(command string) (tool, flagOut string) {
-	seps := strings.NewReplacer("&&", "\n", "||", "\n", ";", "\n")
-	for _, segment := range strings.Split(seps.Replace(command), "\n") {
-		tokens := strings.Fields(segment)
-		for len(tokens) > 0 && (strings.Contains(tokens[0], "=") || tokens[0] == "npx" || tokens[0] == "bunx") {
-			tokens = tokens[1:]
-		}
+	for _, segment := range commandSegments(command) {
+		tokens := commandTokens(segment)
 		if len(tokens) < 2 || tokens[1] != "build" {
 			continue
 		}
@@ -177,10 +173,7 @@ func flagValue(tokens []string, name string) string {
 // desenvolvimento ou pré-visualização: nesse caso ele não é o servidor de
 // produção, e o site pode ser publicado como estático (DEC-37 item 2).
 func staticServeTool(command string) bool {
-	tokens := strings.Fields(command)
-	for len(tokens) > 0 && (strings.Contains(tokens[0], "=") || tokens[0] == "npx" || tokens[0] == "bunx") {
-		tokens = tokens[1:]
-	}
+	tokens := commandTokens(command)
 	if len(tokens) == 0 {
 		return false
 	}

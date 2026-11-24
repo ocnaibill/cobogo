@@ -31,6 +31,9 @@ type Project struct {
 	// o papel dela nele (frontend, backend, fullstack, app), do mapa da análise.
 	StackID *uuid.UUID `json:"stack_id"`
 	Role    string     `json:"role"`
+	// Ecosystem fixa qual ecossistema da pasta esta aplicação é, quando a pasta mistura Python
+	// e JavaScript e há duas aplicações nela (DEC-53 F). Vazio: o motor detecta.
+	Ecosystem string `json:"ecosystem,omitempty"`
 }
 
 // Stack é o projeto que o painel mostra (DEC-52): um repositório de um dono, com as
@@ -69,14 +72,17 @@ type StackScan struct {
 // StackScanApp é uma aplicação proposta: a pasta ("" é a raiz), o papel, o slug
 // sugerido (o endereço) e as peças que a análise dela achou.
 type StackScanApp struct {
-	RootDirectory string      `json:"root_directory"`
-	Role          string      `json:"role"`
-	Label         string      `json:"label"`
-	Ecosystem     string      `json:"ecosystem,omitempty"`
-	Profile       string      `json:"profile,omitempty"`
-	Slug          string      `json:"slug"`
-	Evidence      []string    `json:"evidence"`
-	Components    []Component `json:"components"`
+	RootDirectory string `json:"root_directory"`
+	Role          string `json:"role"`
+	Label         string `json:"label"`
+	Ecosystem     string `json:"ecosystem,omitempty"`
+	// PinnedEcosystem é o ecossistema que a aplicação fixa quando a pasta mistura Python e
+	// JavaScript e as duas partes são aplicações (DEC-53 F). Vai no pedido de criação.
+	PinnedEcosystem string      `json:"pinned_ecosystem,omitempty"`
+	Profile         string      `json:"profile,omitempty"`
+	Slug            string      `json:"slug"`
+	Evidence        []string    `json:"evidence"`
+	Components      []Component `json:"components"`
 	// Questions são as perguntas que a análise dela ainda faria (os campos).
 	Questions []string `json:"questions"`
 	Warnings  int      `json:"warnings"`

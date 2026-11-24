@@ -51,6 +51,8 @@ type NodePlanInput struct {
 	NodeVersion string
 	Port        int
 	PortOrigin  string
+	// Unlocked instala sem lockfile (DEC-53 H): `npm install` em vez de `npm ci`.
+	Unlocked bool
 }
 
 // FromAnalysis converte uma análise pronta no plano executável (DEC-23: o
@@ -93,6 +95,7 @@ func FromAnalysis(res domain.AnalysisResult) (domain.Plan, error) {
 			Mode:         mode,
 			BunVersion:   bunVersion,
 			Lockfile:     bunLockfile(res),
+			Unlocked:     unlocked(res),
 			HealthPath:   res.Fields[domain.FieldHealthPath].Value,
 			Port:         port,
 			PortOrigin:   string(portField.Origin),
@@ -114,7 +117,13 @@ func FromAnalysis(res domain.AnalysisResult) (domain.Plan, error) {
 		HealthPath:   res.Fields[domain.FieldHealthPath].Value,
 		Port:         port,
 		PortOrigin:   string(portField.Origin),
+		Unlocked:     unlocked(res),
 	}), nil
+}
+
+// unlocked diz se a pessoa escolheu instalar sem lockfile (DEC-53 H).
+func unlocked(res domain.AnalysisResult) bool {
+	return res.Fields[domain.FieldAllowUnlocked].Value == "true"
 }
 
 // BuildNodePlan monta o plano executável e o Dockerfile do perfil P-NODE
@@ -137,6 +146,9 @@ func BuildNodePlan(in NodePlanInput) domain.Plan {
 	install := "npm ci --omit=dev"
 	if in.Mode == domain.ModeDevelopment || in.BuildCommand != "" {
 		install = "npm ci --include=dev"
+	}
+	if in.Unlocked {
+		install = strings.Replace(install, "npm ci", "npm install --no-audit --no-fund", 1)
 	}
 	return domain.Plan{
 		Profile:        "P-NODE",
@@ -168,7 +180,11 @@ func renderNodeDockerfile(in NodePlanInput, install string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "FROM %s AS build\n", nodeBuildImage(in.NodeVersion))
 	b.WriteString(common)
-	b.WriteString("COPY package.json package-lock.json ./\n")
+	if in.Unlocked {
+		b.WriteString("COPY package.json ./\n")
+	} else {
+		b.WriteString("COPY package.json package-lock.json ./\n")
+	}
 	if in.DropPrepare {
 		b.WriteString("RUN npm pkg delete scripts.prepare\n")
 	}
